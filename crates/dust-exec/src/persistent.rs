@@ -3,8 +3,8 @@
 /// Unlike the in-memory ExecutionEngine, this engine persists data to disk
 /// between invocations via B+tree storage.
 use dust_sql::{
-    AlterTableAction, AstStatement, BinOp, ColumnRef, DeleteStatement, Expr, InsertStatement,
-    JoinClause, JoinType, SelectItem, UpdateStatement, parse_program,
+    AlterTableAction, AstStatement, BinOp, ColumnRef, DeleteStatement, Expr, IndexColumn,
+    InsertStatement, JoinClause, JoinType, SelectItem, UpdateStatement, parse_program,
 };
 use dust_store::{Datum, TableEngine};
 use dust_types::{DustError, Result};
@@ -12,12 +12,95 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::engine::QueryOutput;
+use crate::expr_validate::validate_ast_statement;
 use crate::persistent_schema::{
-    ColumnSchema, PersistedSchema, TableSchema, column_schema_from_def, parse_default_expression,
-    table_schema_from_ast,
+    ColumnSchema, PersistedSchema, SecondaryIndexDef, TableSchema, column_schema_from_def,
+    parse_default_expression, table_schema_from_ast,
 };
 
 type ColumnEvaluator = Box<dyn Fn(&[Datum]) -> String>;
+
+fn attach_secondary_indexes(store: &mut TableEngine, schema: &PersistedSchema) -> Result<()> {
+    for def in &schema.secondary_indexes {
+        let cols = store.table_columns(&def.table).ok_or_else(|| {
+            DustError::InvalidInput(format!(
+                "cannot attach index `{}`: table `{}` is missing",
+                def.name, def.table
+            ))
+        })?;
+        let col_idx = cols.iter().position(|c| c == &def.column).ok_or_else(|| {
+            DustError::InvalidInput(format!(
+                "cannot attach index `{}`: column `{}` not found on table `{}`",
+                def.name, def.column, def.table
+            ))
+        })?;
+        store.register_secondary_index(
+            def.name.clone(),
+            def.table.clone(),
+            col_idx,
+            def.root_page_id,
+            def.unique,
+        );
+    }
+    Ok(())
+}
+
+fn simple_index_column_name(col: &IndexColumn) -> Result<String> {
+    if col.expression.len() == 1 {
+        let t = col.expression[0].text.trim();
+        if !t.is_empty() && t.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return Ok(t.to_string());
+        }
+    }
+    Err(DustError::InvalidInput(
+        "CREATE INDEX supports only a single plain column name (no expressions)".to_string(),
+    ))
+}
+
+fn parse_eq_where_column_literal(expr: &Expr) -> Option<(String, Option<String>, Datum)> {
+    match expr {
+        Expr::BinaryOp {
+            op: BinOp::Eq,
+            left,
+            right,
+            ..
+        } => match (left.as_ref(), right.as_ref()) {
+            (Expr::ColumnRef(cref), other) => {
+                let d = expr_to_literal_datum(other)?;
+                Some((
+                    cref.column.value.clone(),
+                    cref.table.as_ref().map(|t| t.value.clone()),
+                    d,
+                ))
+            }
+            (other, Expr::ColumnRef(cref)) => {
+                let d = expr_to_literal_datum(other)?;
+                Some((
+                    cref.column.value.clone(),
+                    cref.table.as_ref().map(|t| t.value.clone()),
+                    d,
+                ))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn expr_to_literal_datum(expr: &Expr) -> Option<Datum> {
+    match expr {
+        Expr::Integer(lit) => Some(Datum::Integer(lit.value)),
+        Expr::StringLit { value, .. } => Some(Datum::Text(value.clone())),
+        Expr::Boolean { value, .. } => Some(Datum::Boolean(*value)),
+        Expr::Null(_) => Some(Datum::Null),
+        Expr::Parenthesized { expr, .. } => expr_to_literal_datum(expr),
+        _ => None,
+    }
+}
+
+fn is_scalar_sql_fn(name: &str) -> bool {
+    matches!(name, "lower" | "upper" | "coalesce" | "length" | "case")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ColumnBinding {
@@ -82,13 +165,15 @@ impl PersistentEngine {
             );
         }
 
-        Ok(Self {
+        let mut engine = Self {
             db_path: db_path.to_path_buf(),
             schema_path,
             store,
             schema,
             transaction: None,
-        })
+        };
+        attach_secondary_indexes(&mut engine.store, &engine.schema)?;
+        Ok(engine)
     }
 
     pub fn query(&mut self, sql: &str) -> Result<QueryOutput> {
@@ -112,6 +197,7 @@ impl PersistentEngine {
     }
 
     fn execute_statement(&mut self, source: &str, statement: &AstStatement) -> Result<QueryOutput> {
+        validate_ast_statement(statement)?;
         match statement {
             AstStatement::Select(select) => self.execute_select(select),
             AstStatement::Insert(insert) => self.execute_insert(source, insert),
@@ -137,17 +223,20 @@ impl PersistentEngine {
                 self.schema.tables.insert(name.clone(), table_schema);
                 Ok(QueryOutput::Message("CREATE TABLE".to_string()))
             }
-            AstStatement::CreateIndex(_) => Ok(QueryOutput::Message("CREATE INDEX".to_string())),
+            AstStatement::CreateIndex(index) => self.execute_create_index(index),
             AstStatement::DropTable(drop) => {
                 let name = &drop.name.value;
                 if drop.if_exists && !self.store.has_table(name) {
                     return Ok(QueryOutput::Message("DROP TABLE".to_string()));
                 }
+                self.schema
+                    .secondary_indexes
+                    .retain(|d| d.table.as_str() != name);
                 self.store.drop_table(name)?;
                 self.schema.tables.remove(name);
                 Ok(QueryOutput::Message("DROP TABLE".to_string()))
             }
-            AstStatement::DropIndex(_) => Ok(QueryOutput::Message("DROP INDEX".to_string())),
+            AstStatement::DropIndex(drop) => self.execute_drop_index(drop),
             AstStatement::AlterTable(alter) => {
                 let table_name = &alter.name.value;
                 match &alter.action {
@@ -182,6 +271,21 @@ impl PersistentEngine {
                         self.validate_existing_rows(table_name, &updated_schema)?;
                     }
                     AlterTableAction::DropColumn { name, .. } => {
+                        let dropped = name.value.clone();
+                        let to_remove: Vec<String> = self
+                            .schema
+                            .secondary_indexes
+                            .iter()
+                            .filter(|d| d.table == *table_name && d.column == dropped)
+                            .map(|d| d.name.clone())
+                            .collect();
+                        for idx_name in &to_remove {
+                            let _ = self.store.drop_secondary_index(idx_name);
+                        }
+                        self.schema
+                            .secondary_indexes
+                            .retain(|d| !(d.table == *table_name && d.column == dropped));
+
                         self.store.drop_column(table_name, &name.value)?;
                         if let Some(schema) = self.schema.tables.get_mut(table_name) {
                             schema.columns.retain(|column| column.name != name.value);
@@ -191,6 +295,11 @@ impl PersistentEngine {
                         }
                     }
                     AlterTableAction::RenameColumn { from, to } => {
+                        for d in &mut self.schema.secondary_indexes {
+                            if d.table == *table_name && d.column == from.value {
+                                d.column = to.value.clone();
+                            }
+                        }
                         self.store
                             .rename_column(table_name, &from.value, to.value.clone())?;
                         if let Some(schema) = self.schema.tables.get_mut(table_name) {
@@ -210,6 +319,11 @@ impl PersistentEngine {
                         self.store.rename_table(table_name, to.value.clone())?;
                         if let Some(schema) = self.schema.tables.remove(table_name) {
                             self.schema.tables.insert(to.value.clone(), schema);
+                        }
+                        for d in &mut self.schema.secondary_indexes {
+                            if d.table == *table_name {
+                                d.table = to.value.clone();
+                            }
                         }
                     }
                 }
@@ -260,7 +374,11 @@ impl PersistentEngine {
             });
         }
 
-        let rowset = self.build_rowset(select)?;
+        let rowset = if let Some(rs) = self.try_index_rowset(select)? {
+            rs
+        } else {
+            self.build_rowset(select)?
+        };
         validate_select_columns(select, &rowset.columns)?;
 
         let mut filtered: Vec<Vec<Datum>> = if let Some(w) = &select.where_clause {
@@ -450,6 +568,64 @@ impl PersistentEngine {
         Ok(rowset)
     }
 
+    /// Single-table `WHERE col = literal` using a secondary index when available.
+    fn try_index_rowset(&mut self, select: &dust_sql::SelectStatement) -> Result<Option<RowSet>> {
+        if !select.joins.is_empty() || select.from.is_none() {
+            return Ok(None);
+        }
+        let Some(where_expr) = &select.where_clause else {
+            return Ok(None);
+        };
+        let Some((col_name, table_qual, value_datum)) = parse_eq_where_column_literal(where_expr)
+        else {
+            return Ok(None);
+        };
+        let from = select.from.as_ref().unwrap();
+        let base_table = from.table.value.as_str();
+        if let Some(q) = &table_qual {
+            let matches_base = q == base_table;
+            let matches_alias = from
+                .alias
+                .as_ref()
+                .map(|a| a.value.as_str() == q.as_str())
+                .unwrap_or(false);
+            if !matches_base && !matches_alias {
+                return Ok(None);
+            }
+        }
+
+        let Some(idx) = self
+            .schema
+            .secondary_indexes
+            .iter()
+            .find(|d| d.table == base_table && d.column == col_name)
+        else {
+            return Ok(None);
+        };
+
+        let rowids = self
+            .store
+            .secondary_lookup_rowids(&idx.name, &value_datum)?;
+        let columns = self
+            .store
+            .table_columns(base_table)
+            .ok_or_else(|| DustError::InvalidInput(format!("table `{base_table}` does not exist")))?
+            .iter()
+            .map(|column_name| ColumnBinding {
+                table_name: base_table.to_string(),
+                alias: from.alias.as_ref().map(|a| a.value.clone()),
+                column_name: column_name.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        for rid in rowids {
+            if let Some(r) = self.store.get_row(base_table, rid)? {
+                rows.push(r);
+            }
+        }
+        Ok(Some(RowSet { columns, rows }))
+    }
+
     fn scan_table_as_rowset(
         &mut self,
         table_name: &str,
@@ -577,7 +753,88 @@ impl PersistentEngine {
 
         self.store = TableEngine::open_or_create(&self.db_path)?;
         self.schema = snapshot.schema;
+        attach_secondary_indexes(&mut self.store, &self.schema)?;
         Ok(())
+    }
+
+    fn execute_create_index(
+        &mut self,
+        index: &dust_sql::CreateIndexStatement,
+    ) -> Result<QueryOutput> {
+        if let Some(u) = &index.using {
+            if !u.value.eq_ignore_ascii_case("btree") {
+                return Err(DustError::InvalidInput(format!(
+                    "index type `{}` is not supported (only btree)",
+                    u.value
+                )));
+            }
+        }
+        if index.columns.len() != 1 {
+            return Err(DustError::InvalidInput(
+                "multi-column indexes are not supported yet".to_string(),
+            ));
+        }
+        let col_name = simple_index_column_name(&index.columns[0])?;
+        let table_name = index.table.value.clone();
+        let idx_name = index.name.value.clone();
+        if self
+            .schema
+            .secondary_indexes
+            .iter()
+            .any(|d| d.name == idx_name)
+        {
+            return Err(DustError::InvalidInput(format!(
+                "index `{idx_name}` already exists"
+            )));
+        }
+        if self.store.has_secondary_index(&idx_name) {
+            return Err(DustError::InvalidInput(format!(
+                "index `{idx_name}` already exists"
+            )));
+        }
+
+        let cols = self.store.table_columns(&table_name).ok_or_else(|| {
+            DustError::InvalidInput(format!("table `{table_name}` does not exist"))
+        })?;
+        let col_idx = cols.iter().position(|c| c == &col_name).ok_or_else(|| {
+            DustError::InvalidInput(format!(
+                "column `{col_name}` not found in table `{table_name}`"
+            ))
+        })?;
+
+        let root = self
+            .store
+            .create_secondary_index(&table_name, col_idx, index.unique)?;
+        self.schema.secondary_indexes.push(SecondaryIndexDef {
+            name: idx_name.clone(),
+            table: table_name.clone(),
+            column: col_name,
+            root_page_id: root,
+            unique: index.unique,
+        });
+        self.store
+            .register_secondary_index(idx_name, table_name, col_idx, root, index.unique);
+        Ok(QueryOutput::Message("CREATE INDEX".to_string()))
+    }
+
+    fn execute_drop_index(&mut self, drop: &dust_sql::DropIndexStatement) -> Result<QueryOutput> {
+        let name = &drop.name.value;
+        let pos = self
+            .schema
+            .secondary_indexes
+            .iter()
+            .position(|d| d.name == *name);
+        match pos {
+            Some(i) => {
+                self.schema.secondary_indexes.remove(i);
+                self.store.drop_secondary_index(name)?;
+                Ok(QueryOutput::Message("DROP INDEX".to_string()))
+            }
+            None if drop.if_exists => Ok(QueryOutput::Message("DROP INDEX".to_string())),
+            None => Err(DustError::InvalidInput(format!(
+                "index `{name}` does not exist"
+            ))),
+        }
     }
 
     fn project_rows(
@@ -649,7 +906,7 @@ impl PersistentEngine {
                     .unwrap_or_else(|| expr_display_name(expr));
                 out_cols.push(col_name);
 
-                let val = eval_aggregate(expr, all_columns, rows);
+                let val = eval_aggregate(expr, all_columns, rows)?;
                 out_vals.push(val);
             }
         }
@@ -1114,125 +1371,113 @@ fn is_aggregate_expr(expr: &Expr) -> bool {
     }
 }
 
-fn eval_aggregate(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec<Datum>]) -> String {
+fn eval_aggregate(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec<Datum>]) -> Result<String> {
     match expr {
         Expr::FunctionCall { name, args, .. } => {
             let func = name.value.to_ascii_lowercase();
             match func.as_str() {
-                "count" => {
-                    if args.len() == 1 && matches!(args[0], Expr::Star(_)) {
-                        rows.len().to_string()
-                    } else if let Some(arg) = args.first() {
-                        let count = rows
-                            .iter()
-                            .filter(|row| {
-                                !matches!(eval_datum_expr(arg, columns, row), Datum::Null)
-                            })
-                            .count();
-                        count.to_string()
-                    } else {
-                        rows.len().to_string()
-                    }
-                }
-                "sum" => {
-                    if let Some(arg) = args.first() {
-                        let sum: i64 = rows
-                            .iter()
-                            .filter_map(|row| match eval_datum_expr(arg, columns, row) {
-                                Datum::Integer(n) => Some(n),
-                                _ => None,
-                            })
-                            .sum();
-                        sum.to_string()
-                    } else {
-                        "0".to_string()
-                    }
-                }
-                "avg" => {
-                    if let Some(arg) = args.first() {
-                        let values: Vec<i64> = rows
-                            .iter()
-                            .filter_map(|row| match eval_datum_expr(arg, columns, row) {
-                                Datum::Integer(n) => Some(n),
-                                _ => None,
-                            })
-                            .collect();
-                        if values.is_empty() {
-                            "NULL".to_string()
-                        } else {
-                            let sum: i64 = values.iter().sum();
-                            let avg = sum as f64 / values.len() as f64;
-                            avg.to_string()
-                        }
-                    } else {
+                "count" => Ok(if args.len() == 1 && matches!(args[0], Expr::Star(_)) {
+                    rows.len().to_string()
+                } else if let Some(arg) = args.first() {
+                    let count = rows
+                        .iter()
+                        .filter(|row| !matches!(eval_datum_expr(arg, columns, row), Datum::Null))
+                        .count();
+                    count.to_string()
+                } else {
+                    rows.len().to_string()
+                }),
+                "sum" => Ok(if let Some(arg) = args.first() {
+                    let sum: i64 = rows
+                        .iter()
+                        .filter_map(|row| match eval_datum_expr(arg, columns, row) {
+                            Datum::Integer(n) => Some(n),
+                            _ => None,
+                        })
+                        .sum();
+                    sum.to_string()
+                } else {
+                    "0".to_string()
+                }),
+                "avg" => Ok(if let Some(arg) = args.first() {
+                    let values: Vec<i64> = rows
+                        .iter()
+                        .filter_map(|row| match eval_datum_expr(arg, columns, row) {
+                            Datum::Integer(n) => Some(n),
+                            _ => None,
+                        })
+                        .collect();
+                    if values.is_empty() {
                         "NULL".to_string()
+                    } else {
+                        let sum: i64 = values.iter().sum();
+                        let avg = sum as f64 / values.len() as f64;
+                        avg.to_string()
                     }
-                }
-                "min" => {
-                    if let Some(arg) = args.first() {
-                        let mut min_val: Option<Datum> = None;
-                        for row in rows {
-                            let val = eval_datum_expr(arg, columns, row);
-                            if matches!(val, Datum::Null) {
-                                continue;
-                            }
-                            min_val = Some(match min_val {
-                                None => val,
-                                Some(ref current) => {
-                                    if cmp_datums(&val, current) == std::cmp::Ordering::Less {
-                                        val
-                                    } else {
-                                        current.clone()
-                                    }
+                } else {
+                    "NULL".to_string()
+                }),
+                "min" => Ok(if let Some(arg) = args.first() {
+                    let mut min_val: Option<Datum> = None;
+                    for row in rows {
+                        let val = eval_datum_expr(arg, columns, row);
+                        if matches!(val, Datum::Null) {
+                            continue;
+                        }
+                        min_val = Some(match min_val {
+                            None => val,
+                            Some(ref current) => {
+                                if cmp_datums(&val, current) == std::cmp::Ordering::Less {
+                                    val
+                                } else {
+                                    current.clone()
                                 }
-                            });
-                        }
-                        min_val
-                            .map(|d| d.to_string())
-                            .unwrap_or_else(|| "NULL".to_string())
-                    } else {
-                        "NULL".to_string()
-                    }
-                }
-                "max" => {
-                    if let Some(arg) = args.first() {
-                        let mut max_val: Option<Datum> = None;
-                        for row in rows {
-                            let val = eval_datum_expr(arg, columns, row);
-                            if matches!(val, Datum::Null) {
-                                continue;
                             }
-                            max_val = Some(match max_val {
-                                None => val,
-                                Some(ref current) => {
-                                    if cmp_datums(&val, current) == std::cmp::Ordering::Greater {
-                                        val
-                                    } else {
-                                        current.clone()
-                                    }
-                                }
-                            });
-                        }
-                        max_val
-                            .map(|d| d.to_string())
-                            .unwrap_or_else(|| "NULL".to_string())
-                    } else {
-                        "NULL".to_string()
+                        });
                     }
-                }
-                _ => {
-                    // Non-aggregate function — evaluate per-row (return first row result)
-                    rows.first()
-                        .map(|row| eval_datum_expr(expr, columns, row).to_string())
+                    min_val
+                        .map(|d| d.to_string())
                         .unwrap_or_else(|| "NULL".to_string())
-                }
+                } else {
+                    "NULL".to_string()
+                }),
+                "max" => Ok(if let Some(arg) = args.first() {
+                    let mut max_val: Option<Datum> = None;
+                    for row in rows {
+                        let val = eval_datum_expr(arg, columns, row);
+                        if matches!(val, Datum::Null) {
+                            continue;
+                        }
+                        max_val = Some(match max_val {
+                            None => val,
+                            Some(ref current) => {
+                                if cmp_datums(&val, current) == std::cmp::Ordering::Greater {
+                                    val
+                                } else {
+                                    current.clone()
+                                }
+                            }
+                        });
+                    }
+                    max_val
+                        .map(|d| d.to_string())
+                        .unwrap_or_else(|| "NULL".to_string())
+                } else {
+                    "NULL".to_string()
+                }),
+                n if is_scalar_sql_fn(n) => Ok(rows
+                    .first()
+                    .map(|row| eval_datum_expr(expr, columns, row).to_string())
+                    .unwrap_or_else(|| "NULL".to_string())),
+                _ => Err(DustError::InvalidInput(format!(
+                    "unsupported aggregate or function `{func}` in aggregate SELECT"
+                ))),
             }
         }
-        // Non-aggregate expression in aggregate context — return value from first row
-        _ => rows
+        _ => Ok(rows
             .first()
             .map(|row| eval_datum_expr(expr, columns, row).to_string())
-            .unwrap_or_else(|| "NULL".to_string()),
+            .unwrap_or_else(|| "NULL".to_string())),
     }
 }
 
@@ -2058,6 +2303,55 @@ mod tests {
                 columns: vec!["text".to_string()],
                 rows: vec![vec!["日本語テスト".to_string()]],
             }
+        );
+    }
+
+    #[test]
+    fn secondary_index_point_lookup_survives_reopen() {
+        let (mut engine, dir) = temp_engine();
+        engine
+            .query("CREATE TABLE users (id INTEGER, email TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO users VALUES (1, 'a@x'), (2, 'b@x'), (3, 'a@x')")
+            .unwrap();
+        engine
+            .query("CREATE INDEX idx_users_email ON users (email)")
+            .unwrap();
+
+        assert_eq!(
+            engine
+                .query("SELECT id FROM users WHERE email = 'a@x' ORDER BY id")
+                .unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["id".to_string()],
+                rows: vec![vec!["1".to_string()], vec!["3".to_string()]],
+            }
+        );
+
+        engine.sync().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut reopened = PersistentEngine::open(&db_path).unwrap();
+        assert_eq!(
+            reopened
+                .query("SELECT id FROM users WHERE email = 'b@x'")
+                .unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["id".to_string()],
+                rows: vec![vec!["2".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_scalar_function_is_rejected() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+        let err = engine.query("SELECT foo(1) FROM t").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unsupported function") && msg.contains("foo"),
+            "{msg}"
         );
     }
 }

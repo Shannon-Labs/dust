@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 use dust_core::{ProjectPaths, Result};
+use dust_types::DustError;
 
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
@@ -42,13 +43,31 @@ pub fn run(args: DoctorArgs) -> Result<()> {
     println!("main ref present: {}", report.main_ref_present);
     println!("head ref present: {}", report.head_ref_present);
     println!("manifest present: {}", report.manifest_present);
+    println!("active database: {}", report.active_db_path.display());
+    println!("live tables (store): {}", report.live_table_count);
+    for warning in &report.live_warnings {
+        println!("live check: {warning}");
+    }
     if report.missing.is_empty() {
-        println!("status: healthy");
+        println!(
+            "status: {}",
+            if report.is_healthy() {
+                "healthy"
+            } else {
+                "unhealthy"
+            }
+        );
     } else {
         println!("missing:");
-        for item in report.missing {
+        for item in &report.missing {
             println!("  - {item}");
         }
+    }
+
+    if !report.is_healthy() {
+        return Err(DustError::Message(
+            "dust doctor: project checks failed (see messages above)".to_string(),
+        ));
     }
 
     Ok(())

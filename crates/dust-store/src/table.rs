@@ -5,9 +5,12 @@
 
 use crate::btree::BTree;
 use crate::pager::Pager;
-use crate::row::{Datum, decode_key_u64, decode_row, encode_key_u64, encode_row};
+use crate::row::{
+    Datum, decode_key_u64, decode_row, encode_key_u64, encode_row, rowid_from_secondary_key,
+    secondary_index_key, secondary_index_value_prefix,
+};
 use dust_types::{DustError, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Serialized table descriptor stored in the meta page.
@@ -26,11 +29,22 @@ struct TableMeta {
     next_rowid: u64,
 }
 
+/// Secondary index on a single table column (B+tree in the same database file).
+#[derive(Debug)]
+struct SecondaryIndexMeta {
+    btree: BTree,
+    table: String,
+    column_index: usize,
+    #[allow(dead_code)]
+    unique: bool,
+}
+
 #[derive(Debug)]
 pub struct TableEngine {
     pager: Pager,
     tables: HashMap<String, TableMeta>,
     meta_dirty: bool,
+    secondary_indexes: HashMap<String, SecondaryIndexMeta>,
 }
 
 impl TableEngine {
@@ -41,6 +55,7 @@ impl TableEngine {
             pager,
             tables: HashMap::new(),
             meta_dirty: false,
+            secondary_indexes: HashMap::new(),
         })
     }
 
@@ -68,6 +83,7 @@ impl TableEngine {
             pager,
             tables,
             meta_dirty: false,
+            secondary_indexes: HashMap::new(),
         })
     }
 
@@ -126,6 +142,8 @@ impl TableEngine {
         self.tables
             .remove(name)
             .ok_or_else(|| DustError::InvalidInput(format!("table `{name}` does not exist")))?;
+        self.secondary_indexes
+            .retain(|_, meta| meta.table.as_str() != name);
         self.meta_dirty = true;
         Ok(())
     }
@@ -241,8 +259,140 @@ impl TableEngine {
             .tables
             .remove(from)
             .ok_or_else(|| DustError::InvalidInput(format!("table `{from}` does not exist")))?;
-        self.tables.insert(to, meta);
+        self.tables.insert(to.clone(), meta);
+        for idx in self.secondary_indexes.values_mut() {
+            if idx.table == from {
+                idx.table = to.clone();
+            }
+        }
         self.meta_dirty = true;
+        Ok(())
+    }
+
+    /// Attach a secondary index loaded from persisted metadata (root page already allocated).
+    pub fn register_secondary_index(
+        &mut self,
+        name: String,
+        table: String,
+        column_index: usize,
+        root_page_id: u64,
+        unique: bool,
+    ) {
+        self.secondary_indexes.insert(
+            name,
+            SecondaryIndexMeta {
+                btree: BTree::open(root_page_id),
+                table,
+                column_index,
+                unique,
+            },
+        );
+    }
+
+    /// Build a new single-column secondary index over an existing table and return its root page.
+    pub fn create_secondary_index(
+        &mut self,
+        table: &str,
+        column_index: usize,
+        unique: bool,
+    ) -> Result<u64> {
+        let rows = self.scan_table(table)?;
+        let mut btree = BTree::create(&mut self.pager)?;
+        let mut seen_non_null: HashSet<Vec<u8>> = HashSet::new();
+        for (rowid, row) in rows {
+            let d = row.get(column_index).cloned().unwrap_or(Datum::Null);
+            let prefix = secondary_index_value_prefix(&d);
+            if unique && !matches!(d, Datum::Null) && !seen_non_null.insert(prefix.clone()) {
+                return Err(DustError::InvalidInput(
+                    "cannot create UNIQUE index: duplicate non-NULL values exist".to_string(),
+                ));
+            }
+            let k = secondary_index_key(&d, rowid);
+            btree.insert(&mut self.pager, &k, b"")?;
+        }
+        Ok(btree.root_page_id())
+    }
+
+    /// Look up rowids matching an exact indexed value (point query on a single-column index).
+    pub fn secondary_lookup_rowids(&mut self, index_name: &str, datum: &Datum) -> Result<Vec<u64>> {
+        let root = self
+            .secondary_indexes
+            .get(index_name)
+            .map(|m| m.btree.root_page_id())
+            .ok_or_else(|| {
+                DustError::InvalidInput(format!("secondary index `{index_name}` is not registered"))
+            })?;
+        let prefix = secondary_index_value_prefix(datum);
+        let keys = BTree::open(root).scan_key_prefix(&mut self.pager, &prefix)?;
+        let mut rowids = Vec::with_capacity(keys.len());
+        for k in keys {
+            rowids.push(rowid_from_secondary_key(&k)?);
+        }
+        Ok(rowids)
+    }
+
+    pub fn drop_secondary_index(&mut self, name: &str) -> Result<()> {
+        self.secondary_indexes
+            .remove(name)
+            .ok_or_else(|| DustError::InvalidInput(format!("index `{name}` does not exist")))?;
+        Ok(())
+    }
+
+    pub fn has_secondary_index(&self, name: &str) -> bool {
+        self.secondary_indexes.contains_key(name)
+    }
+
+    fn secondary_index_names_for_table(&self, table: &str) -> Vec<String> {
+        self.secondary_indexes
+            .iter()
+            .filter(|(_, m)| m.table == table)
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    fn maintain_secondary_insert(
+        &mut self,
+        table: &str,
+        rowid: u64,
+        values: &[Datum],
+    ) -> Result<()> {
+        let names = self.secondary_index_names_for_table(table);
+        for name in names {
+            let key = {
+                let meta = self.secondary_indexes.get(&name).ok_or_else(|| {
+                    DustError::Message("secondary index disappeared during insert".to_string())
+                })?;
+                let d = values
+                    .get(meta.column_index)
+                    .cloned()
+                    .unwrap_or(Datum::Null);
+                secondary_index_key(&d, rowid)
+            };
+            let meta = self.secondary_indexes.get_mut(&name).unwrap();
+            meta.btree.insert(&mut self.pager, &key, b"")?;
+        }
+        Ok(())
+    }
+
+    fn maintain_secondary_delete(
+        &mut self,
+        table: &str,
+        rowid: u64,
+        values: &[Datum],
+    ) -> Result<()> {
+        let names = self.secondary_index_names_for_table(table);
+        for name in names {
+            let key = {
+                let meta = self.secondary_indexes.get(&name).unwrap();
+                let d = values
+                    .get(meta.column_index)
+                    .cloned()
+                    .unwrap_or(Datum::Null);
+                secondary_index_key(&d, rowid)
+            };
+            let meta = self.secondary_indexes.get_mut(&name).unwrap();
+            meta.btree.delete(&mut self.pager, &key)?;
+        }
         Ok(())
     }
 
@@ -268,6 +418,8 @@ impl TableEngine {
         let value = encode_row(&values);
         meta.btree.insert(&mut self.pager, &key, &value)?;
         self.meta_dirty = true;
+
+        self.maintain_secondary_insert(table, rowid, &values)?;
 
         Ok(rowid)
     }
@@ -307,6 +459,11 @@ impl TableEngine {
 
     /// Delete a row by row ID.
     pub fn delete_row(&mut self, table: &str, rowid: u64) -> Result<bool> {
+        let old = match self.get_row(table, rowid)? {
+            Some(r) => r,
+            None => return Ok(false),
+        };
+        self.maintain_secondary_delete(table, rowid, &old)?;
         let meta = self
             .tables
             .get_mut(table)
@@ -318,22 +475,34 @@ impl TableEngine {
 
     /// Update a row by row ID.
     pub fn update_row(&mut self, table: &str, rowid: u64, values: Vec<Datum>) -> Result<()> {
+        let col_count = self
+            .tables
+            .get(table)
+            .map(|m| m.columns.len())
+            .ok_or_else(|| DustError::InvalidInput(format!("table `{table}` does not exist")))?;
+
+        if values.len() != col_count {
+            return Err(DustError::InvalidInput(format!(
+                "expected {col_count} columns, got {}",
+                values.len()
+            )));
+        }
+
+        let old_row = self.get_row(table, rowid)?.ok_or_else(|| {
+            DustError::InvalidInput(format!("row {rowid} not found in `{table}`"))
+        })?;
+
+        self.maintain_secondary_delete(table, rowid, &old_row)?;
+
         let meta = self
             .tables
             .get_mut(table)
             .ok_or_else(|| DustError::InvalidInput(format!("table `{table}` does not exist")))?;
 
-        if values.len() != meta.columns.len() {
-            return Err(DustError::InvalidInput(format!(
-                "expected {} columns, got {}",
-                meta.columns.len(),
-                values.len()
-            )));
-        }
-
         let key = encode_key_u64(rowid);
         let encoded = encode_row(&values);
         meta.btree.insert(&mut self.pager, &key, &encoded)?;
+        self.maintain_secondary_insert(table, rowid, &values)?;
         Ok(())
     }
 

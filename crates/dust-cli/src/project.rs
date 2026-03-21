@@ -1,4 +1,5 @@
 /// Shared project utilities for CLI commands.
+use dust_core::ProjectPaths;
 use dust_store::BranchName;
 use std::path::{Path, PathBuf};
 
@@ -42,8 +43,7 @@ pub(crate) fn branch_db_path(root: &Path, branch: &str) -> PathBuf {
 }
 
 pub(crate) fn current_branch_db_path(root: &Path) -> PathBuf {
-    let branch = read_current_branch(&refs_dir(root));
-    branch_db_path(root, &branch)
+    ProjectPaths::new(root).active_data_db_path()
 }
 
 /// Find the branch-specific database file path by walking up from `start`
@@ -51,7 +51,7 @@ pub(crate) fn current_branch_db_path(root: &Path) -> PathBuf {
 /// `.dust/workspace/branches/<branch>/data.db`.
 pub fn find_db_path(start: &Path) -> PathBuf {
     let root = find_project_root(start).unwrap_or_else(|| start.to_path_buf());
-    current_branch_db_path(&root)
+    ProjectPaths::new(root).active_data_db_path()
 }
 
 /// Read the current branch name from the HEAD file. Defaults to "main".

@@ -1,7 +1,9 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use dust_catalog::Catalog;
+use dust_exec::PersistentEngine;
 use dust_migrate::{DustLock, SchemaObjectKind, SchemaObjectRecord};
 use dust_sql::parse_sql;
 use dust_store::{BranchHead, BranchName, BranchRef, WorkspaceLayout};
@@ -30,6 +32,19 @@ pub struct DoctorReport {
     pub main_ref_present: bool,
     pub head_ref_present: bool,
     pub manifest_present: bool,
+    /// Branch-scoped database file for the active branch.
+    pub active_db_path: PathBuf,
+    /// Tables visible in the live database (0 if the file is missing or unreadable).
+    pub live_table_count: usize,
+    /// Hard problems: corrupt DB, missing tables that schema.sql declares, etc.
+    pub live_warnings: Vec<String>,
+}
+
+impl DoctorReport {
+    /// When false, `dust doctor` should exit non-zero.
+    pub fn is_healthy(&self) -> bool {
+        self.missing.is_empty() && !self.lockfile_drift && self.live_warnings.is_empty()
+    }
 }
 
 impl ProjectPaths {
@@ -51,6 +66,33 @@ impl ProjectPaths {
 
     pub fn workspace_path(&self) -> PathBuf {
         self.root.join(".dust/workspace")
+    }
+
+    pub fn refs_dir(&self) -> PathBuf {
+        self.workspace_path().join("refs")
+    }
+
+    /// Current branch from `.dust/workspace/refs/HEAD`, defaulting to `main`.
+    pub fn read_current_branch_name(&self) -> String {
+        let head_path = self.refs_dir().join("HEAD");
+        fs::read_to_string(&head_path)
+            .unwrap_or_else(|_| "main\n".to_string())
+            .trim()
+            .to_string()
+    }
+
+    /// Resolved `data.db` for the active branch (same rules as the CLI).
+    pub fn active_data_db_path(&self) -> PathBuf {
+        let branch_raw = self.read_current_branch_name();
+        let branch = BranchName::new(&branch_raw).unwrap_or_else(|_| BranchName::main());
+        if branch.as_str() == BranchName::MAIN {
+            self.workspace_path().join("data.db")
+        } else {
+            self.workspace_path()
+                .join("branches")
+                .join(branch.as_path())
+                .join("data.db")
+        }
     }
 
     pub fn init(&self, force: bool) -> Result<()> {
@@ -128,6 +170,7 @@ impl ProjectPaths {
             catalog_fingerprint,
             table_count,
             index_count,
+            catalog_table_names,
         ) = if self.schema_path().exists() {
             let schema = fs::read_to_string(self.schema_path())?;
             let statements = parse_sql(&schema)?;
@@ -137,6 +180,7 @@ impl ProjectPaths {
                 .map(dust_sql::Statement::summary)
                 .collect::<Vec<_>>();
             let fingerprint = catalog.fingerprint().0.clone();
+            let names: Vec<String> = catalog.tables().iter().map(|t| t.name.clone()).collect();
             (
                 summaries.len(),
                 summaries,
@@ -144,9 +188,10 @@ impl ProjectPaths {
                 Some(fingerprint),
                 catalog.tables().len(),
                 catalog.indexes().len(),
+                names,
             )
         } else {
-            (0, Vec::new(), None, None, 0, 0)
+            (0, Vec::new(), None, None, 0, 0, Vec::new())
         };
 
         let lockfile_fingerprint = if self.lock_path().exists() {
@@ -159,6 +204,30 @@ impl ProjectPaths {
             (Some(schema), Some(lock)) => schema != lock,
             _ => false,
         };
+
+        let active_db_path = self.active_data_db_path();
+        let mut live_table_count = 0usize;
+        let mut live_warnings = Vec::new();
+
+        if active_db_path.exists() {
+            match PersistentEngine::open(&active_db_path) {
+                Ok(engine) => {
+                    let live_names: HashSet<String> = engine.table_names().into_iter().collect();
+                    live_table_count = live_names.len();
+                    for t in &catalog_table_names {
+                        if !live_names.contains(t) {
+                            live_warnings.push(format!(
+                                "table `{t}` is declared in db/schema.sql but missing in the live database"
+                            ));
+                        }
+                    }
+                }
+                Err(err) => live_warnings.push(format!(
+                    "failed to open live database at {}: {err}",
+                    active_db_path.display()
+                )),
+            }
+        }
 
         Ok(DoctorReport {
             root: self.root.clone(),
@@ -174,6 +243,9 @@ impl ProjectPaths {
             main_ref_present: layout.branch_ref_path(&BranchName::main()).exists(),
             head_ref_present: layout.current_ref_path().exists(),
             manifest_present: layout.manifest_path("m_000000000000").exists(),
+            active_db_path,
+            live_table_count,
+            live_warnings,
         })
     }
 
@@ -232,6 +304,7 @@ fn schema_object_records(catalog: &Catalog) -> Vec<SchemaObjectRecord> {
 #[cfg(test)]
 mod tests {
     use super::ProjectPaths;
+    use dust_exec::PersistentEngine;
     use std::fs;
     use tempfile::TempDir;
 
@@ -259,6 +332,13 @@ mod tests {
         assert!(report.main_ref_present);
         assert!(report.head_ref_present);
         assert!(report.manifest_present);
+        assert_eq!(
+            report.active_db_path,
+            temp.path().join(".dust/workspace/data.db")
+        );
+        assert_eq!(report.live_table_count, 0);
+        assert!(report.live_warnings.is_empty());
+        assert!(report.is_healthy());
 
         let lock = project.read_lockfile().expect("lockfile");
         assert!(!lock.schema_objects.is_empty());
@@ -280,5 +360,27 @@ mod tests {
         assert!(report.lockfile_drift);
         assert_ne!(report.schema_fingerprint, report.lockfile_fingerprint);
         assert_eq!(report.parsed_statements, 1);
+    }
+
+    #[test]
+    fn doctor_reports_live_db_missing_tables() {
+        let temp = TempDir::new().expect("temp dir");
+        let project = ProjectPaths::new(temp.path());
+        project.init(true).expect("init");
+
+        let db_path = project.active_data_db_path();
+        fs::create_dir_all(db_path.parent().expect("parent")).expect("mkdir");
+        PersistentEngine::open(&db_path).expect("open db");
+
+        let report = project.doctor().expect("doctor");
+        assert!(
+            report
+                .live_warnings
+                .iter()
+                .any(|w| w.contains("users") && w.contains("missing")),
+            "{:?}",
+            report.live_warnings
+        );
+        assert!(!report.is_healthy());
     }
 }

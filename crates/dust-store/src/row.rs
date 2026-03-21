@@ -178,6 +178,31 @@ pub fn decode_key_u64(data: &[u8]) -> u64 {
     u64::from_be_bytes(data[0..8].try_into().unwrap())
 }
 
+/// Secondary B+tree key: single-column [`encode_row`] payload + rowid (big-endian u64).
+pub fn secondary_index_key(datum: &Datum, rowid: u64) -> Vec<u8> {
+    let mut key = encode_row(&[datum.clone()]);
+    key.extend_from_slice(&rowid.to_be_bytes());
+    key
+}
+
+/// Prefix shared by all index keys for a given indexed value (for point lookups).
+pub fn secondary_index_value_prefix(datum: &Datum) -> Vec<u8> {
+    encode_row(&[datum.clone()])
+}
+
+/// Row id stored in the last 8 bytes of a secondary index key.
+pub fn rowid_from_secondary_key(key: &[u8]) -> Result<u64> {
+    if key.len() < 8 {
+        return Err(DustError::InvalidInput(
+            "secondary index key too short".to_string(),
+        ));
+    }
+    let tail: [u8; 8] = key[key.len() - 8..]
+        .try_into()
+        .map_err(|_| DustError::InvalidInput("secondary index key rowid suffix".to_string()))?;
+    Ok(u64::from_be_bytes(tail))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

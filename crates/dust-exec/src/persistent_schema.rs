@@ -8,9 +8,29 @@ use dust_sql::{
 use dust_types::{DustError, Result};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecondaryIndexDef {
+    pub name: String,
+    pub table: String,
+    pub column: String,
+    pub root_page_id: u64,
+    pub unique: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PersistedSchema {
     pub tables: BTreeMap<String, TableSchema>,
+    #[serde(default)]
+    pub secondary_indexes: Vec<SecondaryIndexDef>,
+}
+
+impl Default for PersistedSchema {
+    fn default() -> Self {
+        Self {
+            tables: BTreeMap::new(),
+            secondary_indexes: Vec::new(),
+        }
+    }
 }
 
 impl PersistedSchema {

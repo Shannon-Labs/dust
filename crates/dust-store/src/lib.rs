@@ -15,7 +15,10 @@ pub use btree::BTree;
 pub use manifest::Manifest;
 pub use page::{PAGE_SIZE, Page, PageType};
 pub use pager::Pager;
-pub use row::{Datum, decode_key_u64, decode_row, encode_key_u64, encode_row};
+pub use row::{
+    Datum, decode_key_u64, decode_row, encode_key_u64, encode_row, rowid_from_secondary_key,
+    secondary_index_key, secondary_index_value_prefix,
+};
 pub use table::TableEngine;
 pub use vfs::{LocalVfs, Vfs};
 pub use wal::{CheckpointRecord, CommitRecord, WalHeader};

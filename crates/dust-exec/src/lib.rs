@@ -1,5 +1,6 @@
 pub mod binder;
 pub mod engine;
+mod expr_validate;
 pub mod persistent;
 mod persistent_schema;
 pub mod storage;

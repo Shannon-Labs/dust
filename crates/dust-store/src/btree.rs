@@ -150,6 +150,18 @@ impl BTree {
         Ok(false)
     }
 
+    /// Return leaf keys whose full key bytes start with `prefix` (ordered scan).
+    ///
+    /// Implemented via a full-tree scan; suitable for modest table sizes.
+    pub fn scan_key_prefix(&self, pager: &mut Pager, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
+        Ok(self
+            .scan(pager)?
+            .into_iter()
+            .filter(|(k, _)| k.starts_with(prefix))
+            .map(|(k, _)| k)
+            .collect())
+    }
+
     /// Scan all key-value pairs in order.
     pub fn scan(&self, pager: &mut Pager) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let mut result = Vec::new();
