@@ -40,6 +40,21 @@ pub struct DoctorReport {
     pub live_warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct BranchDiff {
+    pub from_branch: String,
+    pub to_branch: String,
+    pub table_diffs: Vec<TableDiff>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TableDiff {
+    pub name: String,
+    /// None means the table doesn't exist on this branch.
+    pub from_rows: Option<usize>,
+    pub to_rows: Option<usize>,
+}
+
 impl DoctorReport {
     /// When false, `dust doctor` should exit non-zero.
     pub fn is_healthy(&self) -> bool {
@@ -93,6 +108,75 @@ impl ProjectPaths {
                 .join(branch.as_path())
                 .join("data.db")
         }
+    }
+
+    /// Data DB path for a named branch.
+    pub fn branch_data_db_path(&self, branch_name: &str) -> PathBuf {
+        let branch = BranchName::new(branch_name).unwrap_or_else(|_| BranchName::main());
+        if branch.as_str() == BranchName::MAIN {
+            self.workspace_path().join("data.db")
+        } else {
+            self.workspace_path()
+                .join("branches")
+                .join(branch.as_path())
+                .join("data.db")
+        }
+    }
+
+    /// Compare two branches: schema differences and row count deltas.
+    pub fn diff_branches(&self, from: &str, to: &str) -> Result<BranchDiff> {
+        let from_db = self.branch_data_db_path(from);
+        let to_db = self.branch_data_db_path(to);
+
+        let from_tables = if from_db.exists() {
+            let engine = PersistentEngine::open(&from_db)?;
+            let mut store = engine;
+            let names = store.table_names();
+            let mut tables = std::collections::BTreeMap::new();
+            for name in names {
+                let count = store.row_count(&name).unwrap_or(0);
+                tables.insert(name, count);
+            }
+            tables
+        } else {
+            std::collections::BTreeMap::new()
+        };
+
+        let to_tables = if to_db.exists() {
+            let engine = PersistentEngine::open(&to_db)?;
+            let mut store = engine;
+            let names = store.table_names();
+            let mut tables = std::collections::BTreeMap::new();
+            for name in names {
+                let count = store.row_count(&name).unwrap_or(0);
+                tables.insert(name, count);
+            }
+            tables
+        } else {
+            std::collections::BTreeMap::new()
+        };
+
+        let mut table_diffs = Vec::new();
+        let all_names: HashSet<&String> = from_tables.keys().chain(to_tables.keys()).collect();
+        let mut all_sorted: Vec<&&String> = all_names.iter().collect();
+        all_sorted.sort();
+        for name in all_sorted {
+            let from_count = from_tables.get(*name).copied();
+            let to_count = to_tables.get(*name).copied();
+            if from_count != to_count {
+                table_diffs.push(TableDiff {
+                    name: (**name).clone(),
+                    from_rows: from_count,
+                    to_rows: to_count,
+                });
+            }
+        }
+
+        Ok(BranchDiff {
+            from_branch: from.to_string(),
+            to_branch: to.to_string(),
+            table_diffs,
+        })
     }
 
     pub fn init(&self, force: bool) -> Result<()> {
@@ -213,13 +297,26 @@ impl ProjectPaths {
             match PersistentEngine::open(&active_db_path) {
                 Ok(engine) => {
                     let live_names: HashSet<String> = engine.table_names().into_iter().collect();
+                    let catalog_set: HashSet<&String> = catalog_table_names.iter().collect();
                     live_table_count = live_names.len();
+                    // Forward: schema.sql tables missing from live DB
                     for t in &catalog_table_names {
                         if !live_names.contains(t) {
                             live_warnings.push(format!(
                                 "table `{t}` is declared in db/schema.sql but missing in the live database"
                             ));
                         }
+                    }
+                    // Reverse: live DB tables not in schema.sql
+                    let mut extra: Vec<&String> = live_names
+                        .iter()
+                        .filter(|t| !catalog_set.contains(t))
+                        .collect();
+                    extra.sort();
+                    for t in extra {
+                        live_warnings.push(format!(
+                            "table `{t}` exists in the live database but is not declared in db/schema.sql"
+                        ));
                     }
                 }
                 Err(err) => live_warnings.push(format!(
@@ -379,6 +476,36 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("users") && w.contains("missing")),
             "{:?}",
+            report.live_warnings
+        );
+        assert!(!report.is_healthy());
+    }
+
+    #[test]
+    fn doctor_reports_extra_live_tables_not_in_schema() {
+        let temp = TempDir::new().expect("temp dir");
+        let project = ProjectPaths::new(temp.path());
+        project.init(true).expect("init");
+
+        // Create the live DB with an extra table not in schema.sql
+        let db_path = project.active_data_db_path();
+        fs::create_dir_all(db_path.parent().expect("parent")).expect("mkdir");
+        let mut engine = PersistentEngine::open(&db_path).expect("open db");
+        engine
+            .query("CREATE TABLE users (id UUID PRIMARY KEY, email TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL)")
+            .expect("create schema table");
+        engine
+            .query("CREATE TABLE stray_table (x INTEGER)")
+            .expect("create extra table");
+        engine.sync().expect("sync");
+
+        let report = project.doctor().expect("doctor");
+        assert!(
+            report
+                .live_warnings
+                .iter()
+                .any(|w| w.contains("stray_table") && w.contains("not declared")),
+            "expected warning about stray_table: {:?}",
             report.live_warnings
         );
         assert!(!report.is_healthy());

@@ -246,6 +246,18 @@ pub enum Expr {
         expr: Box<Expr>,
         span: Span,
     },
+    /// A subquery used as a scalar expression: `(SELECT ...)`
+    Subquery {
+        query: Box<SelectStatement>,
+        span: Span,
+    },
+    /// `expr [NOT] IN (SELECT ...)`
+    InSubquery {
+        expr: Box<Expr>,
+        query: Box<SelectStatement>,
+        negated: bool,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -264,7 +276,9 @@ impl Expr {
             | Expr::Cast { span, .. }
             | Expr::FunctionCall { span, .. }
             | Expr::Star(span)
-            | Expr::Parenthesized { span, .. } => *span,
+            | Expr::Parenthesized { span, .. }
+            | Expr::Subquery { span, .. }
+            | Expr::InSubquery { span, .. } => *span,
             Expr::ColumnRef(cref) => cref.span,
         }
     }

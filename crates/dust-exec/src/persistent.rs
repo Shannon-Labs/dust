@@ -99,7 +99,31 @@ fn expr_to_literal_datum(expr: &Expr) -> Option<Datum> {
 }
 
 fn is_scalar_sql_fn(name: &str) -> bool {
-    matches!(name, "lower" | "upper" | "coalesce" | "length" | "case")
+    matches!(
+        name,
+        "lower"
+            | "upper"
+            | "coalesce"
+            | "length"
+            | "case"
+            | "substr"
+            | "substring"
+            | "trim"
+            | "ltrim"
+            | "rtrim"
+            | "replace"
+            | "abs"
+            | "round"
+            | "typeof"
+            | "nullif"
+            | "max"
+            | "min"
+            | "concat"
+            | "ifnull"
+            | "hex"
+            | "quote"
+            | "instr"
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +213,10 @@ impl PersistentEngine {
 
     pub fn table_names(&self) -> Vec<String> {
         self.store.table_names()
+    }
+
+    pub fn row_count(&mut self, table: &str) -> Result<usize> {
+        Ok(self.store.scan_table(table)?.len())
     }
 
     pub fn sync(&mut self) -> Result<()> {
@@ -341,7 +369,107 @@ impl PersistentEngine {
                 self.rollback_transaction()?;
                 Ok(QueryOutput::Message("ROLLBACK".to_string()))
             }
-            AstStatement::Raw(raw) => Ok(QueryOutput::Message(format!("planned: {}", raw.sql))),
+            AstStatement::Raw(raw) => Err(DustError::UnsupportedQuery(format!(
+                "unsupported SQL: {}",
+                raw.sql
+            ))),
+        }
+    }
+
+    /// Recursively rewrite subquery expressions by executing them and replacing
+    /// with materialized literal values. This allows eval_datum_expr to remain
+    /// a pure function without engine access.
+    fn materialize_subqueries(&mut self, expr: &Expr) -> Result<Expr> {
+        match expr {
+            Expr::InSubquery {
+                expr: inner,
+                query,
+                negated,
+                span,
+            } => {
+                let inner_rewritten = self.materialize_subqueries(inner)?;
+                // Execute the subquery to get values
+                let result = self.execute_select(query)?;
+                let values: Vec<Expr> = match result {
+                    QueryOutput::Rows { rows, .. } => rows
+                        .into_iter()
+                        .filter_map(|row| {
+                            row.into_iter().next().map(|v| {
+                                // Try to parse as integer, otherwise treat as string
+                                if v == "NULL" {
+                                    Expr::Null(*span)
+                                } else if let Ok(i) = v.parse::<i64>() {
+                                    Expr::Integer(dust_sql::IntegerLiteral {
+                                        value: i,
+                                        span: *span,
+                                    })
+                                } else {
+                                    Expr::StringLit {
+                                        value: v,
+                                        span: *span,
+                                    }
+                                }
+                            })
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                Ok(Expr::InList {
+                    expr: Box::new(inner_rewritten),
+                    list: values,
+                    negated: *negated,
+                    span: *span,
+                })
+            }
+            Expr::Subquery { query, span } => {
+                // Execute as scalar subquery — return first column of first row
+                let result = self.execute_select(query)?;
+                match result {
+                    QueryOutput::Rows { rows, .. } => {
+                        if let Some(row) = rows.into_iter().next() {
+                            if let Some(v) = row.into_iter().next() {
+                                if v == "NULL" {
+                                    return Ok(Expr::Null(*span));
+                                } else if let Ok(i) = v.parse::<i64>() {
+                                    return Ok(Expr::Integer(dust_sql::IntegerLiteral {
+                                        value: i,
+                                        span: *span,
+                                    }));
+                                } else {
+                                    return Ok(Expr::StringLit {
+                                        value: v,
+                                        span: *span,
+                                    });
+                                }
+                            }
+                        }
+                        Ok(Expr::Null(*span))
+                    }
+                    _ => Ok(Expr::Null(*span)),
+                }
+            }
+            Expr::BinaryOp {
+                left,
+                op,
+                right,
+                span,
+            } => Ok(Expr::BinaryOp {
+                left: Box::new(self.materialize_subqueries(left)?),
+                op: *op,
+                right: Box::new(self.materialize_subqueries(right)?),
+                span: *span,
+            }),
+            Expr::UnaryOp { op, operand, span } => Ok(Expr::UnaryOp {
+                op: *op,
+                operand: Box::new(self.materialize_subqueries(operand)?),
+                span: *span,
+            }),
+            Expr::Parenthesized { expr: inner, span } => Ok(Expr::Parenthesized {
+                expr: Box::new(self.materialize_subqueries(inner)?),
+                span: *span,
+            }),
+            // Everything else is left as-is
+            other => Ok(other.clone()),
         }
     }
 
@@ -358,7 +486,8 @@ impl PersistentEngine {
                             .map(|a| a.value.clone())
                             .unwrap_or_else(|| "?column?".to_string());
                         out_cols.push(col_name);
-                        let val = eval_datum_expr(expr, &[], &[]);
+                        let materialized = self.materialize_subqueries(expr)?;
+                        let val = eval_datum_expr(&materialized, &[], &[]);
                         out_vals.push(val.to_string());
                     }
                     SelectItem::Wildcard(_) => {
@@ -381,7 +510,12 @@ impl PersistentEngine {
         };
         validate_select_columns(select, &rowset.columns)?;
 
-        let mut filtered: Vec<Vec<Datum>> = if let Some(w) = &select.where_clause {
+        let materialized_where = if let Some(w) = &select.where_clause {
+            Some(self.materialize_subqueries(w)?)
+        } else {
+            None
+        };
+        let mut filtered: Vec<Vec<Datum>> = if let Some(w) = &materialized_where {
             rowset
                 .rows
                 .into_iter()
@@ -1045,12 +1179,16 @@ impl PersistentEngine {
             validate_expr_columns(&columns, where_expr)?;
         }
 
+        let materialized_where = if let Some(w) = &delete.where_clause {
+            Some(self.materialize_subqueries(w)?)
+        } else {
+            None
+        };
         let all_rows = self.store.scan_table(table_name)?;
         let mut to_delete = Vec::new();
 
         for (rowid, datums) in &all_rows {
-            let matches = delete
-                .where_clause
+            let matches = materialized_where
                 .as_ref()
                 .is_none_or(|expr| eval_where_datums(expr, &columns, datums));
             if matches {
@@ -1187,38 +1325,268 @@ fn eval_datum_expr(expr: &Expr, columns: &[ColumnBinding], row: &[Datum]) -> Dat
             Datum::Boolean(if *negated { !matched } else { matched })
         }
         Expr::Parenthesized { expr: inner, .. } => eval_datum_expr(inner, columns, row),
-        Expr::FunctionCall { name, args, .. } => match name.value.to_ascii_lowercase().as_str() {
-            "lower" => args
-                .first()
-                .map(|a| match eval_datum_expr(a, columns, row) {
-                    Datum::Text(s) => Datum::Text(s.to_lowercase()),
-                    other => other,
-                })
-                .unwrap_or(Datum::Null),
-            "upper" => args
-                .first()
-                .map(|a| match eval_datum_expr(a, columns, row) {
-                    Datum::Text(s) => Datum::Text(s.to_uppercase()),
-                    other => other,
-                })
-                .unwrap_or(Datum::Null),
-            "coalesce" => args
+        Expr::FunctionCall { name, args, .. } => {
+            eval_scalar_fn(&name.value.to_ascii_lowercase(), args, columns, row)
+        }
+        Expr::Cast {
+            expr: inner,
+            data_type,
+            ..
+        } => {
+            let inner_val = eval_datum_expr(inner, columns, row);
+            let type_name = data_type
+                .tokens
                 .iter()
-                .map(|arg| eval_datum_expr(arg, columns, row))
-                .find(|value| !matches!(value, Datum::Null))
-                .unwrap_or(Datum::Null),
-            "length" => args
-                .first()
-                .map(|arg| match eval_datum_expr(arg, columns, row) {
-                    Datum::Text(value) => Datum::Integer(value.chars().count() as i64),
-                    _ => Datum::Null,
-                })
-                .unwrap_or(Datum::Null),
-            "case" => eval_case_function(args, columns, row),
+                .map(|t| t.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_uppercase();
+            match type_name.as_str() {
+                "INTEGER" | "INT" | "BIGINT" | "SMALLINT" => match &inner_val {
+                    Datum::Integer(_) => inner_val,
+                    Datum::Text(s) => s
+                        .trim()
+                        .parse::<i64>()
+                        .map(Datum::Integer)
+                        .unwrap_or(Datum::Null),
+                    Datum::Boolean(b) => Datum::Integer(if *b { 1 } else { 0 }),
+                    Datum::Real(f) => Datum::Integer(*f as i64),
+                    Datum::Null => Datum::Null,
+                    _ => inner_val,
+                },
+                "TEXT" | "VARCHAR" | "CHAR" => match &inner_val {
+                    Datum::Integer(i) => Datum::Text(i.to_string()),
+                    Datum::Real(f) => Datum::Text(f.to_string()),
+                    Datum::Boolean(b) => Datum::Text(b.to_string()),
+                    Datum::Null => Datum::Null,
+                    _ => inner_val,
+                },
+                "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" | "DECIMAL" => match &inner_val {
+                    Datum::Real(_) => inner_val,
+                    Datum::Integer(i) => Datum::Real(*i as f64),
+                    Datum::Text(s) => s
+                        .trim()
+                        .parse::<f64>()
+                        .map(Datum::Real)
+                        .unwrap_or(Datum::Null),
+                    Datum::Null => Datum::Null,
+                    _ => inner_val,
+                },
+                "BOOLEAN" | "BOOL" => match &inner_val {
+                    Datum::Boolean(_) => inner_val,
+                    Datum::Integer(i) => Datum::Boolean(*i != 0),
+                    Datum::Text(s) => match s.to_lowercase().as_str() {
+                        "true" | "t" | "1" | "yes" => Datum::Boolean(true),
+                        "false" | "f" | "0" | "no" => Datum::Boolean(false),
+                        _ => Datum::Null,
+                    },
+                    Datum::Null => Datum::Null,
+                    _ => inner_val,
+                },
+                _ => inner_val, // passthrough for unrecognized types
+            }
+        }
+        Expr::Star(_) => Datum::Null,
+        Expr::Subquery { .. } | Expr::InSubquery { .. } => {
+            // Subquery evaluation not yet implemented in this code path.
+            // Subquery execution is handled at a higher level.
+            Datum::Null
+        }
+    }
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02X}")).collect()
+}
+
+fn eval_scalar_fn(name: &str, args: &[Expr], columns: &[ColumnBinding], row: &[Datum]) -> Datum {
+    // Helper: evaluate first arg (or return Null).
+    let arg0 = || {
+        args.first()
+            .map(|a| eval_datum_expr(a, columns, row))
+            .unwrap_or(Datum::Null)
+    };
+    let arg1 = || {
+        args.get(1)
+            .map(|a| eval_datum_expr(a, columns, row))
+            .unwrap_or(Datum::Null)
+    };
+    let arg2 = || {
+        args.get(2)
+            .map(|a| eval_datum_expr(a, columns, row))
+            .unwrap_or(Datum::Null)
+    };
+
+    match name {
+        "lower" => match arg0() {
+            Datum::Text(s) => Datum::Text(s.to_lowercase()),
+            Datum::Null => Datum::Null,
+            other => other,
+        },
+        "upper" => match arg0() {
+            Datum::Text(s) => Datum::Text(s.to_uppercase()),
+            Datum::Null => Datum::Null,
+            other => other,
+        },
+        "coalesce" => args
+            .iter()
+            .map(|a| eval_datum_expr(a, columns, row))
+            .find(|v| !matches!(v, Datum::Null))
+            .unwrap_or(Datum::Null),
+        "length" => match arg0() {
+            Datum::Text(s) => Datum::Integer(s.chars().count() as i64),
+            Datum::Null => Datum::Null,
             _ => Datum::Null,
         },
-        Expr::Cast { expr: inner, .. } => eval_datum_expr(inner, columns, row),
-        Expr::Star(_) => Datum::Null,
+        "case" => eval_case_function(args, columns, row),
+        "substr" | "substring" => {
+            let val = arg0();
+            let start = arg1();
+            match (val, start) {
+                (Datum::Text(s), Datum::Integer(start)) => {
+                    let start_idx = (start.max(1) - 1) as usize;
+                    let chars: Vec<char> = s.chars().collect();
+                    match arg2() {
+                        Datum::Integer(len) => {
+                            let end_idx = (start_idx + len.max(0) as usize).min(chars.len());
+                            Datum::Text(chars[start_idx.min(chars.len())..end_idx].iter().collect())
+                        }
+                        _ => Datum::Text(chars[start_idx.min(chars.len())..].iter().collect()),
+                    }
+                }
+                (Datum::Null, _) | (_, Datum::Null) => Datum::Null,
+                _ => Datum::Null,
+            }
+        }
+        "trim" => match arg0() {
+            Datum::Text(s) => Datum::Text(s.trim().to_string()),
+            Datum::Null => Datum::Null,
+            other => other,
+        },
+        "ltrim" => match arg0() {
+            Datum::Text(s) => Datum::Text(s.trim_start().to_string()),
+            Datum::Null => Datum::Null,
+            other => other,
+        },
+        "rtrim" => match arg0() {
+            Datum::Text(s) => Datum::Text(s.trim_end().to_string()),
+            Datum::Null => Datum::Null,
+            other => other,
+        },
+        "replace" => {
+            let val = arg0();
+            let from = arg1();
+            let to = arg2();
+            match (val, from, to) {
+                (Datum::Text(s), Datum::Text(from), Datum::Text(to)) => {
+                    Datum::Text(s.replace(&from, &to))
+                }
+                (Datum::Null, _, _) => Datum::Null,
+                _ => Datum::Null,
+            }
+        }
+        "abs" => match arg0() {
+            Datum::Integer(i) => Datum::Integer(i.abs()),
+            Datum::Real(f) => Datum::Real(f.abs()),
+            Datum::Null => Datum::Null,
+            _ => Datum::Null,
+        },
+        "round" => {
+            let val = arg0();
+            match val {
+                Datum::Real(f) => match arg1() {
+                    Datum::Integer(places) => {
+                        let factor = 10f64.powi(places as i32);
+                        Datum::Real((f * factor).round() / factor)
+                    }
+                    _ => Datum::Real(f.round()),
+                },
+                Datum::Integer(i) => Datum::Integer(i),
+                Datum::Null => Datum::Null,
+                _ => Datum::Null,
+            }
+        }
+        "typeof" => match arg0() {
+            Datum::Integer(_) => Datum::Text("integer".to_string()),
+            Datum::Real(_) => Datum::Text("real".to_string()),
+            Datum::Text(_) => Datum::Text("text".to_string()),
+            Datum::Boolean(_) => Datum::Text("boolean".to_string()),
+            Datum::Null => Datum::Text("null".to_string()),
+            Datum::Blob(_) => Datum::Text("blob".to_string()),
+        },
+        "nullif" => {
+            let a = arg0();
+            let b = arg1();
+            if a == b { Datum::Null } else { a }
+        }
+        "ifnull" => {
+            let a = arg0();
+            if matches!(a, Datum::Null) { arg1() } else { a }
+        }
+        "concat" => {
+            let mut result = String::new();
+            for a in args {
+                match eval_datum_expr(a, columns, row) {
+                    Datum::Null => return Datum::Null,
+                    Datum::Text(s) => result.push_str(&s),
+                    Datum::Integer(i) => result.push_str(&i.to_string()),
+                    Datum::Real(f) => result.push_str(&f.to_string()),
+                    Datum::Boolean(b) => result.push_str(&b.to_string()),
+                    Datum::Blob(b) => result.push_str(&format!("x'{}'", bytes_to_hex(&b))),
+                }
+            }
+            Datum::Text(result)
+        }
+        "hex" => match arg0() {
+            Datum::Text(s) => Datum::Text(bytes_to_hex(s.as_bytes()).to_uppercase()),
+            Datum::Blob(b) => Datum::Text(bytes_to_hex(&b).to_uppercase()),
+            Datum::Null => Datum::Null,
+            _ => Datum::Null,
+        },
+        "quote" => match arg0() {
+            Datum::Text(s) => Datum::Text(format!("'{}'", s.replace('\'', "''"))),
+            Datum::Null => Datum::Text("NULL".to_string()),
+            Datum::Integer(i) => Datum::Text(i.to_string()),
+            Datum::Real(f) => Datum::Text(f.to_string()),
+            Datum::Boolean(b) => Datum::Text(b.to_string()),
+            Datum::Blob(b) => Datum::Text(format!("x'{}'", bytes_to_hex(&b))),
+        },
+        "instr" => {
+            let haystack = arg0();
+            let needle = arg1();
+            match (haystack, needle) {
+                (Datum::Text(h), Datum::Text(n)) => match h.find(&n) {
+                    Some(pos) => Datum::Integer(h[..pos].chars().count() as i64 + 1),
+                    None => Datum::Integer(0),
+                },
+                (Datum::Null, _) | (_, Datum::Null) => Datum::Null,
+                _ => Datum::Null,
+            }
+        }
+        // scalar min/max with 2 args (not aggregates)
+        "min" if args.len() == 2 => {
+            let a = arg0();
+            let b = arg1();
+            match (&a, &b) {
+                (Datum::Null, _) | (_, Datum::Null) => Datum::Null,
+                (Datum::Integer(x), Datum::Integer(y)) => Datum::Integer(*x.min(y)),
+                (Datum::Real(x), Datum::Real(y)) => Datum::Real(x.min(*y)),
+                (Datum::Text(x), Datum::Text(y)) => Datum::Text(x.min(y).clone()),
+                _ => a,
+            }
+        }
+        "max" if args.len() == 2 => {
+            let a = arg0();
+            let b = arg1();
+            match (&a, &b) {
+                (Datum::Null, _) | (_, Datum::Null) => Datum::Null,
+                (Datum::Integer(x), Datum::Integer(y)) => Datum::Integer(*x.max(y)),
+                (Datum::Real(x), Datum::Real(y)) => Datum::Real(x.max(*y)),
+                (Datum::Text(x), Datum::Text(y)) => Datum::Text(x.max(y).clone()),
+                _ => a,
+            }
+        }
+        _ => Datum::Null,
     }
 }
 
@@ -1586,6 +1954,8 @@ fn validate_expr_columns(columns: &[ColumnBinding], expr: &Expr) -> Result<()> {
             }
             Ok(())
         }
+        Expr::Subquery { .. } => Ok(()), // subquery columns validated separately
+        Expr::InSubquery { expr, .. } => validate_expr_columns(columns, expr),
         Expr::Integer(_)
         | Expr::StringLit { .. }
         | Expr::Null(_)
@@ -2353,5 +2723,302 @@ mod tests {
             msg.contains("unsupported function") && msg.contains("foo"),
             "{msg}"
         );
+    }
+
+    #[test]
+    fn unique_index_enforced_on_insert_via_sql() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE t (id INTEGER, email TEXT)")
+            .unwrap();
+        engine.query("INSERT INTO t VALUES (1, 'a@x')").unwrap();
+        engine
+            .query("CREATE UNIQUE INDEX idx_email ON t (email)")
+            .unwrap();
+        // Duplicate should be rejected
+        let err = engine.query("INSERT INTO t VALUES (2, 'a@x')").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unique index"),
+            "expected unique index violation, got: {msg}"
+        );
+        // Different value should succeed
+        engine.query("INSERT INTO t VALUES (2, 'b@x')").unwrap();
+    }
+
+    #[test]
+    fn unique_index_enforced_on_update_via_sql() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE t (id INTEGER, email TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO t VALUES (1, 'a@x'), (2, 'b@x')")
+            .unwrap();
+        engine
+            .query("CREATE UNIQUE INDEX idx_email ON t (email)")
+            .unwrap();
+        let err = engine
+            .query("UPDATE t SET email = 'a@x' WHERE id = 2")
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unique index"),
+            "expected unique index violation, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn alter_table_drop_column_preserves_later_index() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE t (a INTEGER, b TEXT, c TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO t VALUES (1, 'drop_me', 'find_me')")
+            .unwrap();
+        engine.query("CREATE INDEX idx_c ON t (c)").unwrap();
+        engine.query("ALTER TABLE t DROP COLUMN b").unwrap();
+        // Index on c should still work
+        let result = engine.query("SELECT a FROM t WHERE c = 'find_me'").unwrap();
+        assert_eq!(
+            result,
+            QueryOutput::Rows {
+                columns: vec!["a".to_string()],
+                rows: vec![vec!["1".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn raw_unsupported_sql_returns_error() {
+        let (mut engine, _dir) = temp_engine();
+        // GRANT is not a recognized statement and falls through to Raw
+        let err = engine.query("GRANT SELECT ON t TO user1").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unsupported SQL"),
+            "expected unsupported SQL error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn cast_integer_to_text() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+        engine.query("INSERT INTO t VALUES (42)").unwrap();
+        let result = engine.query("SELECT CAST(x AS TEXT) FROM t").unwrap();
+        // Column name is "?column?" since CAST is an expression without alias
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows, &[vec!["42".to_string()]]);
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cast_text_to_integer() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (x TEXT)").unwrap();
+        engine.query("INSERT INTO t VALUES ('123')").unwrap();
+        let result = engine.query("SELECT CAST(x AS INTEGER) FROM t").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows, &[vec!["123".to_string()]]);
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_substr() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (s TEXT)").unwrap();
+        engine
+            .query("INSERT INTO t VALUES ('hello world')")
+            .unwrap();
+        let result = engine.query("SELECT substr(s, 7, 5) FROM t").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows, &[vec!["world".to_string()]]),
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_trim() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (s TEXT)").unwrap();
+        engine.query("INSERT INTO t VALUES ('  hello  ')").unwrap();
+        let result = engine.query("SELECT trim(s) FROM t").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows, &[vec!["hello".to_string()]]),
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_replace() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (s TEXT)").unwrap();
+        engine
+            .query("INSERT INTO t VALUES ('hello world')")
+            .unwrap();
+        let result = engine
+            .query("SELECT replace(s, 'world', 'rust') FROM t")
+            .unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows, &[vec!["hello rust".to_string()]]),
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_abs() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+        engine.query("INSERT INTO t VALUES (-42)").unwrap();
+        let result = engine.query("SELECT abs(x) FROM t").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows, &[vec!["42".to_string()]]),
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_typeof() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (x INTEGER, s TEXT)").unwrap();
+        engine.query("INSERT INTO t VALUES (1, 'hi')").unwrap();
+        let result = engine.query("SELECT typeof(x), typeof(s) FROM t").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows, &[vec!["integer".to_string(), "text".to_string()]]);
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_nullif() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+        engine.query("INSERT INTO t VALUES (1), (0)").unwrap();
+        let result = engine
+            .query("SELECT nullif(x, 0) FROM t ORDER BY x")
+            .unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows, &[vec!["NULL".to_string()], vec!["1".to_string()]]);
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_instr() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (s TEXT)").unwrap();
+        engine
+            .query("INSERT INTO t VALUES ('hello world')")
+            .unwrap();
+        let result = engine.query("SELECT instr(s, 'world') FROM t").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows, &[vec!["7".to_string()]]),
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_functions_null_propagation() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (x TEXT)").unwrap();
+        engine.query("INSERT INTO t VALUES (NULL)").unwrap();
+        // All these should return NULL
+        for fn_call in [
+            "length(x)",
+            "substr(x, 1, 2)",
+            "trim(x)",
+            "replace(x, 'a', 'b')",
+            "lower(x)",
+            "upper(x)",
+            "instr(x, 'a')",
+        ] {
+            let result = engine.query(&format!("SELECT {fn_call} FROM t")).unwrap();
+            match &result {
+                QueryOutput::Rows { rows, .. } => {
+                    assert_eq!(
+                        rows,
+                        &[vec!["NULL".to_string()]],
+                        "NULL propagation failed for {fn_call}"
+                    );
+                }
+                other => panic!("expected Rows for {fn_call}, got: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn in_subquery_basic() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE users (id INTEGER, name TEXT)")
+            .unwrap();
+        engine
+            .query("CREATE TABLE admins (user_id INTEGER)")
+            .unwrap();
+        engine
+            .query("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')")
+            .unwrap();
+        engine.query("INSERT INTO admins VALUES (1), (3)").unwrap();
+        let result = engine
+            .query("SELECT name FROM users WHERE id IN (SELECT user_id FROM admins) ORDER BY name")
+            .unwrap();
+        assert_eq!(
+            result,
+            QueryOutput::Rows {
+                columns: vec!["name".to_string()],
+                rows: vec![vec!["Alice".to_string()], vec!["Carol".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn not_in_subquery() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE users (id INTEGER, name TEXT)")
+            .unwrap();
+        engine
+            .query("CREATE TABLE admins (user_id INTEGER)")
+            .unwrap();
+        engine
+            .query("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')")
+            .unwrap();
+        engine.query("INSERT INTO admins VALUES (1), (3)").unwrap();
+        let result = engine
+            .query("SELECT name FROM users WHERE id NOT IN (SELECT user_id FROM admins)")
+            .unwrap();
+        assert_eq!(
+            result,
+            QueryOutput::Rows {
+                columns: vec!["name".to_string()],
+                rows: vec![vec!["Bob".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn scalar_subquery_in_projection() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+        engine.query("INSERT INTO t VALUES (1), (2), (3)").unwrap();
+        let result = engine.query("SELECT (SELECT count(*) FROM t)").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows, &[vec!["3".to_string()]]);
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
     }
 }

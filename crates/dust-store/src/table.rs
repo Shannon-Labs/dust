@@ -35,7 +35,6 @@ struct SecondaryIndexMeta {
     btree: BTree,
     table: String,
     column_index: usize,
-    #[allow(dead_code)]
     unique: bool,
 }
 
@@ -214,6 +213,15 @@ impl TableEngine {
         meta.columns.remove(index);
         self.meta_dirty = true;
 
+        // Update stale column_index in secondary indexes for this table.
+        // Any index pointing at a column after the dropped one needs its
+        // column_index decremented.
+        for idx_meta in self.secondary_indexes.values_mut() {
+            if idx_meta.table == table && idx_meta.column_index > index {
+                idx_meta.column_index -= 1;
+            }
+        }
+
         for (rowid, mut values) in rows {
             values.remove(index);
             self.update_row(table, rowid, values)?;
@@ -358,7 +366,7 @@ impl TableEngine {
     ) -> Result<()> {
         let names = self.secondary_index_names_for_table(table);
         for name in names {
-            let key = {
+            let (key, needs_unique_check) = {
                 let meta = self.secondary_indexes.get(&name).ok_or_else(|| {
                     DustError::Message("secondary index disappeared during insert".to_string())
                 })?;
@@ -366,8 +374,24 @@ impl TableEngine {
                     .get(meta.column_index)
                     .cloned()
                     .unwrap_or(Datum::Null);
-                secondary_index_key(&d, rowid)
+                let unique = meta.unique && !matches!(d, Datum::Null);
+                (secondary_index_key(&d, rowid), unique)
             };
+            // Enforce UNIQUE constraint before inserting
+            if needs_unique_check {
+                let d = values
+                    .get(self.secondary_indexes[&name].column_index)
+                    .cloned()
+                    .unwrap_or(Datum::Null);
+                let prefix = secondary_index_value_prefix(&d);
+                let root = self.secondary_indexes[&name].btree.root_page_id();
+                let existing = BTree::open(root).scan_key_prefix(&mut self.pager, &prefix)?;
+                if !existing.is_empty() {
+                    return Err(DustError::InvalidInput(format!(
+                        "duplicate key violates unique index `{name}`"
+                    )));
+                }
+            }
             let meta = self.secondary_indexes.get_mut(&name).unwrap();
             meta.btree.insert(&mut self.pager, &key, b"")?;
         }
@@ -864,5 +888,107 @@ mod tests {
         engine.create_table("a", vec!["x".to_string()]).unwrap();
         engine.create_table("b", vec!["x".to_string()]).unwrap();
         assert_eq!(engine.table_names(), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn unique_secondary_index_rejects_duplicate_on_insert() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .create_table("t", vec!["id".to_string(), "email".to_string()])
+            .unwrap();
+        engine
+            .insert_row("t", vec![Datum::Integer(1), Datum::Text("a@x".to_string())])
+            .unwrap();
+
+        // Build a UNIQUE secondary index on email
+        let root = engine.create_secondary_index("t", 1, true).unwrap();
+        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), 1, root, true);
+
+        // Insert with same email value should fail
+        let err = engine
+            .insert_row("t", vec![Datum::Integer(2), Datum::Text("a@x".to_string())])
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("unique index"),
+            "expected unique violation, got: {err}"
+        );
+
+        // Insert with different value should succeed
+        engine
+            .insert_row("t", vec![Datum::Integer(2), Datum::Text("b@x".to_string())])
+            .unwrap();
+
+        // NULL values should not trigger unique violation
+        engine
+            .insert_row("t", vec![Datum::Integer(3), Datum::Null])
+            .unwrap();
+        engine
+            .insert_row("t", vec![Datum::Integer(4), Datum::Null])
+            .unwrap();
+    }
+
+    #[test]
+    fn unique_secondary_index_rejects_duplicate_on_update() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .create_table("t", vec!["id".to_string(), "email".to_string()])
+            .unwrap();
+        engine
+            .insert_row("t", vec![Datum::Integer(1), Datum::Text("a@x".to_string())])
+            .unwrap();
+        let r2 = engine
+            .insert_row("t", vec![Datum::Integer(2), Datum::Text("b@x".to_string())])
+            .unwrap();
+
+        let root = engine.create_secondary_index("t", 1, true).unwrap();
+        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), 1, root, true);
+
+        // Update row 2 to have same email as row 1 should fail
+        let err = engine
+            .update_row(
+                "t",
+                r2,
+                vec![Datum::Integer(2), Datum::Text("a@x".to_string())],
+            )
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("unique index"),
+            "expected unique violation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn drop_column_updates_secondary_index_column_index() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .create_table("t", vec!["a".to_string(), "b".to_string(), "c".to_string()])
+            .unwrap();
+        engine
+            .insert_row(
+                "t",
+                vec![
+                    Datum::Integer(1),
+                    Datum::Text("drop_me".to_string()),
+                    Datum::Text("keep".to_string()),
+                ],
+            )
+            .unwrap();
+
+        // Index on column "c" (index 2)
+        let root = engine.create_secondary_index("t", 2, false).unwrap();
+        engine.register_secondary_index("idx_c".to_string(), "t".to_string(), 2, root, false);
+
+        // Drop column "b" (index 1). Column "c" shifts from index 2 to index 1.
+        engine.drop_column("t", "b").unwrap();
+
+        // Verify index still works for lookups on what was column "c"
+        let rowids = engine
+            .secondary_lookup_rowids("idx_c", &Datum::Text("keep".to_string()))
+            .unwrap();
+        assert_eq!(
+            rowids.len(),
+            1,
+            "index lookup should still work after drop_column"
+        );
     }
 }

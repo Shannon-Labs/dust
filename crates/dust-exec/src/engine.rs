@@ -131,7 +131,10 @@ impl ExecutionEngine {
             AstStatement::Begin(_) => Ok(QueryOutput::Message("BEGIN".to_string())),
             AstStatement::Commit(_) => Ok(QueryOutput::Message("COMMIT".to_string())),
             AstStatement::Rollback(_) => Ok(QueryOutput::Message("ROLLBACK".to_string())),
-            AstStatement::Raw(raw) => Ok(QueryOutput::Message(format!("planned: {}", raw.sql))),
+            AstStatement::Raw(raw) => Err(DustError::UnsupportedQuery(format!(
+                "unsupported SQL: {}",
+                raw.sql
+            ))),
         }
     }
 
@@ -508,6 +511,7 @@ fn eval_expr_to_value(expr: &Expr, columns: &[String], row: &[Value]) -> Value {
         }
         Expr::Cast { expr: inner, .. } => eval_expr_to_value(inner, columns, row),
         Expr::Star(_) => Value::Null,
+        Expr::Subquery { .. } | Expr::InSubquery { .. } => Value::Null,
     }
 }
 

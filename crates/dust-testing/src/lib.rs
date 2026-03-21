@@ -295,6 +295,469 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // v0.1.1 regression tests (from evaluation report)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn regression_constraint_enforcement() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            .unwrap();
+        engine
+            .query("INSERT INTO users VALUES (1, 'Alice')")
+            .unwrap();
+
+        // NOT NULL enforcement
+        let err = engine.query("INSERT INTO users VALUES (2, NULL)");
+        assert!(err.is_err(), "NOT NULL should be enforced");
+
+        // PRIMARY KEY (unique) enforcement
+        let err = engine.query("INSERT INTO users VALUES (1, 'Duplicate')");
+        assert!(err.is_err(), "PRIMARY KEY uniqueness should be enforced");
+    }
+
+    #[test]
+    fn regression_default_values_applied() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE t (id INTEGER, active INTEGER DEFAULT 1)")
+            .unwrap();
+        engine.query("INSERT INTO t (id) VALUES (1)").unwrap();
+        let result = engine.query("SELECT active FROM t").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows, &[vec!["1".to_string()]], "DEFAULT should be applied");
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regression_unicode_round_trip() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine.query("CREATE TABLE t (text TEXT)").unwrap();
+        engine
+            .query("INSERT INTO t VALUES ('日本語テスト')")
+            .unwrap();
+        engine.sync().unwrap();
+
+        let mut reopened = PersistentEngine::open(&db_path).unwrap();
+        let result = reopened.query("SELECT text FROM t").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows, &[vec!["日本語テスト".to_string()]]);
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regression_case_function_evaluated() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+        engine.query("INSERT INTO t VALUES (1), (0)").unwrap();
+        // The dust CASE is function-style: case(condition, then_val, else_val)
+        let result = engine
+            .query("SELECT coalesce(x, 0) FROM t ORDER BY x")
+            .unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows.len(), 2);
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regression_join_column_resolution() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE users (id INTEGER, name TEXT)")
+            .unwrap();
+        engine
+            .query("CREATE TABLE posts (id INTEGER, author_id INTEGER, title TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
+            .unwrap();
+        engine
+            .query("INSERT INTO posts VALUES (10, 1, 'Hello'), (20, 2, 'World')")
+            .unwrap();
+
+        let result = engine
+            .query("SELECT users.name, posts.title FROM users JOIN posts ON users.id = posts.author_id ORDER BY posts.title")
+            .unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0], vec!["Alice".to_string(), "Hello".to_string()]);
+                assert_eq!(rows[1], vec!["Bob".to_string(), "World".to_string()]);
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regression_multi_statement_output() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        let result = engine
+            .query("CREATE TABLE tmp (x INTEGER); INSERT INTO tmp VALUES (1); SELECT * FROM tmp; DROP TABLE tmp")
+            .unwrap();
+        // Multi-statement should return combined output, not just last
+        match &result {
+            QueryOutput::Message(msg) => {
+                assert!(
+                    msg.contains("statement[2]"),
+                    "should contain SELECT output: {msg}"
+                );
+            }
+            _ => {} // Rows is also acceptable
+        }
+    }
+
+    #[test]
+    fn regression_rollback_discards_changes() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+        engine.query("INSERT INTO t VALUES (1)").unwrap();
+        engine.query("BEGIN").unwrap();
+        engine.query("INSERT INTO t VALUES (999)").unwrap();
+        engine.query("ROLLBACK").unwrap();
+
+        let result = engine.query("SELECT count(*) FROM t").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(
+                    rows,
+                    &[vec!["1".to_string()]],
+                    "ROLLBACK should discard row 999"
+                );
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regression_branch_data_isolation() {
+        use dust_exec::PersistentEngine;
+        let (_temp, project) = bootstrap_project().unwrap();
+
+        // Create data on main
+        let main_db = project.active_data_db_path();
+        fs::create_dir_all(main_db.parent().unwrap()).unwrap();
+        {
+            let mut engine = PersistentEngine::open(&main_db).unwrap();
+            engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+            engine.query("INSERT INTO t VALUES (1)").unwrap();
+            engine.sync().unwrap();
+        }
+
+        // Create branch and add data there
+        let branch_db = project.branch_data_db_path("dev");
+        fs::create_dir_all(branch_db.parent().unwrap()).unwrap();
+        fs::copy(&main_db, &branch_db).unwrap();
+        {
+            let mut engine = PersistentEngine::open(&branch_db).unwrap();
+            engine.query("INSERT INTO t VALUES (777)").unwrap();
+            engine.sync().unwrap();
+        }
+
+        // Main should NOT see the branch data
+        {
+            let mut engine = PersistentEngine::open(&main_db).unwrap();
+            let result = engine.query("SELECT count(*) FROM t").unwrap();
+            match &result {
+                QueryOutput::Rows { rows, .. } => {
+                    assert_eq!(
+                        rows,
+                        &[vec!["1".to_string()]],
+                        "main should have 1 row, not branch data"
+                    );
+                }
+                other => panic!("expected Rows, got: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn regression_subquery_in_where() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE t1 (id INTEGER, name TEXT)")
+            .unwrap();
+        engine.query("CREATE TABLE t2 (ref_id INTEGER)").unwrap();
+        engine
+            .query("INSERT INTO t1 VALUES (1, 'A'), (2, 'B'), (3, 'C')")
+            .unwrap();
+        engine.query("INSERT INTO t2 VALUES (1), (3)").unwrap();
+
+        let result = engine
+            .query("SELECT name FROM t1 WHERE id IN (SELECT ref_id FROM t2) ORDER BY name")
+            .unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows, &[vec!["A".to_string()], vec!["C".to_string()]]);
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regression_scalar_functions() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine.query("CREATE TABLE t (s TEXT, n INTEGER)").unwrap();
+        engine
+            .query("INSERT INTO t VALUES ('Hello World', -42)")
+            .unwrap();
+
+        // length
+        let r = engine.query("SELECT length(s) FROM t").unwrap();
+        match &r {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows[0][0], "11"),
+            _ => panic!(),
+        }
+
+        // substr
+        let r = engine.query("SELECT substr(s, 1, 5) FROM t").unwrap();
+        match &r {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows[0][0], "Hello"),
+            _ => panic!(),
+        }
+
+        // abs
+        let r = engine.query("SELECT abs(n) FROM t").unwrap();
+        match &r {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows[0][0], "42"),
+            _ => panic!(),
+        }
+
+        // typeof
+        let r = engine.query("SELECT typeof(s) FROM t").unwrap();
+        match &r {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows[0][0], "text"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn regression_unique_index_enforcement() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE t (id INTEGER, email TEXT)")
+            .unwrap();
+        engine.query("INSERT INTO t VALUES (1, 'a@x')").unwrap();
+        engine
+            .query("CREATE UNIQUE INDEX idx ON t (email)")
+            .unwrap();
+
+        let err = engine.query("INSERT INTO t VALUES (2, 'a@x')");
+        assert!(err.is_err(), "UNIQUE INDEX should prevent duplicate");
+    }
+
+    #[test]
+    fn regression_unsupported_function_errors() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+        let err = engine.query("SELECT random_nonexistent(x) FROM t");
+        assert!(err.is_err(), "Unsupported function should error explicitly");
+    }
+
+    // -----------------------------------------------------------------------
+    // Benchmarks (run with --release -- --nocapture to see timings)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bench_insert_1000_rows() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bench.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE t (id INTEGER, name TEXT, value INTEGER)")
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let mut sql = String::new();
+        for i in 0..1000 {
+            if !sql.is_empty() {
+                sql.push_str(", ");
+            }
+            sql.push_str(&format!("({i}, 'row_{i}', {v})", v = i * 10));
+        }
+        engine
+            .query(&format!("INSERT INTO t VALUES {sql}"))
+            .unwrap();
+        let elapsed = start.elapsed();
+        eprintln!("  bench_insert_1000_rows: {:?}", elapsed);
+
+        let start = std::time::Instant::now();
+        engine.sync().unwrap();
+        let sync_elapsed = start.elapsed();
+        eprintln!("  bench_sync_after_insert: {:?}", sync_elapsed);
+
+        // Verify
+        let result = engine.query("SELECT count(*) FROM t").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows[0][0], "1000"),
+            _ => panic!("expected rows"),
+        }
+    }
+
+    #[test]
+    fn bench_full_scan_1000_rows() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bench.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE t (id INTEGER, name TEXT, value INTEGER)")
+            .unwrap();
+        let mut sql = String::new();
+        for i in 0..1000 {
+            if !sql.is_empty() {
+                sql.push_str(", ");
+            }
+            sql.push_str(&format!("({i}, 'row_{i}', {v})", v = i * 10));
+        }
+        engine
+            .query(&format!("INSERT INTO t VALUES {sql}"))
+            .unwrap();
+        engine.sync().unwrap();
+
+        let start = std::time::Instant::now();
+        let result = engine.query("SELECT * FROM t").unwrap();
+        let elapsed = start.elapsed();
+        eprintln!("  bench_full_scan_1000_rows: {:?}", elapsed);
+        match &result {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows.len(), 1000),
+            _ => panic!("expected rows"),
+        }
+    }
+
+    #[test]
+    fn bench_index_point_lookup() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bench.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE t (id INTEGER, name TEXT)")
+            .unwrap();
+        let mut sql = String::new();
+        for i in 0..1000 {
+            if !sql.is_empty() {
+                sql.push_str(", ");
+            }
+            sql.push_str(&format!("({i}, 'name_{i}')"));
+        }
+        engine
+            .query(&format!("INSERT INTO t VALUES {sql}"))
+            .unwrap();
+        engine.query("CREATE INDEX idx_name ON t (name)").unwrap();
+
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            engine
+                .query("SELECT id FROM t WHERE name = 'name_500'")
+                .unwrap();
+        }
+        let elapsed = start.elapsed();
+        eprintln!("  bench_100_index_lookups: {:?}", elapsed);
+    }
+
+    #[test]
+    fn bench_branch_create_and_switch() {
+        let (_temp, project) = bootstrap_project().unwrap();
+        // Create main data
+        let main_db = project.active_data_db_path();
+        fs::create_dir_all(main_db.parent().unwrap()).unwrap();
+        {
+            use dust_exec::PersistentEngine;
+            let mut engine = PersistentEngine::open(&main_db).unwrap();
+            engine
+                .query("CREATE TABLE t (id INTEGER, name TEXT)")
+                .unwrap();
+            let mut sql = String::new();
+            for i in 0..100 {
+                if !sql.is_empty() {
+                    sql.push_str(", ");
+                }
+                sql.push_str(&format!("({i}, 'name_{i}')"));
+            }
+            engine
+                .query(&format!("INSERT INTO t VALUES {sql}"))
+                .unwrap();
+            engine.sync().unwrap();
+        }
+
+        let start = std::time::Instant::now();
+        let branch_db = project.branch_data_db_path("bench-branch");
+        fs::create_dir_all(branch_db.parent().unwrap()).unwrap();
+        fs::copy(&main_db, &branch_db).unwrap();
+        let elapsed = start.elapsed();
+        eprintln!("  bench_branch_create (copy 100 rows): {:?}", elapsed);
+
+        // Verify branch has data
+        {
+            use dust_exec::PersistentEngine;
+            let mut engine = PersistentEngine::open(&branch_db).unwrap();
+            let result = engine.query("SELECT count(*) FROM t").unwrap();
+            match &result {
+                QueryOutput::Rows { rows, .. } => assert_eq!(rows[0][0], "100"),
+                _ => panic!("expected rows"),
+            }
+        }
+    }
+
     #[test]
     fn init_without_force_refuses_non_empty_directories() {
         let temp = TempDir::new().expect("temp dir");

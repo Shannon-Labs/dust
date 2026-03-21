@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use clap::Args;
 use dust_exec::PersistentEngine;
-use dust_types::Result;
+use dust_types::{Result, SchemaFingerprint};
 
-use crate::project::find_db_path;
+use crate::project::{find_db_path, find_project_root, read_current_branch, refs_dir};
 
 #[derive(Debug, Args)]
 pub struct StatusArgs {
@@ -21,15 +21,42 @@ pub fn run(args: StatusArgs) -> Result<()> {
         return Ok(());
     }
 
+    // Show current branch
+    if let Some(root) = find_project_root(&args.path) {
+        let branch = read_current_branch(&refs_dir(&root));
+        println!("Branch: {branch}");
+    } else {
+        println!("Branch: main (default)");
+    }
+
+    // Show database path
+    println!("Database: {}", db_path.display());
+
     let mut engine = PersistentEngine::open(&db_path)?;
     let tables = engine.table_names();
 
     if tables.is_empty() {
-        println!("No tables. Run `dust query \"CREATE TABLE ...\"` to get started.");
+        println!("\nNo tables. Run `dust query \"CREATE TABLE ...\"` to get started.");
         return Ok(());
     }
 
-    println!("Tables:");
+    // Compute schema fingerprint from table/column structure
+    let mut schema_desc = String::new();
+    for name in &tables {
+        schema_desc.push_str(name);
+        schema_desc.push(':');
+        // Get column names
+        if let Ok(dust_exec::QueryOutput::Rows { columns, .. }) =
+            engine.query(&format!("SELECT * FROM {name} WHERE 1=0"))
+        {
+            schema_desc.push_str(&columns.join(","));
+        }
+        schema_desc.push('\n');
+    }
+    let fingerprint = SchemaFingerprint::compute(schema_desc.as_bytes());
+    println!("Schema: {}", fingerprint.as_str());
+
+    println!("\nTables:");
     for name in &tables {
         let count = match engine.query(&format!("SELECT count(*) FROM {name}")) {
             Ok(dust_exec::QueryOutput::Rows { rows, .. }) => rows
@@ -50,7 +77,7 @@ pub fn run(args: StatusArgs) -> Result<()> {
     } else {
         format!("{:.1} MB", size_bytes as f64 / 1024.0 / 1024.0)
     };
-    println!("\nDatabase: {size_display}");
+    println!("\nSize: {size_display}");
 
     Ok(())
 }

@@ -266,6 +266,10 @@ fn validate_expr_columns(
         Expr::Parenthesized { expr: inner, .. } => {
             validate_expr_columns(table_name, columns, inner, result);
         }
+        Expr::Subquery { .. } => {} // subqueries don't reference outer columns (yet)
+        Expr::InSubquery { expr, .. } => {
+            validate_expr_columns(table_name, columns, expr, result);
+        }
         // Literals have no column references
         Expr::Integer(_)
         | Expr::StringLit { .. }
@@ -307,6 +311,8 @@ pub fn infer_type(expr: &Expr) -> InferredType {
         Expr::FunctionCall { .. } => InferredType::Unknown,
         Expr::Star(_) => InferredType::Unknown,
         Expr::Parenthesized { expr, .. } => infer_type(expr),
+        Expr::Subquery { .. } => InferredType::Unknown,
+        Expr::InSubquery { .. } => InferredType::Boolean,
     }
 }
 

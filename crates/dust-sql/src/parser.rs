@@ -119,6 +119,13 @@ impl<'a> Parser<'a> {
     // -----------------------------------------------------------------------
 
     fn parse_select(&mut self) -> Result<AstStatement> {
+        let stmt = self.parse_select_statement()?;
+        Ok(AstStatement::Select(Box::new(stmt)))
+    }
+
+    /// Parse a full SELECT statement, returning the `SelectStatement` directly.
+    /// Used both for top-level SELECT and for subqueries.
+    fn parse_select_statement(&mut self) -> Result<SelectStatement> {
         let start = self.expect_keyword(Keyword::Select)?.span.start;
 
         let distinct = self.eat_keyword(Keyword::Distinct)?;
@@ -188,7 +195,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.statement_end();
-        Ok(AstStatement::Select(Box::new(SelectStatement {
+        Ok(SelectStatement {
             distinct,
             projection,
             from,
@@ -200,7 +207,7 @@ impl<'a> Parser<'a> {
             limit,
             offset,
             span: Span::new(start, end),
-        })))
+        })
     }
 
     fn parse_select_items(&mut self) -> Result<Vec<SelectItem>> {
@@ -1002,7 +1009,7 @@ impl<'a> Parser<'a> {
             });
         }
 
-        // [NOT] IN (list)
+        // [NOT] IN (list | SELECT ...)
         let negated = self.peek_keyword() == Some(Keyword::Not);
         if negated {
             let saved = self.pos;
@@ -1010,6 +1017,17 @@ impl<'a> Parser<'a> {
             if self.peek_keyword() == Some(Keyword::In) {
                 self.bump();
                 self.expect_kind(TokenKind::LParen)?;
+                // Check for subquery: IN (SELECT ...)
+                if self.peek_keyword() == Some(Keyword::Select) {
+                    let query = self.parse_select_statement()?;
+                    let end = self.expect_kind(TokenKind::RParen)?.span.end;
+                    return Ok(Expr::InSubquery {
+                        span: Span::new(left.span().start, end),
+                        expr: Box::new(left),
+                        query: Box::new(query),
+                        negated: true,
+                    });
+                }
                 let list = self.parse_expression_list()?;
                 self.expect_kind(TokenKind::RParen)?;
                 let end = self
@@ -1052,6 +1070,17 @@ impl<'a> Parser<'a> {
         if self.peek_keyword() == Some(Keyword::In) {
             self.bump();
             self.expect_kind(TokenKind::LParen)?;
+            // Check for subquery: IN (SELECT ...)
+            if self.peek_keyword() == Some(Keyword::Select) {
+                let query = self.parse_select_statement()?;
+                let end = self.expect_kind(TokenKind::RParen)?.span.end;
+                return Ok(Expr::InSubquery {
+                    span: Span::new(left.span().start, end),
+                    expr: Box::new(left),
+                    query: Box::new(query),
+                    negated: false,
+                });
+            }
             let list = self.parse_expression_list()?;
             self.expect_kind(TokenKind::RParen)?;
             let end = self
@@ -1243,6 +1272,15 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LParen => {
                 let start = self.bump().expect("peeked").span.start;
+                // Scalar subquery: (SELECT ...)
+                if self.peek_keyword() == Some(Keyword::Select) {
+                    let query = self.parse_select_statement()?;
+                    let end = self.expect_kind(TokenKind::RParen)?.span.end;
+                    return Ok(Expr::Subquery {
+                        query: Box::new(query),
+                        span: Span::new(start, end),
+                    });
+                }
                 let inner = self.parse_expr()?;
                 let end = self.expect_kind(TokenKind::RParen)?.span.end;
                 Ok(Expr::Parenthesized {
@@ -2326,5 +2364,116 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         };
         assert!(select.distinct);
+    }
+
+    #[test]
+    fn parses_in_subquery() {
+        let sql = "SELECT * FROM t WHERE id IN (SELECT x FROM s)";
+        let program = parse_program(sql).unwrap();
+        let select = match &program.statements[0] {
+            AstStatement::Select(s) => s,
+            other => panic!("unexpected: {other:?}"),
+        };
+        let w = select.where_clause.as_ref().unwrap();
+        match w {
+            Expr::InSubquery {
+                expr,
+                query,
+                negated,
+                ..
+            } => {
+                assert!(!negated);
+                assert!(matches!(
+                    expr.as_ref(),
+                    Expr::ColumnRef(ColumnRef { column, table: None, .. })
+                    if column.value == "id"
+                ));
+                assert_eq!(query.from.as_ref().unwrap().table.value, "s");
+                assert_eq!(query.projection.len(), 1);
+                match &query.projection[0] {
+                    SelectItem::Expr {
+                        expr: Expr::ColumnRef(cref),
+                        ..
+                    } => assert_eq!(cref.column.value, "x"),
+                    other => panic!("expected column ref in subquery projection, got {other:?}"),
+                }
+            }
+            other => panic!("expected InSubquery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_not_in_subquery() {
+        let sql = "SELECT * FROM t WHERE id NOT IN (SELECT x FROM s)";
+        let program = parse_program(sql).unwrap();
+        let select = match &program.statements[0] {
+            AstStatement::Select(s) => s,
+            other => panic!("unexpected: {other:?}"),
+        };
+        let w = select.where_clause.as_ref().unwrap();
+        match w {
+            Expr::InSubquery {
+                expr,
+                query,
+                negated,
+                ..
+            } => {
+                assert!(negated);
+                assert!(matches!(
+                    expr.as_ref(),
+                    Expr::ColumnRef(ColumnRef { column, table: None, .. })
+                    if column.value == "id"
+                ));
+                assert_eq!(query.from.as_ref().unwrap().table.value, "s");
+            }
+            other => panic!("expected InSubquery (negated), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_scalar_subquery_in_projection() {
+        let sql = "SELECT (SELECT count(*) FROM t) AS cnt";
+        let program = parse_program(sql).unwrap();
+        let select = match &program.statements[0] {
+            AstStatement::Select(s) => s,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert_eq!(select.projection.len(), 1);
+        match &select.projection[0] {
+            SelectItem::Expr {
+                expr: Expr::Subquery { query, .. },
+                alias,
+                ..
+            } => {
+                assert_eq!(alias.as_ref().unwrap().value, "cnt");
+                assert_eq!(query.from.as_ref().unwrap().table.value, "t");
+                assert_eq!(query.projection.len(), 1);
+                match &query.projection[0] {
+                    SelectItem::Expr {
+                        expr: Expr::FunctionCall { name, args, .. },
+                        ..
+                    } => {
+                        assert_eq!(name.value, "count");
+                        assert_eq!(args.len(), 1);
+                        assert!(matches!(args[0], Expr::Star(_)));
+                    }
+                    other => panic!("expected count(*) in subquery, got {other:?}"),
+                }
+            }
+            other => panic!("expected scalar subquery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn in_literal_list_still_works_after_subquery_support() {
+        // Regression: make sure IN (1, 2, 3) still produces InList
+        let sql = "SELECT * FROM t WHERE x IN (1, 2, 3)";
+        let program = parse_program(sql).unwrap();
+        let select = match &program.statements[0] {
+            AstStatement::Select(s) => s,
+            other => panic!("unexpected: {other:?}"),
+        };
+        let w = select.where_clause.as_ref().unwrap();
+        assert!(matches!(w, Expr::InList { negated: false, list, .. } if list.len() == 3));
     }
 }

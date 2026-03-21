@@ -39,6 +39,14 @@ pub enum BranchCommand {
         /// Branch name to delete
         name: String,
     },
+    /// Compare two branches (schema + row count deltas)
+    Diff {
+        /// Source branch (default: main)
+        #[arg(default_value = "main")]
+        from: String,
+        /// Target branch (default: current)
+        to: Option<String>,
+    },
 }
 
 pub fn run(args: BranchArgs) -> Result<()> {
@@ -158,6 +166,33 @@ pub fn run(args: BranchArgs) -> Result<()> {
                 std::fs::remove_file(branch_schema_path)?;
             }
             println!("Deleted branch `{name}`");
+        }
+        BranchCommand::Diff { from, to } => {
+            let to_branch = to.unwrap_or_else(|| read_current_branch(&refs_dir));
+            let project = dust_core::ProjectPaths::new(&project_root);
+            let diff = project.diff_branches(&from, &to_branch)?;
+            if diff.table_diffs.is_empty() {
+                println!("No differences between `{from}` and `{to_branch}`");
+            } else {
+                println!("Diff: `{from}` -> `{to_branch}`");
+                println!();
+                for td in &diff.table_diffs {
+                    match (td.from_rows, td.to_rows) {
+                        (None, Some(count)) => {
+                            println!("  + {} ({count} rows)", td.name);
+                        }
+                        (Some(count), None) => {
+                            println!("  - {} ({count} rows)", td.name);
+                        }
+                        (Some(from_c), Some(to_c)) => {
+                            let delta = to_c as i64 - from_c as i64;
+                            let sign = if delta >= 0 { "+" } else { "" };
+                            println!("  ~ {} ({from_c} -> {to_c}, {sign}{delta} rows)", td.name);
+                        }
+                        (None, None) => {}
+                    }
+                }
+            }
         }
     }
 

@@ -1,0 +1,199 @@
+# Quickstart
+
+Get a branchable SQL database running in under a minute.
+
+## Install
+
+Download the single binary from the [releases page](https://github.com/dust-db/dust/releases) or build from source:
+
+```sh
+cargo install dust-cli
+```
+
+Confirm it works:
+
+```sh
+dust version
+```
+
+## Create a project
+
+```sh
+mkdir inventory-demo && cd inventory-demo
+dust init
+```
+
+This creates a `.dust/` directory with the workspace layout, schema file, and branch metadata. No Docker, no server process.
+
+## Define a schema and load data
+
+Create a CSV file to import. In a real workflow you would point at an existing export; here we inline one:
+
+```sh
+cat > products.csv << 'EOF'
+sku,name,category,unit_price_cents,stock
+WDG-001,Standard Widget,widgets,1499,340
+WDG-002,Premium Widget,widgets,2999,125
+BLT-001,M6 Bolt,fasteners,29,8400
+BLT-002,M8 Bolt,fasteners,45,6200
+GDG-001,USB-C Hub,gadgets,3495,58
+GDG-002,Bluetooth Dongle,gadgets,1299,210
+GDG-003,Portable SSD 1TB,gadgets,8999,42
+EOF
+```
+
+Import it:
+
+```sh
+dust import products.csv --table products
+```
+
+Check the result:
+
+```sh
+dust status
+```
+
+Output:
+
+```
+Tables:
+  products: 7 rows
+
+Database: 12.0 KB
+```
+
+## Query your data
+
+Run SQL directly from the command line:
+
+```sh
+dust query "SELECT sku, name, unit_price_cents FROM products WHERE category = 'gadgets' ORDER BY unit_price_cents DESC"
+```
+
+Aggregates work too:
+
+```sh
+dust query "SELECT category, count(*), sum(stock) FROM products GROUP BY category"
+```
+
+For multi-statement scripts, use a file:
+
+```sh
+dust query -f examples/quickstart.sql
+```
+
+Or drop into an interactive shell:
+
+```sh
+dust shell
+```
+
+## Branch the database
+
+This is where Dust diverges from plain SQLite. Create an isolated branch with a full copy of your data:
+
+```sh
+dust branch create experiment
+dust branch switch experiment
+```
+
+Now make destructive changes without risk:
+
+```sh
+dust query "UPDATE products SET unit_price_cents = unit_price_cents + 500 WHERE category = 'gadgets'"
+dust query "DELETE FROM products WHERE stock > 5000"
+```
+
+Check what the branch looks like:
+
+```sh
+dust status
+```
+
+```
+Tables:
+  products: 5 rows
+
+Database: 12.0 KB
+```
+
+The main branch is untouched:
+
+```sh
+dust branch switch main
+dust query "SELECT count(*) FROM products"
+```
+
+```
+count(...)
+7
+```
+
+List all branches:
+
+```sh
+dust branch list
+```
+
+Delete the experiment when you are done:
+
+```sh
+dust branch switch main
+dust branch delete experiment
+```
+
+## Connect with psql
+
+Dust speaks the Postgres wire protocol. Start the server:
+
+```sh
+dust serve
+```
+
+Then connect from another terminal:
+
+```sh
+psql -h 127.0.0.1 -p 5433 -U dust
+```
+
+Any tool that speaks Postgres (DataGrip, DBeaver, language drivers) can connect the same way.
+
+## Validate project health
+
+```sh
+dust doctor
+```
+
+This checks the workspace layout, parses `db/schema.sql`, and reports schema fingerprint status. Useful in CI to catch drift between your schema file and the running database.
+
+## What is supported today
+
+| Feature | Status |
+|---|---|
+| CREATE TABLE, DROP TABLE, ALTER TABLE | Supported |
+| INSERT, UPDATE, DELETE | Supported |
+| SELECT with WHERE, ORDER BY, LIMIT, OFFSET | Supported |
+| GROUP BY with count, sum, avg, min, max | Supported |
+| JOIN (inner, left, right, full, cross) | Supported |
+| DISTINCT | Supported |
+| Scalar functions: lower, upper, coalesce, length, substr, trim, replace, abs, round | Supported |
+| CREATE INDEX (unique and non-unique) | Supported |
+| CASE expressions | Supported |
+| CSV import | Supported |
+| Postgres wire protocol | Supported |
+| Window functions, CTEs, subqueries | Not yet |
+| Transactions (BEGIN/COMMIT/ROLLBACK) | Not yet |
+| Foreign key enforcement | Not yet |
+| Branch merge / diff | Not yet |
+
+## Why not plain SQLite?
+
+SQLite gives you a file. Dust gives you a file *plus*:
+
+- **Branch isolation** -- `dust branch create` copies the database so you can experiment without corrupting your working state.
+- **Schema identity** -- every table and column gets a stable fingerprint that survives renames, making diffs and migrations deterministic.
+- **Project structure** -- `dust init` creates a workspace with schema files, lockfiles, and ref metadata that version-controls cleanly.
+- **Postgres compatibility path** -- write SQL against Dust locally, connect with psql, and target real Postgres in production.
+
+Dust is not a replacement for production Postgres. It is a replacement for the Docker + seed script + ORM migration dance you run during development.

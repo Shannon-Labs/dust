@@ -16,7 +16,31 @@ fn is_aggregate_name(name: &str) -> bool {
 }
 
 fn is_allowed_scalar(name: &str) -> bool {
-    matches!(name, "lower" | "upper" | "coalesce" | "length" | "case")
+    matches!(
+        name,
+        "lower"
+            | "upper"
+            | "coalesce"
+            | "length"
+            | "case"
+            | "substr"
+            | "substring"
+            | "trim"
+            | "ltrim"
+            | "rtrim"
+            | "replace"
+            | "abs"
+            | "round"
+            | "typeof"
+            | "nullif"
+            | "max"
+            | "min"
+            | "concat"
+            | "ifnull"
+            | "hex"
+            | "quote"
+            | "instr"
+    )
 }
 
 fn select_contains_aggregate(select: &dust_sql::SelectStatement) -> bool {
@@ -54,6 +78,8 @@ fn expr_contains_aggregate(expr: &Expr) -> bool {
         }
         Expr::Cast { expr, .. } => expr_contains_aggregate(expr),
         Expr::Parenthesized { expr, .. } => expr_contains_aggregate(expr),
+        Expr::Subquery { .. } => false,
+        Expr::InSubquery { expr, .. } => expr_contains_aggregate(expr),
         _ => false,
     }
 }
@@ -71,7 +97,7 @@ fn validate_expr(expr: &Expr, allow: AggAllow) -> Result<()> {
                 }
             } else if !is_allowed_scalar(&n) {
                 return Err(DustError::InvalidInput(format!(
-                    "unsupported function `{n}` — supported scalars: lower, upper, coalesce, length, case(...)"
+                    "unsupported function `{n}`"
                 )));
             }
             for a in args {
@@ -108,6 +134,11 @@ fn validate_expr(expr: &Expr, allow: AggAllow) -> Result<()> {
         }
         Expr::Cast { expr, .. } => validate_expr(expr, allow),
         Expr::Parenthesized { expr, .. } => validate_expr(expr, allow),
+        Expr::Subquery { query, .. } => validate_select(query),
+        Expr::InSubquery { expr, query, .. } => {
+            validate_expr(expr, allow)?;
+            validate_select(query)
+        }
         Expr::ColumnRef(_)
         | Expr::Integer(_)
         | Expr::StringLit { .. }

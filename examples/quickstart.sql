@@ -1,39 +1,49 @@
 -- Dust quickstart: run with `dust query -f examples/quickstart.sql`
+--
+-- Product inventory example. Matches the flow in docs/quickstart.md.
 
--- Create a schema
-CREATE TABLE users (
+-- Schema
+CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY,
+    sku TEXT NOT NULL,
     name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    active INTEGER NOT NULL
+    category TEXT NOT NULL,
+    unit_price_cents INTEGER NOT NULL,
+    stock INTEGER NOT NULL
 );
 
-CREATE TABLE posts (
-    id INTEGER PRIMARY KEY,
-    author_id INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    body TEXT NOT NULL
-);
+-- Sample data
+INSERT INTO products (id, sku, name, category, unit_price_cents, stock) VALUES
+    (1, 'WDG-001', 'Standard Widget',    'widgets',    1499, 340),
+    (2, 'WDG-002', 'Premium Widget',     'widgets',    2999, 125),
+    (3, 'BLT-001', 'M6 Bolt',            'fasteners',  29,   8400),
+    (4, 'BLT-002', 'M8 Bolt',            'fasteners',  45,   6200),
+    (5, 'GDG-001', 'USB-C Hub',          'gadgets',    3495, 58),
+    (6, 'GDG-002', 'Bluetooth Dongle',   'gadgets',    1299, 210),
+    (7, 'GDG-003', 'Portable SSD 1TB',   'gadgets',    8999, 42);
 
--- Insert sample data
-INSERT INTO users (id, name, email, active) VALUES
-    (1, 'Alice', 'alice@example.com', 1),
-    (2, 'Bob', 'bob@example.com', 1),
-    (3, 'Charlie', 'charlie@example.com', 0);
+-- All products sorted by price descending
+SELECT sku, name, unit_price_cents, stock FROM products ORDER BY unit_price_cents DESC;
 
-INSERT INTO posts (id, author_id, title, body) VALUES
-    (1, 1, 'Getting started with Dust', 'Dust is a branchable SQL runtime...'),
-    (2, 1, 'Schema identity explained', 'Every object gets a stable ID...'),
-    (3, 2, 'Why I switched from Docker', 'I was tired of waiting 5 seconds...');
+-- Category summary: count and total stock per category
+SELECT category, count(*), sum(stock) FROM products GROUP BY category;
 
--- Query: find active users
-SELECT id, name, email FROM users WHERE active = 1;
+-- Gadgets over $20 (2000 cents)
+SELECT sku, name, unit_price_cents FROM products
+    WHERE category = 'gadgets' AND unit_price_cents > 2000
+    ORDER BY unit_price_cents DESC;
 
--- Query: update a user
-UPDATE users SET name = 'ALICE' WHERE id = 1;
+-- Low-stock items (under 100 units)
+SELECT sku, name, stock FROM products WHERE stock < 100 ORDER BY stock;
 
--- Query: delete inactive users
-DELETE FROM users WHERE active = 0;
+-- Simulated price increase on gadgets
+UPDATE products SET unit_price_cents = unit_price_cents + 500 WHERE category = 'gadgets';
 
--- Query: final state
-SELECT * FROM users
+-- Verify the update
+SELECT sku, name, unit_price_cents FROM products WHERE category = 'gadgets' ORDER BY sku;
+
+-- Remove high-stock commodity items
+DELETE FROM products WHERE stock > 5000;
+
+-- Final state
+SELECT * FROM products ORDER BY id;
