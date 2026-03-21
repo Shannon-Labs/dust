@@ -1,0 +1,16 @@
+[package]
+name = "dust-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+dust-catalog = { path = "../dust-catalog" }
+dust-sql = { path = "../dust-sql" }
+dust-plan = { path = "../dust-plan" }
+dust-store = { path = "../dust-store" }
+dust-types = { path = "../dust-types" }
+
+[dev-dependencies]
+tempfile.workspace = true

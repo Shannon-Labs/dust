@@ -1,0 +1,9 @@
+/target
+/.idea
+/.vscode
+/.claude
+/.DS_Store
+**/*.rs.bk
+/.dust
+.dust/workspace/data.db
+*.db

@@ -1,0 +1,21 @@
+[package]
+name = "dust-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "dust"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+dust-core = { path = "../dust-core" }
+dust-exec = { path = "../dust-exec" }
+dust-store = { path = "../dust-store" }
+dust-types = { path = "../dust-types" }
+miette.workspace = true
+rustyline.workspace = true
+tokio.workspace = true
+toml.workspace = true

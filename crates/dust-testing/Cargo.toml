@@ -1,0 +1,12 @@
+[package]
+name = "dust-testing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+dust-core = { path = "../dust-core" }
+dust-exec = { path = "../dust-exec" }
+dust-plan = { path = "../dust-plan" }
+tempfile.workspace = true

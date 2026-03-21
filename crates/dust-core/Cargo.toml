@@ -1,0 +1,19 @@
+[package]
+name = "dust-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+dust-catalog = { path = "../dust-catalog" }
+dust-exec = { path = "../dust-exec" }
+dust-migrate = { path = "../dust-migrate" }
+dust-plan = { path = "../dust-plan" }
+dust-sql = { path = "../dust-sql" }
+dust-store = { path = "../dust-store" }
+dust-types = { path = "../dust-types" }
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
