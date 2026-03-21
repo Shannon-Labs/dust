@@ -722,10 +722,18 @@ fn plan_select(source: &str, select: &dust_sql::SelectStatement) -> PlannedState
                 .legacy_from()
                 .map(|id| id.value.clone())
                 .unwrap_or_default();
+            let physical = if let Some(where_expr) = &select.where_clause {
+                PhysicalPlan::filter(
+                    PhysicalPlan::table_scan(&table),
+                    slice_source(source, where_expr.span()),
+                )
+            } else {
+                PhysicalPlan::table_scan(&table)
+            };
             PlannedStatement::new(
                 sql,
                 LogicalPlan::select_scan(&table, SelectColumns::Star),
-                PhysicalPlan::table_scan(&table),
+                physical,
             )
         }
         SelectProjection::Columns(cols) => {
@@ -734,10 +742,18 @@ fn plan_select(source: &str, select: &dust_sql::SelectStatement) -> PlannedState
                 .map(|id| id.value.clone())
                 .unwrap_or_default();
             let col_names = cols.iter().map(|c| c.value.clone()).collect();
+            let physical = if let Some(where_expr) = &select.where_clause {
+                PhysicalPlan::filter(
+                    PhysicalPlan::table_scan(&table),
+                    slice_source(source, where_expr.span()),
+                )
+            } else {
+                PhysicalPlan::table_scan(&table)
+            };
             PlannedStatement::new(
                 sql,
                 LogicalPlan::select_scan(&table, SelectColumns::Named(col_names)),
-                PhysicalPlan::table_scan(&table),
+                physical,
             )
         }
         _ => PlannedStatement::new(
@@ -901,6 +917,24 @@ mod tests {
         assert_eq!(explain.statement_count(), 1);
         assert_eq!(explain.logical, LogicalPlan::constant_one());
         assert_eq!(explain.physical, PhysicalPlan::constant_scan(1, 1));
+    }
+
+    #[test]
+    fn explain_select_with_where_includes_filter_node() {
+        let engine = new_engine();
+        let explain = engine
+            .explain("select * from users where active = 1")
+            .expect("explain should succeed");
+
+        assert_eq!(
+            explain.physical,
+            PhysicalPlan::Filter {
+                input: Box::new(PhysicalPlan::TableScan {
+                    table: "users".to_string(),
+                }),
+                predicate: "active = 1".to_string(),
+            }
+        );
     }
 
     #[test]

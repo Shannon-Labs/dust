@@ -1235,6 +1235,7 @@ impl<'a> Parser<'a> {
                     span: token.span,
                 })
             }
+            TokenKind::Keyword(Keyword::Case) => self.parse_case_expr(),
             TokenKind::Keyword(Keyword::Cast) => self.parse_cast_expr(),
             TokenKind::Star => {
                 let token = self.bump().expect("peeked");
@@ -1267,6 +1268,43 @@ impl<'a> Parser<'a> {
         Ok(Expr::Cast {
             expr: Box::new(expr),
             data_type,
+            span: Span::new(start, end),
+        })
+    }
+
+    fn parse_case_expr(&mut self) -> Result<Expr> {
+        let case_token = self.expect_keyword(Keyword::Case)?;
+        let start = case_token.span.start;
+        let mut args = Vec::new();
+        let mut when_count = 0usize;
+
+        while self.peek_keyword() == Some(Keyword::When) {
+            self.bump();
+            let condition = self.parse_expr()?;
+            self.expect_keyword(Keyword::Then)?;
+            let result = self.parse_expr()?;
+            args.push(condition);
+            args.push(result);
+            when_count += 1;
+        }
+
+        if when_count == 0 {
+            return Err(DustError::SchemaParse(
+                "CASE expression must contain at least one WHEN clause".to_string(),
+            ));
+        }
+
+        if self.eat_keyword(Keyword::Else)? {
+            args.push(self.parse_expr()?);
+        }
+
+        let end = self.expect_keyword(Keyword::End)?.span.end;
+        Ok(Expr::FunctionCall {
+            name: Identifier {
+                value: case_token.text,
+                span: case_token.span,
+            },
+            args,
             span: Span::new(start, end),
         })
     }
@@ -2219,6 +2257,30 @@ mod tests {
                 assert_eq!(args.len(), 1);
             }
             other => panic!("expected function call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expression_searched_case() {
+        let sql = "select case when 1 = 1 then 'yes' else 'no' end from users";
+        let program = parse_program(sql).unwrap();
+        let select = match &program.statements[0] {
+            AstStatement::Select(s) => s,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert_eq!(select.projection.len(), 1);
+        match &select.projection[0] {
+            SelectItem::Expr {
+                expr: Expr::FunctionCall { name, args, .. },
+                ..
+            } => {
+                assert_eq!(name.value.to_ascii_lowercase(), "case");
+                assert_eq!(args.len(), 3);
+                assert!(matches!(args[0], Expr::BinaryOp { op: BinOp::Eq, .. }));
+                assert!(matches!(&args[1], Expr::StringLit { value, .. } if value == "yes"));
+                assert!(matches!(&args[2], Expr::StringLit { value, .. } if value == "no"));
+            }
+            other => panic!("expected searched CASE expression, got {other:?}"),
         }
     }
 

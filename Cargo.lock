@@ -274,7 +274,9 @@ dependencies = [
  "dust-sql",
  "dust-store",
  "dust-types",
+ "serde",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

@@ -9,6 +9,10 @@ pub enum PhysicalPlan {
     TableScan {
         table: String,
     },
+    Filter {
+        input: Box<PhysicalPlan>,
+        predicate: String,
+    },
     TableInsert {
         table: String,
         rows: usize,
@@ -41,6 +45,13 @@ impl PhysicalPlan {
     pub fn table_scan(table: impl Into<String>) -> Self {
         Self::TableScan {
             table: table.into(),
+        }
+    }
+
+    pub fn filter(input: PhysicalPlan, predicate: impl Into<String>) -> Self {
+        Self::Filter {
+            input: Box::new(input),
+            predicate: predicate.into(),
         }
     }
 
@@ -85,6 +96,19 @@ mod tests {
             PhysicalPlan::ConstantScan {
                 rows: 1,
                 columns: 1
+            }
+        );
+    }
+
+    #[test]
+    fn physical_filter_wraps_an_input_plan() {
+        assert_eq!(
+            PhysicalPlan::filter(PhysicalPlan::table_scan("users"), "active = 1"),
+            PhysicalPlan::Filter {
+                input: Box::new(PhysicalPlan::TableScan {
+                    table: "users".to_string(),
+                }),
+                predicate: "active = 1".to_string(),
             }
         );
     }

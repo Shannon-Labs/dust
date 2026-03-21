@@ -256,7 +256,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                 let mut text = String::new();
                 let mut closed = false;
                 while index < bytes.len() {
-                    let current = bytes[index] as char;
+                    let current = input[index..].chars().next().expect("valid utf-8");
                     if current == '\'' {
                         if bytes.get(index + 1) == Some(&b'\'') {
                             text.push('\'');
@@ -268,7 +268,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                         break;
                     }
                     text.push(current);
-                    index += 1;
+                    index += current.len_utf8();
                 }
                 if !closed {
                     return Err(DustError::SchemaParse(
@@ -286,7 +286,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                 let mut text = String::new();
                 let mut closed = false;
                 while index < bytes.len() {
-                    let current = bytes[index] as char;
+                    let current = input[index..].chars().next().expect("valid utf-8");
                     if current == '"' {
                         if bytes.get(index + 1) == Some(&b'"') {
                             text.push('"');
@@ -298,7 +298,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                         break;
                     }
                     text.push(current);
-                    index += 1;
+                    index += current.len_utf8();
                 }
                 if !closed {
                     return Err(DustError::SchemaParse(

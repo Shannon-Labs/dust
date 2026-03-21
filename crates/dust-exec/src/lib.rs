@@ -1,6 +1,7 @@
 pub mod binder;
 pub mod engine;
 pub mod persistent;
+mod persistent_schema;
 pub mod storage;
 
 pub use binder::{BindResult, InferredType, ResolvedColumn, bind_statement, infer_type};
