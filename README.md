@@ -112,7 +112,7 @@ Dust is in active development. The v0 core prototype is functional:
 - [x] Schema fingerprinting and lockfile
 - [x] Semantic schema diff with rename detection
 - [x] Binder with column validation and type inference
-- [x] 129 tests passing
+- [x] 136 tests passing
 - [x] Persistent storage (B+tree backed, survives across commands)
 - [ ] Snapshot isolation and transactions
 - [x] Postgres wire protocol (`dust serve`)

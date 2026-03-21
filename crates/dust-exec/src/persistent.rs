@@ -1205,4 +1205,165 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn persistent_data_survives_reopen() {
+        let (mut engine, dir) = temp_engine();
+        engine
+            .query("CREATE TABLE kv (key TEXT, val INTEGER)")
+            .unwrap();
+        engine
+            .query("INSERT INTO kv (key, val) VALUES ('a', 10), ('b', 20), ('c', 30)")
+            .unwrap();
+        engine.sync().unwrap();
+        drop(engine);
+
+        let db_path = dir.path().join("test.db");
+        let mut reopened = PersistentEngine::open(&db_path).unwrap();
+        assert_eq!(
+            reopened.query("SELECT * FROM kv ORDER BY key").unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["key".to_string(), "val".to_string()],
+                rows: vec![
+                    vec!["a".to_string(), "10".to_string()],
+                    vec!["b".to_string(), "20".to_string()],
+                    vec!["c".to_string(), "30".to_string()],
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn delete_with_where_removes_matching_rows() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE items (id INTEGER, status TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO items VALUES (1, 'active'), (2, 'inactive'), (3, 'active'), (4, 'inactive')")
+            .unwrap();
+
+        let result = engine
+            .query("DELETE FROM items WHERE status = 'inactive'")
+            .unwrap();
+        assert_eq!(result, QueryOutput::Message("DELETE 2".to_string()));
+
+        assert_eq!(
+            engine.query("SELECT * FROM items ORDER BY id").unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["id".to_string(), "status".to_string()],
+                rows: vec![
+                    vec!["1".to_string(), "active".to_string()],
+                    vec!["3".to_string(), "active".to_string()],
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn order_by_limit_offset() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE nums (n INTEGER, label TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO nums VALUES (3, 'c'), (1, 'a'), (4, 'pi'), (1, 'one'), (5, 'e')")
+            .unwrap();
+
+        // ORDER BY ascending
+        assert_eq!(
+            engine
+                .query("SELECT * FROM nums ORDER BY n LIMIT 3")
+                .unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["n".to_string(), "label".to_string()],
+                rows: vec![
+                    vec!["1".to_string(), "a".to_string()],
+                    vec!["1".to_string(), "one".to_string()],
+                    vec!["3".to_string(), "c".to_string()],
+                ],
+            }
+        );
+
+        // ORDER BY descending with OFFSET
+        assert_eq!(
+            engine
+                .query("SELECT * FROM nums ORDER BY n DESC LIMIT 2 OFFSET 1")
+                .unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["n".to_string(), "label".to_string()],
+                rows: vec![
+                    vec!["4".to_string(), "pi".to_string()],
+                    vec!["3".to_string(), "c".to_string()],
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn select_distinct_deduplicates() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE colors (name TEXT)").unwrap();
+        engine
+            .query("INSERT INTO colors VALUES ('red'), ('blue'), ('red'), ('green'), ('blue')")
+            .unwrap();
+
+        let output = engine
+            .query("SELECT DISTINCT name FROM colors ORDER BY name")
+            .unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["name".to_string()],
+                rows: vec![
+                    vec!["blue".to_string()],
+                    vec!["green".to_string()],
+                    vec!["red".to_string()],
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn aggregate_count_sum_min_max() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE scores (player TEXT, points INTEGER)")
+            .unwrap();
+        engine
+            .query("INSERT INTO scores VALUES ('alice', 100), ('bob', 250), ('carol', 150), ('dave', 200)")
+            .unwrap();
+
+        assert_eq!(
+            engine.query("SELECT count(*) FROM scores").unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["count(...)".to_string()],
+                rows: vec![vec!["4".to_string()]],
+            }
+        );
+
+        assert_eq!(
+            engine.query("SELECT sum(points) FROM scores").unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["sum(...)".to_string()],
+                rows: vec![vec!["700".to_string()]],
+            }
+        );
+
+        assert_eq!(
+            engine.query("SELECT min(points) FROM scores").unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["min(...)".to_string()],
+                rows: vec![vec!["100".to_string()]],
+            }
+        );
+
+        assert_eq!(
+            engine.query("SELECT max(points) FROM scores").unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["max(...)".to_string()],
+                rows: vec![vec!["250".to_string()]],
+            }
+        );
+    }
 }

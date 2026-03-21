@@ -220,6 +220,82 @@ mod tests {
     }
 
     #[test]
+    fn idempotent_ddl_create_and_drop() {
+        let (_temp, _project, mut database) =
+            open_bootstrap_database().expect("bootstrap database");
+
+        // CREATE TABLE IF NOT EXISTS is safe to repeat
+        database
+            .query("CREATE TABLE t (id INTEGER, name TEXT)")
+            .expect("first create");
+        database
+            .query("CREATE TABLE IF NOT EXISTS t (id INTEGER, name TEXT)")
+            .expect("second create should not error");
+
+        // Table still works after the no-op repeat
+        database
+            .query("INSERT INTO t (id, name) VALUES (1, 'test')")
+            .expect("insert after IF NOT EXISTS");
+
+        // DROP TABLE IF EXISTS is safe on non-existent tables
+        let drop_ghost = database
+            .query("DROP TABLE IF EXISTS ghost")
+            .expect("drop non-existent should succeed");
+        assert_ddl_message(&drop_ghost, "DROP TABLE");
+
+        // DROP TABLE removes the table
+        let drop_t = database.query("DROP TABLE t").expect("drop t");
+        assert_ddl_message(&drop_t, "DROP TABLE");
+
+        // Inserting into a dropped table should fail
+        assert!(
+            database
+                .query("INSERT INTO t (id, name) VALUES (2, 'fail')")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn update_and_delete_with_where() {
+        let (_temp, _project, mut database) =
+            open_bootstrap_database().expect("bootstrap database");
+
+        database
+            .query("CREATE TABLE inventory (id INTEGER, item TEXT, qty INTEGER)")
+            .expect("create");
+        database
+            .query(
+                "INSERT INTO inventory VALUES (1, 'bolt', 100), (2, 'nut', 200), (3, 'washer', 50)",
+            )
+            .expect("insert");
+
+        // Targeted UPDATE
+        let update = database
+            .query("UPDATE inventory SET qty = 0 WHERE item = 'nut'")
+            .expect("update");
+        assert_eq!(update, QueryOutput::Message("UPDATE 1".to_string()));
+
+        // Targeted DELETE
+        let delete = database
+            .query("DELETE FROM inventory WHERE qty = 0")
+            .expect("delete");
+        assert_eq!(delete, QueryOutput::Message("DELETE 1".to_string()));
+
+        // Verify remaining data
+        let output = database.query("SELECT * FROM inventory").expect("select");
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["id".to_string(), "item".to_string(), "qty".to_string()],
+                rows: vec![
+                    vec!["1".to_string(), "bolt".to_string(), "100".to_string()],
+                    vec!["3".to_string(), "washer".to_string(), "50".to_string()],
+                ],
+            }
+        );
+    }
+
+    #[test]
     fn init_without_force_refuses_non_empty_directories() {
         let temp = TempDir::new().expect("temp dir");
         let project = ProjectPaths::new(temp.path().to_path_buf());

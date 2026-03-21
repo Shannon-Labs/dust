@@ -189,7 +189,7 @@ mod tests {
             Datum::Integer(42),
             Datum::Text("hello world".to_string()),
             Datum::Boolean(true),
-            Datum::Real(3.14),
+            Datum::Real(2.5),
             Datum::Blob(vec![0xDE, 0xAD, 0xBE, 0xEF]),
         ];
 
@@ -205,7 +205,7 @@ mod tests {
 
         // Real needs approximate comparison
         match &decoded[4] {
-            Datum::Real(r) => assert!((r - 3.14).abs() < f64::EPSILON),
+            Datum::Real(r) => assert!((r - 2.5).abs() < f64::EPSILON),
             other => panic!("expected Real, got {other:?}"),
         }
     }
