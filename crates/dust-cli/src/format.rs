@@ -56,9 +56,16 @@ pub fn print_output_with_format(output: &QueryOutput, format: OutputFormat) {
 }
 
 /// Truncate a value for interactive display, appending "..." if truncated.
+/// Uses char boundaries to avoid panicking on multi-byte UTF-8.
 fn truncate_for_display(s: &str) -> String {
     if s.len() > TRUNCATE_WIDTH {
-        format!("{}...", &s[..TRUNCATE_WIDTH - 3])
+        let char_limit = TRUNCATE_WIDTH - 3;
+        let end = s
+            .char_indices()
+            .nth(char_limit)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        format!("{}...", &s[..end])
     } else {
         s.to_string()
     }
@@ -165,7 +172,7 @@ fn print_json(columns: &[String], rows: &[Vec<String>]) {
             let mut map = serde_json::Map::new();
             for (i, col) in columns.iter().enumerate() {
                 let val = row.get(i).map(|s| s.as_str()).unwrap_or("");
-                if val.is_empty() {
+                if val == NULL_DISPLAY {
                     map.insert(col.clone(), serde_json::Value::Null);
                 } else if let Ok(n) = val.parse::<i64>() {
                     map.insert(col.clone(), serde_json::Value::Number(n.into()));

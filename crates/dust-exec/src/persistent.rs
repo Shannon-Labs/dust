@@ -426,8 +426,8 @@ impl PersistentEngine {
                 let result = self.execute_select(query)?;
                 match result {
                     QueryOutput::Rows { rows, .. } => {
-                        if let Some(row) = rows.into_iter().next() {
-                            if let Some(v) = row.into_iter().next() {
+                        if let Some(row) = rows.into_iter().next()
+                            && let Some(v) = row.into_iter().next() {
                                 if v == "NULL" {
                                     return Ok(Expr::Null(*span));
                                 } else if let Ok(i) = v.parse::<i64>() {
@@ -442,7 +442,6 @@ impl PersistentEngine {
                                     });
                                 }
                             }
-                        }
                         Ok(Expr::Null(*span))
                     }
                     _ => Ok(Expr::Null(*span)),
@@ -714,7 +713,9 @@ impl PersistentEngine {
         else {
             return Ok(None);
         };
-        let from = select.from.as_ref().unwrap();
+        let Some(from) = select.from.as_ref() else {
+            return Ok(None);
+        };
         let base_table = from.table.value.as_str();
         if let Some(q) = &table_qual {
             let matches_base = q == base_table;
@@ -895,14 +896,13 @@ impl PersistentEngine {
         &mut self,
         index: &dust_sql::CreateIndexStatement,
     ) -> Result<QueryOutput> {
-        if let Some(u) = &index.using {
-            if !u.value.eq_ignore_ascii_case("btree") {
+        if let Some(u) = &index.using
+            && !u.value.eq_ignore_ascii_case("btree") {
                 return Err(DustError::InvalidInput(format!(
                     "index type `{}` is not supported (only btree)",
                     u.value
                 )));
             }
-        }
         if index.columns.len() != 1 {
             return Err(DustError::InvalidInput(
                 "multi-column indexes are not supported yet".to_string(),

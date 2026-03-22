@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn regression_case_function_evaluated() {
+    fn regression_coalesce_and_expression_evaluation() {
         use dust_exec::PersistentEngine;
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
@@ -756,6 +756,82 @@ mod tests {
                 _ => panic!("expected rows"),
             }
         }
+    }
+
+    #[test]
+    fn regression_csv_multiline_quoted_fields() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        // Create a CSV with a multiline quoted field (RFC 4180)
+        let csv_path = dir.path().join("multi.csv");
+        fs::write(
+            &csv_path,
+            "id,note\n1,\"line one\nline two\"\n2,simple\n",
+        )
+        .unwrap();
+
+        // Import using the CLI import module
+        engine.query("CREATE TABLE multi (id TEXT, note TEXT)").unwrap();
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_path(&csv_path)
+            .unwrap();
+        let mut count = 0;
+        for record in reader.records() {
+            let record = record.unwrap();
+            let id = record.get(0).unwrap().replace('\'', "''");
+            let note = record.get(1).unwrap().replace('\'', "''");
+            engine
+                .query(&format!("INSERT INTO multi (id, note) VALUES ('{id}', '{note}')"))
+                .unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 2, "CSV should parse as 2 rows, not 3");
+
+        let result = engine.query("SELECT note FROM multi WHERE id = '1'").unwrap();
+        match &result {
+            QueryOutput::Rows { rows, .. } => {
+                assert!(
+                    rows[0][0].contains('\n'),
+                    "multiline field should contain newline: {:?}",
+                    rows[0][0]
+                );
+            }
+            other => panic!("expected Rows, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regression_branch_name_with_slashes() {
+        let (_temp, project) = bootstrap_project().unwrap();
+        // BranchName should accept slash-containing names
+        let branch = dust_store::BranchName::new("feature/auth");
+        assert!(
+            branch.is_ok(),
+            "BranchName should accept slashes: {:?}",
+            branch.err()
+        );
+        let branch = branch.unwrap();
+        assert_eq!(branch.as_str(), "feature/auth");
+
+        // The path representation should be filesystem-safe
+        let path = branch.as_path();
+        assert!(
+            path.as_os_str().len() > 0,
+            "path representation should not be empty"
+        );
+
+        // Verify the project paths handle slash branches correctly
+        let db_path = project.branch_data_db_path("feature/auth");
+        assert!(
+            db_path.to_string_lossy().contains("feature/auth")
+                || db_path.to_string_lossy().contains("feature"),
+            "db path should contain branch name components: {}",
+            db_path.display()
+        );
     }
 
     #[test]

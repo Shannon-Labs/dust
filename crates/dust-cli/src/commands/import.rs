@@ -72,7 +72,7 @@ pub fn run(args: ImportArgs) -> Result<()> {
         if headers.is_empty() {
             return Err(DustError::InvalidInput("CSV has no columns".to_string()));
         }
-        headers.iter().map(|s| sanitize_column_name(s)).collect()
+        headers.iter().map(sanitize_column_name).collect()
     } else {
         // Peek at the first record to determine column count, then generate names
         let mut records = reader.records();

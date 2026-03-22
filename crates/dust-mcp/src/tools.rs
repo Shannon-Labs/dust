@@ -109,14 +109,18 @@ pub fn format_output(output: &QueryOutput, format: &str) -> String {
                         let mut obj = serde_json::Map::new();
                         for (i, col) in columns.iter().enumerate() {
                             let val = row.get(i).map(|s| s.as_str()).unwrap_or("NULL");
-                            obj.insert(
-                                col.clone(),
-                                if val == "NULL" {
-                                    serde_json::Value::Null
-                                } else {
-                                    serde_json::Value::String(val.to_string())
-                                },
-                            );
+                            let json_val = if val == "NULL" {
+                                serde_json::Value::Null
+                            } else if let Ok(n) = val.parse::<i64>() {
+                                serde_json::Value::Number(n.into())
+                            } else if let Ok(f) = val.parse::<f64>() {
+                                serde_json::Number::from_f64(f)
+                                    .map(serde_json::Value::Number)
+                                    .unwrap_or_else(|| serde_json::Value::String(val.to_string()))
+                            } else {
+                                serde_json::Value::String(val.to_string())
+                            };
+                            obj.insert(col.clone(), json_val);
                         }
                         serde_json::Value::Object(obj)
                     })

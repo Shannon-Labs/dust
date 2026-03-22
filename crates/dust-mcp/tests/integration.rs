@@ -195,7 +195,7 @@ fn test_full_workflow() {
     assert_eq!(parsed.len(), 3);
     assert_eq!(parsed[0]["name"], "Widget");
     assert_eq!(parsed[1]["name"], "Gadget");
-    assert_eq!(parsed[2]["price"], "50");
+    assert_eq!(parsed[2]["price"], 50);
 
     // Status
     let resp = session.request("tools/call", Some(json!({
@@ -271,8 +271,8 @@ fn test_full_workflow() {
     })));
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let counts: Vec<Value> = serde_json::from_str(text).expect("parse count");
-    // Column name is count(...) in dust's output
-    assert_eq!(counts[0]["count(...)"], "3", "main should still have 3 rows");
+    // Column name is count(...) in dust's output; now emitted as a JSON number
+    assert_eq!(counts[0]["count(...)"], 3, "main should still have 3 rows");
 
     session.stop();
 }

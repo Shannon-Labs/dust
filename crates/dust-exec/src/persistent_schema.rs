@@ -18,20 +18,13 @@ pub struct SecondaryIndexDef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default)]
 pub struct PersistedSchema {
     pub tables: BTreeMap<String, TableSchema>,
     #[serde(default)]
     pub secondary_indexes: Vec<SecondaryIndexDef>,
 }
 
-impl Default for PersistedSchema {
-    fn default() -> Self {
-        Self {
-            tables: BTreeMap::new(),
-            secondary_indexes: Vec::new(),
-        }
-    }
-}
 
 impl PersistedSchema {
     pub fn load(path: &Path) -> Result<Self> {

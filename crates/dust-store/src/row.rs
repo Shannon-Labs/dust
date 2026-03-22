@@ -180,14 +180,14 @@ pub fn decode_key_u64(data: &[u8]) -> u64 {
 
 /// Secondary B+tree key: single-column [`encode_row`] payload + rowid (big-endian u64).
 pub fn secondary_index_key(datum: &Datum, rowid: u64) -> Vec<u8> {
-    let mut key = encode_row(&[datum.clone()]);
+    let mut key = encode_row(std::slice::from_ref(datum));
     key.extend_from_slice(&rowid.to_be_bytes());
     key
 }
 
 /// Prefix shared by all index keys for a given indexed value (for point lookups).
 pub fn secondary_index_value_prefix(datum: &Datum) -> Vec<u8> {
-    encode_row(&[datum.clone()])
+    encode_row(std::slice::from_ref(datum))
 }
 
 /// Row id stored in the last 8 bytes of a secondary index key.

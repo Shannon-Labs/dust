@@ -353,9 +353,11 @@ dependencies = [
 name = "dust-testing"
 version = "0.1.0"
 dependencies = [
+ "csv",
  "dust-core",
  "dust-exec",
  "dust-plan",
+ "dust-store",
  "tempfile",
 ]
 
