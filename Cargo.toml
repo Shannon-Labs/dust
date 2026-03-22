@@ -10,6 +10,7 @@ members = [
     "crates/dust-exec",
     "crates/dust-migrate",
     "crates/dust-testing",
+    "crates/dust-mcp",
     "xtask",
 ]
 resolver = "2"

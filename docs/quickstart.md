@@ -182,10 +182,11 @@ This checks the workspace layout, parses `db/schema.sql`, and reports schema fin
 | CASE expressions | Supported |
 | CSV import | Supported |
 | Postgres wire protocol | Supported |
-| Window functions, CTEs, subqueries | Not yet |
-| Transactions (BEGIN/COMMIT/ROLLBACK) | Not yet |
+| Subqueries: IN (SELECT), NOT IN, scalar | Supported |
+| Branch diff (row count deltas) | Supported |
+| --format json/csv/table output | Supported |
+| Window functions, CTEs | Not yet |
 | Foreign key enforcement | Not yet |
-| Branch merge / diff | Not yet |
 
 ## Why not plain SQLite?
 
@@ -197,3 +198,60 @@ SQLite gives you a file. Dust gives you a file *plus*:
 - **Postgres compatibility path** -- write SQL against Dust locally, connect with psql, and target real Postgres in production.
 
 Dust is not a replacement for production Postgres. It is a replacement for the Docker + seed script + ORM migration dance you run during development.
+
+## Use with Claude Code (MCP)
+
+Dust ships an MCP server (`dust-mcp`) that lets AI assistants query, branch, and manage your database directly.
+
+### Install
+
+Build from source (alongside the main CLI):
+
+```sh
+cargo install --path crates/dust-mcp
+```
+
+### Configure Claude Code
+
+```sh
+claude mcp add dust dust-mcp
+```
+
+Or add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "dust": {
+      "command": "dust-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+### Available tools
+
+| Tool | Description |
+|---|---|
+| `dust_query` | Execute SQL queries (returns JSON by default) |
+| `dust_exec` | Execute DDL/DML statements |
+| `dust_status` | Show branch, tables, row counts, schema fingerprint |
+| `dust_branch_list` | List all branches |
+| `dust_branch_create` | Create a new branch |
+| `dust_branch_switch` | Switch branches |
+| `dust_branch_diff` | Compare branches (row count deltas) |
+| `dust_import` | Import CSV files |
+| `dust_schema` | Show CREATE TABLE DDL |
+| `dust_doctor` | Run health checks |
+
+### Available resources
+
+| URI | Description |
+|---|---|
+| `dust://status` | Current project status |
+| `dust://schema` | Full schema DDL |
+| `dust://tables` | Table list with row counts |
+| `dust://branch/current` | Current branch name |
+
+The MCP server runs in the project directory and reuses the same database files as the CLI. All tools accept an optional `path` parameter to target a different project.

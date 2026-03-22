@@ -303,6 +303,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dust-mcp"
+version = "0.1.0"
+dependencies = [
+ "csv",
+ "dust-core",
+ "dust-exec",
+ "dust-store",
+ "dust-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "dust-migrate"
 version = "0.1.0"
 dependencies = [

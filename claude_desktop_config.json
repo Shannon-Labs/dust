@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "dust": {
+      "command": "dust-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
