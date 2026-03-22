@@ -265,6 +265,7 @@ dependencies = [
  "dust-core",
  "dust-exec",
  "dust-mcp",
+ "dust-sql",
  "dust-store",
  "dust-types",
  "miette",

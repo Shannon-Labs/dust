@@ -97,6 +97,7 @@ pub fn run(args: ImportArgs) -> Result<()> {
     match ext.as_str() {
         "json" => run_json_import(file, args.table.as_deref()),
         "jsonl" | "ndjson" => run_jsonl_import(file, args.table.as_deref()),
+        "sql" => run_sql_import(file),
         _ => run_csv_import(
             file,
             args.table.as_deref(),
@@ -383,6 +384,119 @@ fn run_jsonl_import(path: &Path, table: Option<&str>) -> Result<()> {
     println!("Columns: {}", columns.join(", "));
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SQL dump import
+// ---------------------------------------------------------------------------
+
+fn run_sql_import(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Err(DustError::InvalidInput(format!(
+            "file not found: {}",
+            path.display()
+        )));
+    }
+
+    let content = std::fs::read_to_string(path)?;
+
+    // Strip SQLite dump pragmas and comments that dust can't handle
+    let cleaned = strip_sqlite_dump_preamble(&content);
+
+    let db_path = find_db_path(&env::current_dir()?);
+    let mut engine = PersistentEngine::open(&db_path)?;
+
+    let program = dust_sql::parse_program(&cleaned)?;
+
+    let mut tables_created = 0usize;
+    let mut rows_inserted = 0usize;
+    let mut indexes_created = 0usize;
+    let mut skipped = 0usize;
+
+    for statement in &program.statements {
+        let sql = extract_statement_sql(&cleaned, statement);
+        match engine.query(&sql) {
+            Ok(output) => match &output {
+                dust_exec::QueryOutput::Message(msg) if msg.contains("CREATE TABLE") => {
+                    tables_created += 1;
+                }
+                dust_exec::QueryOutput::Message(msg) if msg.contains("CREATE INDEX") => {
+                    indexes_created += 1;
+                }
+                dust_exec::QueryOutput::Message(msg) if msg.contains("INSERT") => {
+                    // Extract row count from "INSERT 0 N"
+                    let count = msg
+                        .split_whitespace()
+                        .last()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    rows_inserted += count;
+                }
+                _ => {}
+            },
+            Err(e) => {
+                // Skip statements that fail (e.g., unsupported pragmas) rather than aborting
+                eprintln!("Warning: skipped statement: {e}");
+                skipped += 1;
+            }
+        }
+    }
+
+    println!("SQL dump imported:");
+    if tables_created > 0 {
+        println!("  Tables created: {tables_created}");
+    }
+    if rows_inserted > 0 {
+        println!("  Rows inserted: {rows_inserted}");
+    }
+    if indexes_created > 0 {
+        println!("  Indexes created: {indexes_created}");
+    }
+    if skipped > 0 {
+        println!("  Statements skipped: {skipped}");
+    }
+
+    Ok(())
+}
+
+/// Strip SQLite dump pragmas (BEGIN TRANSACTION, PRAGMA, COMMIT) that dust
+/// doesn't support, keeping only DDL and DML statements.
+fn strip_sqlite_dump_preamble(sql: &str) -> String {
+    sql.lines()
+        .filter(|line| {
+            let trimmed = line.trim().to_uppercase();
+            !trimmed.starts_with("PRAGMA")
+                && !trimmed.starts_with("BEGIN TRANSACTION")
+                && !trimmed.starts_with("COMMIT")
+                && !trimmed.starts_with("ROLLBACK")
+                && !trimmed.starts_with("SAVEPOINT")
+                && !trimmed.starts_with("RELEASE")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Extract the raw SQL text for a statement from the source.
+fn extract_statement_sql(source: &str, stmt: &dust_sql::AstStatement) -> String {
+    use dust_sql::AstStatement;
+    let span = match stmt {
+        AstStatement::Select(s) => s.span,
+        AstStatement::SetOp { span, .. } => *span,
+        AstStatement::Insert(s) => s.span,
+        AstStatement::Update(s) => s.span,
+        AstStatement::Delete(s) => s.span,
+        AstStatement::CreateTable(s) => s.span,
+        AstStatement::CreateIndex(s) => s.span,
+        AstStatement::DropTable(s) => s.span,
+        AstStatement::DropIndex(s) => s.span,
+        AstStatement::AlterTable(s) => s.span,
+        AstStatement::With(s) => s.span,
+        AstStatement::Begin(span) | AstStatement::Commit(span) | AstStatement::Rollback(span) => {
+            *span
+        }
+        AstStatement::Raw(s) => s.span,
+    };
+    source[span.start..span.end].to_string()
 }
 
 // ---------------------------------------------------------------------------
