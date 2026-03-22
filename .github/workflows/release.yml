@@ -25,6 +25,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             platform: darwin-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            platform: windows-x86_64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -44,18 +47,29 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
-      - name: Package
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/dust dist/
           cd dist
           tar czf ../dust-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz dust
 
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          mkdir dist
+          cp target/${{ matrix.target }}/release/dust.exe dist/
+          Compress-Archive -Path dist/dust.exe -DestinationPath dust-${{ github.ref_name }}-${{ matrix.platform }}.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: dust-${{ matrix.platform }}
-          path: dust-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz
+          path: |
+            dust-*.tar.gz
+            dust-*.zip
 
   release:
     needs: build
@@ -68,5 +82,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: dust-*.tar.gz
+          files: |
+            dust-*.tar.gz
+            dust-*.zip
           generate_release_notes: true
