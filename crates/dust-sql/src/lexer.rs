@@ -76,6 +76,8 @@ pub enum Keyword {
     All,
     Intersect,
     Except,
+    // CTE
+    With,
     // Misc
     Case,
     When,
@@ -435,6 +437,7 @@ fn keyword(text: &str) -> Option<Keyword> {
         "ALL" => Some(Keyword::All),
         "INTERSECT" => Some(Keyword::Intersect),
         "EXCEPT" => Some(Keyword::Except),
+        "WITH" => Some(Keyword::With),
         "CASE" => Some(Keyword::Case),
         "WHEN" => Some(Keyword::When),
         "THEN" => Some(Keyword::Then),

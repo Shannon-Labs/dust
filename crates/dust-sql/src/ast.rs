@@ -54,10 +54,29 @@ pub enum AstStatement {
     DropTable(DropTableStatement),
     DropIndex(DropIndexStatement),
     AlterTable(AlterTableStatement),
+    With(WithStatement),
     Begin(Span),
     Commit(Span),
     Rollback(Span),
     Raw(RawStatement),
+}
+
+// ---------------------------------------------------------------------------
+// WITH (Common Table Expressions)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cte {
+    pub name: Identifier,
+    pub query: SelectStatement,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithStatement {
+    pub ctes: Vec<Cte>,
+    pub body: Box<AstStatement>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -565,6 +584,7 @@ pub enum Statement {
     DropTable { name: String },
     DropIndex { name: String },
     AlterTable { name: String, raw: String },
+    With { raw: String },
     Begin,
     Commit,
     Rollback,
@@ -584,6 +604,7 @@ impl Statement {
             Self::DropTable { name } => format!("drop table {name}"),
             Self::DropIndex { name } => format!("drop index {name}"),
             Self::AlterTable { name, .. } => format!("alter table {name}"),
+            Self::With { .. } => "with".to_string(),
             Self::Begin => "begin".to_string(),
             Self::Commit => "commit".to_string(),
             Self::Rollback => "rollback".to_string(),
