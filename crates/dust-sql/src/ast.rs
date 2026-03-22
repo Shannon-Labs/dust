@@ -42,8 +42,8 @@ pub enum AstStatement {
     Select(Box<SelectStatement>),
     SetOp {
         kind: SetOpKind,
-        left: Box<SelectStatement>,
-        right: Box<SelectStatement>,
+        left: Box<AstStatement>,
+        right: Box<AstStatement>,
         span: Span,
     },
     Insert(InsertStatement),

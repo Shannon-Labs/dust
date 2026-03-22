@@ -7,7 +7,7 @@ use crate::ast::{
     TableConstraint, TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp,
     UpdateStatement, WithStatement,
 };
-use crate::lexer::{Keyword, Token, TokenKind, lex};
+use crate::lexer::{lex, Keyword, Token, TokenKind};
 use dust_types::{DustError, Result};
 
 pub fn parse_program(input: &str) -> Result<Program> {
@@ -165,15 +165,20 @@ impl<'a> Parser<'a> {
     // -----------------------------------------------------------------------
 
     /// Top-level SELECT: consume SELECT keyword, parse body, then check for
-    /// UNION/INTERSECT/EXCEPT set operations. Returns `AstStatement`.
+    /// UNION/INTERSECT/EXCEPT set operations. Supports chaining
+    /// (A UNION B UNION C) via recursive right-side parsing.
     fn parse_select(&mut self) -> Result<AstStatement> {
         self.expect_keyword(Keyword::Select)?;
         let left = self.parse_select_body()?;
+        self.parse_set_op_rhs(AstStatement::Select(Box::new(left)))
+    }
 
-        // Check for set operations: UNION [ALL], INTERSECT, EXCEPT
+    /// After a left-hand statement, check for a set operator and parse the
+    /// right side recursively. This enables left-associative chaining.
+    fn parse_set_op_rhs(&mut self, left: AstStatement) -> Result<AstStatement> {
         let set_op_kind = match self.peek_keyword() {
             Some(Keyword::Union) => {
-                self.bump(); // consume UNION
+                self.bump();
                 if self.eat_keyword(Keyword::All)? {
                     Some(SetOpKind::UnionAll)
                 } else {
@@ -181,29 +186,32 @@ impl<'a> Parser<'a> {
                 }
             }
             Some(Keyword::Intersect) => {
-                self.bump(); // consume INTERSECT
+                self.bump();
                 Some(SetOpKind::Intersect)
             }
             Some(Keyword::Except) => {
-                self.bump(); // consume EXCEPT
+                self.bump();
                 Some(SetOpKind::Except)
             }
             _ => None,
         };
 
         if let Some(kind) = set_op_kind {
-            // Parse the right-hand SELECT
-            self.expect_keyword(Keyword::Select)?;
-            let right = self.parse_select_body()?;
-            let full_span = left.span.join(right.span);
-            Ok(AstStatement::SetOp {
+            // Parse the right-hand side as a full statement (supports chaining)
+            let right = self.parse_statement()?;
+            let left_span = statement_span(&left);
+            let right_span = statement_span(&right);
+            let full_span = left_span.join(right_span);
+            let stmt = AstStatement::SetOp {
                 kind,
                 left: Box::new(left),
                 right: Box::new(right),
                 span: full_span,
-            })
+            };
+            // Check for further chaining
+            self.parse_set_op_rhs(stmt)
         } else {
-            Ok(AstStatement::Select(Box::new(left)))
+            Ok(left)
         }
     }
 
@@ -218,7 +226,9 @@ impl<'a> Parser<'a> {
     /// Gets start position from the previous token. Returns `SelectStatement`.
     fn parse_select_body(&mut self) -> Result<SelectStatement> {
         // The SELECT keyword was already consumed; its span end is our start
-        let start = self.tokens.get(self.pos.saturating_sub(1))
+        let start = self
+            .tokens
+            .get(self.pos.saturating_sub(1))
             .map(|t| t.span.start)
             .unwrap_or(0);
         let distinct = self.eat_keyword(Keyword::Distinct)?;
@@ -903,7 +913,9 @@ impl<'a> Parser<'a> {
                         ColumnConstraint::Autoincrement {
                             span: Span::new(
                                 ai_start,
-                                self.previous_span().map(|span| span.end).unwrap_or(ai_start),
+                                self.previous_span()
+                                    .map(|span| span.end)
+                                    .unwrap_or(ai_start),
                             ),
                         }
                     } else {

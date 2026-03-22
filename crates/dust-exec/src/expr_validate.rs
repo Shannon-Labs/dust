@@ -207,6 +207,10 @@ fn validate_update(update: &UpdateStatement) -> Result<()> {
 pub fn validate_ast_statement(statement: &AstStatement) -> Result<()> {
     match statement {
         AstStatement::Select(s) => validate_select(s),
+        AstStatement::SetOp { left, right, .. } => {
+            validate_ast_statement(left)?;
+            validate_ast_statement(right)
+        }
         AstStatement::Insert(i) => validate_insert(i),
         AstStatement::Update(u) => validate_update(u),
         AstStatement::Delete(d) => {

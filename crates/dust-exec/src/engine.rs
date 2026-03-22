@@ -8,10 +8,10 @@ use dust_plan::{
     LogicalPlan, PhysicalPlan, PlannedStatement, SelectColumns, TableColumnPlan,
 };
 use dust_sql::{
-    AlterTableAction, AstStatement, BinOp, ColumnConstraint, CreateIndexStatement,
+    parse_program, AlterTableAction, AstStatement, BinOp, ColumnConstraint, CreateIndexStatement,
     CreateTableStatement, DeleteStatement, Expr, IndexOrdering as AstIndexOrdering,
     InsertStatement, SelectItem, SelectProjection, SetOpKind, Span, TableConstraint, TableElement,
-    TokenFragment, UpdateStatement, parse_program,
+    TokenFragment, UpdateStatement,
 };
 use dust_types::{DustError, Result};
 
@@ -97,10 +97,7 @@ impl ExecutionEngine {
         match statement {
             AstStatement::Select(select) => self.execute_select(select),
             AstStatement::SetOp {
-                kind,
-                left,
-                right,
-                ..
+                kind, left, right, ..
             } => self.execute_set_op(*kind, left, right),
             AstStatement::Insert(insert) => self.execute_insert(source, insert),
             AstStatement::Update(update) => self.execute_update(source, update),
@@ -318,11 +315,11 @@ impl ExecutionEngine {
     fn execute_set_op(
         &self,
         kind: SetOpKind,
-        left: &dust_sql::SelectStatement,
-        right: &dust_sql::SelectStatement,
+        left: &AstStatement,
+        right: &AstStatement,
     ) -> Result<QueryOutput> {
-        let left_output = self.execute_select(left)?;
-        let right_output = self.execute_select(right)?;
+        let left_output = Self::execute_set_op_operand(self, left)?;
+        let right_output = Self::execute_set_op_operand(self, right)?;
 
         match (left_output, right_output) {
             (
@@ -331,43 +328,37 @@ impl ExecutionEngine {
                     rows: left_rows,
                 },
                 QueryOutput::Rows {
-                    rows: right_rows, ..
+                    columns: right_columns,
+                    rows: right_rows,
                 },
             ) => {
-                let rows = match kind {
-                    SetOpKind::UnionAll => {
-                        let mut combined = left_rows;
-                        combined.extend(right_rows);
-                        combined
-                    }
-                    SetOpKind::Union => {
-                        let mut combined = left_rows;
-                        combined.extend(right_rows);
-                        let mut seen = std::collections::HashSet::new();
-                        combined.retain(|row| seen.insert(row.clone()));
-                        combined
-                    }
-                    SetOpKind::Intersect => {
-                        let right_set: std::collections::HashSet<_> =
-                            right_rows.into_iter().collect();
-                        left_rows
-                            .into_iter()
-                            .filter(|row| right_set.contains(row))
-                            .collect()
-                    }
-                    SetOpKind::Except => {
-                        let right_set: std::collections::HashSet<_> =
-                            right_rows.into_iter().collect();
-                        left_rows
-                            .into_iter()
-                            .filter(|row| !right_set.contains(row))
-                            .collect()
-                    }
-                };
+                let (columns, rows) = crate::set_ops::combine_set_op_rows(
+                    kind,
+                    columns,
+                    left_rows,
+                    right_columns,
+                    right_rows,
+                )?;
                 Ok(QueryOutput::Rows { columns, rows })
             }
             _ => Err(DustError::UnsupportedQuery(
                 "set operations require SELECT queries that return rows".to_string(),
+            )),
+        }
+    }
+
+    /// Dispatch a set-operation operand: handles SELECT and nested SetOp recursively.
+    fn execute_set_op_operand(
+        engine: &ExecutionEngine,
+        stmt: &AstStatement,
+    ) -> Result<QueryOutput> {
+        match stmt {
+            AstStatement::Select(s) => engine.execute_select(s),
+            AstStatement::SetOp {
+                kind, left, right, ..
+            } => engine.execute_set_op(*kind, left, right),
+            _ => Err(DustError::UnsupportedQuery(
+                "set operation operand must be a SELECT or another set operation".to_string(),
             )),
         }
     }
@@ -530,22 +521,35 @@ impl ExecutionEngine {
         Ok(QueryOutput::Message("CREATE INDEX".to_string()))
     }
 
-    fn execute_grouped_select(
-        &self,
-        select: &dust_sql::SelectStatement,
-    ) -> Result<QueryOutput> {
+    fn execute_grouped_select(&self, select: &dust_sql::SelectStatement) -> Result<QueryOutput> {
         let table_name = select
             .legacy_from()
             .ok_or_else(|| {
-                DustError::UnsupportedQuery(
-                    "GROUP BY requires a FROM clause".to_string(),
-                )
+                DustError::UnsupportedQuery("GROUP BY requires a FROM clause".to_string())
             })?
             .value
             .as_str();
         let store = self.storage.table(table_name).ok_or_else(|| {
             DustError::InvalidInput(format!("table `{table_name}` does not exist"))
         })?;
+
+        // Validate: non-aggregate SELECT columns must appear in GROUP BY
+        for item in &select.projection {
+            if let SelectItem::Expr { expr, .. } = item {
+                if !is_aggregate_expr(expr) {
+                    for col_ref in collect_column_refs(expr) {
+                        if !select.group_by.iter().any(|g| {
+                            collect_column_refs(g).len() == 1
+                                && collect_column_refs(g)[0] == col_ref
+                        }) {
+                            return Err(DustError::InvalidInput(format!(
+                                "column `{col_ref}` must appear in GROUP BY clause or be used in an aggregate function"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
 
         // 1. Apply WHERE filter
         let filtered_rows: Vec<&Vec<Value>> = if let Some(where_expr) = &select.where_clause {
@@ -602,8 +606,7 @@ impl ExecutionEngine {
 
             // 5. Apply HAVING filter if present
             if let Some(having_expr) = &select.having {
-                let having_val =
-                    eval_expr_aggregate(having_expr, &store.columns, group_rows);
+                let having_val = eval_expr_aggregate(having_expr, &store.columns, group_rows);
                 match having_val {
                     Value::Boolean(true) => {}
                     Value::Integer(n) if n != 0 => {}
@@ -612,6 +615,40 @@ impl ExecutionEngine {
             }
 
             output_rows.push(row_values.iter().map(|v| v.to_string()).collect());
+        }
+
+        // 6. Apply ORDER BY if present
+        if !select.order_by.is_empty() {
+            output_rows.sort_by(|a, b| {
+                for item in &select.order_by {
+                    let col_idx = match &item.expr {
+                        Expr::ColumnRef(cref) => {
+                            output_columns.iter().position(|c| c == &cref.column.value)
+                        }
+                        _ => None,
+                    };
+                    if let Some(idx) = col_idx {
+                        let aval = a.get(idx).map(|s| s.as_str()).unwrap_or("");
+                        let bval = b.get(idx).map(|s| s.as_str()).unwrap_or("");
+                        let cmp = cmp_string_values(aval, bval);
+                        let cmp = if item.ordering == Some(dust_sql::IndexOrdering::Desc) {
+                            cmp.reverse()
+                        } else {
+                            cmp
+                        };
+                        if cmp != std::cmp::Ordering::Equal {
+                            return cmp;
+                        }
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+
+        // 7. Apply DISTINCT if present
+        if select.distinct {
+            let mut seen = std::collections::HashSet::new();
+            output_rows.retain(|row| seen.insert(row.clone()));
         }
 
         Ok(QueryOutput::Rows {
@@ -643,7 +680,11 @@ fn expr_display_name(expr: &Expr) -> String {
         Expr::ColumnRef(cref) => cref.column.value.clone(),
         Expr::FunctionCall { name, args, .. } => {
             let arg_strs: Vec<String> = args.iter().map(|a| expr_display_name(a)).collect();
-            format!("{}({})", name.value.to_ascii_lowercase(), arg_strs.join(", "))
+            format!(
+                "{}({})",
+                name.value.to_ascii_lowercase(),
+                arg_strs.join(", ")
+            )
         }
         Expr::Star(_) => "*".to_string(),
         Expr::Integer(lit) => lit.value.to_string(),
@@ -659,6 +700,47 @@ fn is_aggregate_fn(name: &str) -> bool {
         name.to_ascii_lowercase().as_str(),
         "count" | "sum" | "avg" | "min" | "max"
     )
+}
+
+/// Returns true if the expression tree contains an aggregate function call.
+fn is_aggregate_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { name, args, .. } => {
+            if is_aggregate_fn(&name.value) {
+                return true;
+            }
+            args.iter().any(is_aggregate_expr)
+        }
+        Expr::BinaryOp { left, right, .. } => is_aggregate_expr(left) || is_aggregate_expr(right),
+        Expr::UnaryOp { operand, .. } => is_aggregate_expr(operand),
+        Expr::Parenthesized { expr, .. } => is_aggregate_expr(expr),
+        _ => false,
+    }
+}
+
+/// Collect all simple column reference names from an expression tree.
+fn collect_column_refs(expr: &Expr) -> Vec<String> {
+    match expr {
+        Expr::ColumnRef(cref) => vec![cref.column.value.clone()],
+        Expr::FunctionCall { args, .. } => args.iter().flat_map(collect_column_refs).collect(),
+        Expr::BinaryOp { left, right, .. } => {
+            let mut refs = collect_column_refs(left);
+            refs.extend(collect_column_refs(right));
+            refs
+        }
+        Expr::UnaryOp { operand, .. } => collect_column_refs(operand),
+        Expr::Parenthesized { expr, .. } => collect_column_refs(expr),
+        _ => Vec::new(),
+    }
+}
+
+/// Compare two string values numerically if both parse as numbers, else lexicographically.
+fn cmp_string_values(a: &str, b: &str) -> std::cmp::Ordering {
+    if let (Ok(a), Ok(b)) = (a.parse::<f64>(), b.parse::<f64>()) {
+        a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+    } else {
+        a.cmp(b)
+    }
 }
 
 /// Evaluate an expression within a GROUP BY aggregate context.
@@ -679,9 +761,7 @@ fn eval_expr_aggregate(expr: &Expr, columns: &[String], group: &[&Vec<Value>]) -
             let rval = eval_expr_aggregate(right, columns, group);
             eval_binary_op(*op, &lval, &rval)
         }
-        Expr::Parenthesized { expr: inner, .. } => {
-            eval_expr_aggregate(inner, columns, group)
-        }
+        Expr::Parenthesized { expr: inner, .. } => eval_expr_aggregate(inner, columns, group),
         _ => {
             // Non-aggregate leaf: evaluate against the first row of the group
             if let Some(first) = group.first() {
@@ -748,7 +828,8 @@ fn eval_aggregate_fn(
                     }
                 }
                 if count > 0 {
-                    Value::Integer(total / count)
+                    let avg = total as f64 / count as f64;
+                    Value::Text(avg.to_string())
                 } else {
                     Value::Null
                 }
@@ -1150,7 +1231,14 @@ fn plan_statement(source: &str, statement: &AstStatement) -> PlannedStatement {
         AstStatement::Select(select) => plan_select(source, select),
         AstStatement::SetOp { left, span, .. } => {
             let sql = slice_source(source, *span);
-            plan_select(&sql, left)
+            match left.as_ref() {
+                AstStatement::Select(select) => plan_select(&sql, select),
+                _ => PlannedStatement::new(
+                    sql.clone(),
+                    LogicalPlan::parse_only(sql.clone()),
+                    PhysicalPlan::parse_only(),
+                ),
+            }
         }
         AstStatement::Insert(insert) => plan_insert(source, insert),
         AstStatement::Update(update) => PlannedStatement::new(
@@ -1892,9 +1980,7 @@ mod tests {
         engine
             .query("INSERT INTO t (name) VALUES ('Alice')")
             .unwrap();
-        engine
-            .query("INSERT INTO t (name) VALUES ('Bob')")
-            .unwrap();
+        engine.query("INSERT INTO t (name) VALUES ('Bob')").unwrap();
 
         let output = engine.query("SELECT * FROM t").unwrap();
         assert_eq!(
@@ -1940,9 +2026,7 @@ mod tests {
         engine
             .query("INSERT INTO t (id, name) VALUES (10, 'Alice')")
             .unwrap();
-        engine
-            .query("INSERT INTO t (name) VALUES ('Bob')")
-            .unwrap();
+        engine.query("INSERT INTO t (name) VALUES ('Bob')").unwrap();
 
         let output = engine.query("SELECT * FROM t").unwrap();
         assert_eq!(

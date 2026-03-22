@@ -97,7 +97,12 @@ pub fn run(args: ImportArgs) -> Result<()> {
     match ext.as_str() {
         "json" => run_json_import(file, args.table.as_deref()),
         "jsonl" | "ndjson" => run_jsonl_import(file, args.table.as_deref()),
-        _ => run_csv_import(file, args.table.as_deref(), !args.skip_header(), &args.separator),
+        _ => run_csv_import(
+            file,
+            args.table.as_deref(),
+            !args.skip_header(),
+            &args.separator,
+        ),
     }
 }
 
@@ -267,9 +272,8 @@ fn run_json_import(path: &Path, table: Option<&str>) -> Result<()> {
     }
 
     let content = std::fs::read_to_string(path)?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
-        DustError::InvalidInput(format!("invalid JSON: {e}"))
-    })?;
+    let parsed: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| DustError::InvalidInput(format!("invalid JSON: {e}")))?;
 
     let array = match parsed {
         serde_json::Value::Array(arr) => arr,
@@ -281,9 +285,7 @@ fn run_json_import(path: &Path, table: Option<&str>) -> Result<()> {
     };
 
     if array.is_empty() {
-        return Err(DustError::InvalidInput(
-            "JSON array is empty".to_string(),
-        ));
+        return Err(DustError::InvalidInput("JSON array is empty".to_string()));
     }
 
     // Collect the union of all keys across all objects (sorted for determinism)
@@ -396,8 +398,8 @@ fn table_name_from_path(path: &Path) -> String {
     sanitize_identifier(stem).to_string()
 }
 
-/// Sanitize a string for use as a SQL identifier (table name).
-fn sanitize_identifier(name: &str) -> String {
+/// Core sanitization: lowercase, trim, replace non-alphanumeric with `_`.
+fn sanitize_sql_name(name: &str, default: &str, prefix: &str) -> String {
     let clean: String = name
         .trim()
         .to_lowercase()
@@ -411,35 +413,22 @@ fn sanitize_identifier(name: &str) -> String {
         })
         .collect();
     if clean.is_empty() {
-        "imported".to_string()
+        default.to_string()
     } else if clean.chars().next().unwrap().is_ascii_digit() {
-        format!("t_{clean}")
+        format!("{prefix}{clean}")
     } else {
         clean
     }
 }
 
+/// Sanitize a string for use as a SQL identifier (table name).
+fn sanitize_identifier(name: &str) -> String {
+    sanitize_sql_name(name, "imported", "t_")
+}
+
 /// Sanitize a string for use as a column name.
 fn sanitize_column_name(name: &str) -> String {
-    let clean: String = name
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if clean.is_empty() {
-        "column".to_string()
-    } else if clean.chars().next().unwrap().is_ascii_digit() {
-        format!("col_{clean}")
-    } else {
-        clean
-    }
+    sanitize_sql_name(name, "column", "col_")
 }
 
 /// Collect the union of all keys from a slice of JSON values (must be objects).
@@ -531,11 +520,9 @@ fn insert_json_rows(
 
                 let values = columns
                     .iter()
-                    .map(|col| {
-                        match sanitized_map.get(col) {
-                            Some(val) => json_value_to_sql(val),
-                            None => "NULL".to_string(),
-                        }
+                    .map(|col| match sanitized_map.get(col) {
+                        Some(val) => json_value_to_sql(val),
+                        None => "NULL".to_string(),
                     })
                     .collect::<Vec<_>>()
                     .join(", ");

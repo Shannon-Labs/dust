@@ -735,11 +735,11 @@ impl PersistentEngine {
     fn execute_set_op(
         &mut self,
         kind: SetOpKind,
-        left: &dust_sql::SelectStatement,
-        right: &dust_sql::SelectStatement,
+        left: &AstStatement,
+        right: &AstStatement,
     ) -> Result<QueryOutput> {
-        let left_output = self.execute_select(left)?;
-        let right_output = self.execute_select(right)?;
+        let left_output = self.execute_set_op_operand(left)?;
+        let right_output = self.execute_set_op_operand(right)?;
 
         match (left_output, right_output) {
             (
@@ -748,43 +748,29 @@ impl PersistentEngine {
                     rows: left_rows,
                 },
                 QueryOutput::Rows {
-                    rows: right_rows, ..
+                    columns: right_columns,
+                    rows: right_rows,
                 },
             ) => {
-                let rows = match kind {
-                    SetOpKind::UnionAll => {
-                        let mut combined = left_rows;
-                        combined.extend(right_rows);
-                        combined
-                    }
-                    SetOpKind::Union => {
-                        let mut combined = left_rows;
-                        combined.extend(right_rows);
-                        let mut seen = std::collections::HashSet::new();
-                        combined.retain(|row| seen.insert(row.clone()));
-                        combined
-                    }
-                    SetOpKind::Intersect => {
-                        let right_set: std::collections::HashSet<_> =
-                            right_rows.into_iter().collect();
-                        left_rows
-                            .into_iter()
-                            .filter(|row| right_set.contains(row))
-                            .collect()
-                    }
-                    SetOpKind::Except => {
-                        let right_set: std::collections::HashSet<_> =
-                            right_rows.into_iter().collect();
-                        left_rows
-                            .into_iter()
-                            .filter(|row| !right_set.contains(row))
-                            .collect()
-                    }
-                };
+                let (columns, rows) =
+                    crate::set_ops::combine_set_op_rows(kind, columns, left_rows, right_columns, right_rows)?;
                 Ok(QueryOutput::Rows { columns, rows })
             }
             _ => Err(DustError::UnsupportedQuery(
                 "set operations require SELECT queries that return rows".to_string(),
+            )),
+        }
+    }
+
+    /// Dispatch a set-operation operand: handles SELECT and nested SetOp recursively.
+    fn execute_set_op_operand(&mut self, stmt: &AstStatement) -> Result<QueryOutput> {
+        match stmt {
+            AstStatement::Select(s) => self.execute_select(s),
+            AstStatement::SetOp {
+                kind, left, right, ..
+            } => self.execute_set_op(*kind, left, right),
+            _ => Err(DustError::UnsupportedQuery(
+                "set operation operand must be a SELECT or another set operation".to_string(),
             )),
         }
     }
