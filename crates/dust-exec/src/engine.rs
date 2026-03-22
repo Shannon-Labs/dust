@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::binder::bind_statement;
 use crate::storage::{Storage, Value};
 use dust_catalog::CatalogBuilder;
@@ -8,8 +10,8 @@ use dust_plan::{
 use dust_sql::{
     AlterTableAction, AstStatement, BinOp, ColumnConstraint, CreateIndexStatement,
     CreateTableStatement, DeleteStatement, Expr, IndexOrdering as AstIndexOrdering,
-    InsertStatement, SelectProjection, Span, TableConstraint, TableElement, TokenFragment,
-    UpdateStatement, parse_program,
+    InsertStatement, SelectItem, SelectProjection, Span, TableConstraint, TableElement,
+    TokenFragment, UpdateStatement, parse_program,
 };
 use dust_types::{DustError, Result};
 
@@ -136,6 +138,11 @@ impl ExecutionEngine {
     }
 
     fn execute_select(&self, select: &dust_sql::SelectStatement) -> Result<QueryOutput> {
+        // Route to grouped execution if GROUP BY is present
+        if !select.group_by.is_empty() {
+            return self.execute_grouped_select(select);
+        }
+
         let projection = select.legacy_projection();
         match &projection {
             SelectProjection::Integer(lit) => Ok(QueryOutput::Rows {
@@ -367,6 +374,283 @@ impl ExecutionEngine {
     fn execute_create_index(&mut self, index: &CreateIndexStatement) -> Result<QueryOutput> {
         self.catalog.register_index_from_ast(index)?;
         Ok(QueryOutput::Message("CREATE INDEX".to_string()))
+    }
+
+    fn execute_grouped_select(
+        &self,
+        select: &dust_sql::SelectStatement,
+    ) -> Result<QueryOutput> {
+        let table_name = select
+            .legacy_from()
+            .ok_or_else(|| {
+                DustError::UnsupportedQuery(
+                    "GROUP BY requires a FROM clause".to_string(),
+                )
+            })?
+            .value
+            .as_str();
+        let store = self.storage.table(table_name).ok_or_else(|| {
+            DustError::InvalidInput(format!("table `{table_name}` does not exist"))
+        })?;
+
+        // 1. Apply WHERE filter
+        let filtered_rows: Vec<&Vec<Value>> = if let Some(where_expr) = &select.where_clause {
+            store
+                .rows
+                .iter()
+                .filter(|row| eval_where(where_expr, &store.columns, row))
+                .collect()
+        } else {
+            store.rows.iter().collect()
+        };
+
+        // 2. Group rows by evaluating GROUP BY expressions
+        let mut groups: Vec<(Vec<Value>, Vec<&Vec<Value>>)> = Vec::new();
+        let mut group_index: HashMap<Vec<String>, usize> = HashMap::new();
+
+        for row in &filtered_rows {
+            let key: Vec<Value> = select
+                .group_by
+                .iter()
+                .map(|expr| eval_expr_to_value(expr, &store.columns, row))
+                .collect();
+            let key_str: Vec<String> = key.iter().map(|v| v.to_string()).collect();
+
+            if let Some(&idx) = group_index.get(&key_str) {
+                groups[idx].1.push(row);
+            } else {
+                let idx = groups.len();
+                group_index.insert(key_str, idx);
+                groups.push((key, vec![row]));
+            }
+        }
+
+        // 3. Build output column names from the projection
+        let output_columns: Vec<String> = select
+            .projection
+            .iter()
+            .map(|item| select_item_name(item))
+            .collect();
+
+        // 4. Evaluate each group to produce output rows
+        let mut output_rows: Vec<Vec<String>> = Vec::new();
+        for (_group_key, group_rows) in &groups {
+            let row_values: Vec<Value> = select
+                .projection
+                .iter()
+                .map(|item| match item {
+                    SelectItem::Expr { expr, .. } => {
+                        eval_expr_aggregate(expr, &store.columns, group_rows)
+                    }
+                    SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard { .. } => Value::Null,
+                })
+                .collect();
+
+            // 5. Apply HAVING filter if present
+            if let Some(having_expr) = &select.having {
+                let having_val =
+                    eval_expr_aggregate(having_expr, &store.columns, group_rows);
+                match having_val {
+                    Value::Boolean(true) => {}
+                    Value::Integer(n) if n != 0 => {}
+                    _ => continue, // skip this group
+                }
+            }
+
+            output_rows.push(row_values.iter().map(|v| v.to_string()).collect());
+        }
+
+        Ok(QueryOutput::Rows {
+            columns: output_columns,
+            rows: output_rows,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GROUP BY helpers
+// ---------------------------------------------------------------------------
+
+/// Derive a display name for a SELECT item (used as column header).
+fn select_item_name(item: &SelectItem) -> String {
+    match item {
+        SelectItem::Expr {
+            alias: Some(alias), ..
+        } => alias.value.clone(),
+        SelectItem::Expr { expr, .. } => expr_display_name(expr),
+        SelectItem::Wildcard(_) => "*".to_string(),
+        SelectItem::QualifiedWildcard { table, .. } => format!("{}.*", table.value),
+    }
+}
+
+/// Human-readable name for an expression (used for column headers).
+fn expr_display_name(expr: &Expr) -> String {
+    match expr {
+        Expr::ColumnRef(cref) => cref.column.value.clone(),
+        Expr::FunctionCall { name, args, .. } => {
+            let arg_strs: Vec<String> = args.iter().map(|a| expr_display_name(a)).collect();
+            format!("{}({})", name.value.to_ascii_lowercase(), arg_strs.join(", "))
+        }
+        Expr::Star(_) => "*".to_string(),
+        Expr::Integer(lit) => lit.value.to_string(),
+        Expr::StringLit { value, .. } => format!("'{value}'"),
+        Expr::Parenthesized { expr: inner, .. } => expr_display_name(inner),
+        _ => "?column?".to_string(),
+    }
+}
+
+/// Returns true if the expression is an aggregate function call (COUNT, SUM, AVG, MIN, MAX).
+fn is_aggregate_fn(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "count" | "sum" | "avg" | "min" | "max"
+    )
+}
+
+/// Evaluate an expression within a GROUP BY aggregate context.
+///
+/// Non-aggregate expressions are evaluated against the first row of the group.
+/// Aggregate function calls (COUNT, SUM, AVG, MIN, MAX) are computed over all
+/// rows in the group.
+fn eval_expr_aggregate(expr: &Expr, columns: &[String], group: &[&Vec<Value>]) -> Value {
+    match expr {
+        Expr::FunctionCall { name, args, .. } if is_aggregate_fn(&name.value) => {
+            eval_aggregate_fn(&name.value, args, columns, group)
+        }
+        // For non-aggregate expressions, evaluate against the first row
+        Expr::BinaryOp {
+            left, op, right, ..
+        } => {
+            let lval = eval_expr_aggregate(left, columns, group);
+            let rval = eval_expr_aggregate(right, columns, group);
+            eval_binary_op(*op, &lval, &rval)
+        }
+        Expr::Parenthesized { expr: inner, .. } => {
+            eval_expr_aggregate(inner, columns, group)
+        }
+        _ => {
+            // Non-aggregate leaf: evaluate against the first row of the group
+            if let Some(first) = group.first() {
+                eval_expr_to_value(expr, columns, first)
+            } else {
+                Value::Null
+            }
+        }
+    }
+}
+
+/// Evaluate an aggregate function over all rows in a group.
+fn eval_aggregate_fn(
+    name: &str,
+    args: &[Expr],
+    columns: &[String],
+    group: &[&Vec<Value>],
+) -> Value {
+    match name.to_ascii_lowercase().as_str() {
+        "count" => {
+            // COUNT(*) or COUNT(expr)
+            if args.len() == 1 && matches!(&args[0], Expr::Star(_)) {
+                // COUNT(*)
+                Value::Integer(group.len() as i64)
+            } else if let Some(arg) = args.first() {
+                // COUNT(expr) — count non-NULL values
+                let count = group
+                    .iter()
+                    .filter(|row| !matches!(eval_expr_to_value(arg, columns, row), Value::Null))
+                    .count();
+                Value::Integer(count as i64)
+            } else {
+                // COUNT() with no args — treat as COUNT(*)
+                Value::Integer(group.len() as i64)
+            }
+        }
+        "sum" => {
+            if let Some(arg) = args.first() {
+                let mut total: i64 = 0;
+                let mut any_value = false;
+                for row in group {
+                    if let Value::Integer(n) = eval_expr_to_value(arg, columns, row) {
+                        total += n;
+                        any_value = true;
+                    }
+                }
+                if any_value {
+                    Value::Integer(total)
+                } else {
+                    Value::Null
+                }
+            } else {
+                Value::Null
+            }
+        }
+        "avg" => {
+            if let Some(arg) = args.first() {
+                let mut total: i64 = 0;
+                let mut count: i64 = 0;
+                for row in group {
+                    if let Value::Integer(n) = eval_expr_to_value(arg, columns, row) {
+                        total += n;
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    Value::Integer(total / count)
+                } else {
+                    Value::Null
+                }
+            } else {
+                Value::Null
+            }
+        }
+        "min" => {
+            if let Some(arg) = args.first() {
+                let mut min_val: Option<Value> = None;
+                for row in group {
+                    let val = eval_expr_to_value(arg, columns, row);
+                    if matches!(val, Value::Null) {
+                        continue;
+                    }
+                    min_val = Some(match min_val {
+                        None => val,
+                        Some(current) => {
+                            if eval_binary_op(BinOp::Lt, &val, &current) == Value::Boolean(true) {
+                                val
+                            } else {
+                                current
+                            }
+                        }
+                    });
+                }
+                min_val.unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            }
+        }
+        "max" => {
+            if let Some(arg) = args.first() {
+                let mut max_val: Option<Value> = None;
+                for row in group {
+                    let val = eval_expr_to_value(arg, columns, row);
+                    if matches!(val, Value::Null) {
+                        continue;
+                    }
+                    max_val = Some(match max_val {
+                        None => val,
+                        Some(current) => {
+                            if eval_binary_op(BinOp::Gt, &val, &current) == Value::Boolean(true) {
+                                val
+                            } else {
+                                current
+                            }
+                        }
+                    });
+                }
+                max_val.unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            }
+        }
+        _ => Value::Null,
     }
 }
 
@@ -1286,5 +1570,165 @@ mod tests {
                 ],
             }
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // GROUP BY + HAVING tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn group_by_with_sum() {
+        let mut engine = new_engine();
+        engine
+            .query("create table sales (product text, region text, amount integer)")
+            .unwrap();
+        engine
+            .query("insert into sales values ('A', 'East', 100), ('A', 'West', 200), ('B', 'East', 150), ('A', 'East', 50)")
+            .unwrap();
+
+        let output = engine
+            .query("select product, sum(amount) from sales group by product")
+            .unwrap();
+
+        // Should return A|350, B|150
+        match &output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(columns, &["product", "sum(amount)"]);
+                assert_eq!(rows.len(), 2);
+                // A group: 100 + 200 + 50 = 350
+                assert_eq!(rows[0], vec!["A".to_string(), "350".to_string()]);
+                // B group: 150
+                assert_eq!(rows[1], vec!["B".to_string(), "150".to_string()]);
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn group_by_multi_column_with_having() {
+        let mut engine = new_engine();
+        engine
+            .query("create table sales (product text, region text, amount integer)")
+            .unwrap();
+        engine
+            .query("insert into sales values ('A', 'East', 100), ('A', 'West', 200), ('B', 'East', 150), ('A', 'East', 50)")
+            .unwrap();
+
+        let output = engine
+            .query("select product, region, count(*) from sales group by product, region having count(*) > 1")
+            .unwrap();
+
+        // Only A|East has count > 1 (count=2)
+        match &output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(columns, &["product", "region", "count(*)"]);
+                assert_eq!(rows.len(), 1);
+                assert_eq!(
+                    rows[0],
+                    vec!["A".to_string(), "East".to_string(), "2".to_string()]
+                );
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn group_by_count_star() {
+        let mut engine = new_engine();
+        engine
+            .query("create table items (category text, name text)")
+            .unwrap();
+        engine
+            .query("insert into items values ('fruit', 'apple'), ('fruit', 'banana'), ('veg', 'carrot')")
+            .unwrap();
+
+        let output = engine
+            .query("select category, count(*) from items group by category")
+            .unwrap();
+
+        match &output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(columns, &["category", "count(*)"]);
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0], vec!["fruit".to_string(), "2".to_string()]);
+                assert_eq!(rows[1], vec!["veg".to_string(), "1".to_string()]);
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn group_by_min_max_avg() {
+        let mut engine = new_engine();
+        engine
+            .query("create table scores (team text, points integer)")
+            .unwrap();
+        engine
+            .query("insert into scores values ('X', 10), ('X', 20), ('X', 30), ('Y', 5), ('Y', 15)")
+            .unwrap();
+
+        let output = engine
+            .query("select team, min(points), max(points), avg(points) from scores group by team")
+            .unwrap();
+
+        match &output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(
+                    columns,
+                    &["team", "min(points)", "max(points)", "avg(points)"]
+                );
+                assert_eq!(rows.len(), 2);
+                // X: min=10, max=30, avg=20
+                assert_eq!(
+                    rows[0],
+                    vec![
+                        "X".to_string(),
+                        "10".to_string(),
+                        "30".to_string(),
+                        "20".to_string()
+                    ]
+                );
+                // Y: min=5, max=15, avg=10
+                assert_eq!(
+                    rows[1],
+                    vec![
+                        "Y".to_string(),
+                        "5".to_string(),
+                        "15".to_string(),
+                        "10".to_string()
+                    ]
+                );
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn group_by_with_where_and_having() {
+        let mut engine = new_engine();
+        engine
+            .query("create table sales (product text, region text, amount integer)")
+            .unwrap();
+        engine
+            .query("insert into sales values ('A', 'East', 100), ('A', 'West', 200), ('B', 'East', 150), ('A', 'East', 50), ('B', 'West', 10)")
+            .unwrap();
+
+        // WHERE filters first, then GROUP BY, then HAVING
+        let output = engine
+            .query("select product, sum(amount) from sales where amount > 20 group by product having sum(amount) > 200")
+            .unwrap();
+
+        match &output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(columns, &["product", "sum(amount)"]);
+                // After WHERE (amount > 20): A/East/100, A/West/200, B/East/150, A/East/50
+                // (B/West/10 is filtered out)
+                // A: 100+200+50 = 350 (> 200, passes HAVING)
+                // B: 150 (not > 200, fails HAVING)
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0], vec!["A".to_string(), "350".to_string()]);
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
     }
 }
