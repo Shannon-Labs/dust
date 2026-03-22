@@ -1,11 +1,11 @@
 use crate::ast::{
     AlterTableAction, AlterTableStatement, Assignment, AstStatement, BinOp, ColumnConstraint,
-    ColumnDef, ColumnRef, CreateIndexStatement, CreateTableStatement, Cte, DeleteStatement,
-    DropIndexStatement, DropTableStatement, Expr, FromClause, Identifier, IndexColumn,
-    IndexOrdering, InsertStatement, IntegerLiteral, JoinClause, JoinType, OrderByItem, Program,
-    RawStatement, SelectItem, SelectProjection, SelectStatement, SetOpKind, Span, Statement,
-    TableConstraint, TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp,
-    UpdateStatement, WindowSpec, WithStatement,
+    ColumnDef, ColumnRef, ConflictResolution, CreateIndexStatement, CreateTableStatement, Cte,
+    DeleteStatement, DropIndexStatement, DropTableStatement, Expr, FromClause, Identifier,
+    IndexColumn, IndexOrdering, InsertStatement, IntegerLiteral, JoinClause, JoinType, OrderByItem,
+    Program, RawStatement, SelectItem, SelectProjection, SelectStatement, SetOpKind, Span,
+    Statement, TableConstraint, TableConstraintKind, TableElement, TokenFragment, TypeName,
+    UnaryOp, UpdateStatement, WindowSpec, WithStatement,
 };
 use crate::lexer::{lex, Keyword, Token, TokenKind};
 use dust_types::{DustError, Result};
@@ -534,6 +534,22 @@ impl<'a> Parser<'a> {
     fn parse_insert(&mut self) -> Result<AstStatement> {
         let insert_token = self.expect_keyword(Keyword::Insert)?;
         let start = insert_token.span.start;
+
+        // Parse optional conflict resolution: INSERT OR REPLACE / INSERT OR IGNORE
+        let conflict = if self.eat_keyword(Keyword::Or)? {
+            if self.eat_keyword(Keyword::Replace)? {
+                ConflictResolution::Replace
+            } else if self.eat_keyword(Keyword::Ignore)? {
+                ConflictResolution::Ignore
+            } else {
+                return Err(DustError::InvalidInput(
+                    "expected REPLACE or IGNORE after OR in INSERT".to_string(),
+                ));
+            }
+        } else {
+            ConflictResolution::Abort
+        };
+
         self.expect_keyword(Keyword::Into)?;
         let table = self.parse_identifier()?;
 
@@ -560,6 +576,7 @@ impl<'a> Parser<'a> {
             table,
             columns,
             values: value_rows,
+            conflict,
             span,
             raw: self.slice(span).to_string(),
         }))

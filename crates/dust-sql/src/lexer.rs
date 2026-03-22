@@ -94,6 +94,9 @@ pub enum Keyword {
     Else,
     End,
     Autoincrement,
+    // Conflict resolution
+    Replace,
+    Ignore,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,6 +457,8 @@ fn keyword(text: &str) -> Option<Keyword> {
         "ELSE" => Some(Keyword::Else),
         "END" => Some(Keyword::End),
         "AUTOINCREMENT" => Some(Keyword::Autoincrement),
+        "REPLACE" => Some(Keyword::Replace),
+        "IGNORE" => Some(Keyword::Ignore),
         "OVER" => Some(Keyword::Over),
         "PARTITION" => Some(Keyword::Partition),
         "ROWS" => Some(Keyword::Rows),

@@ -364,11 +364,19 @@ pub enum UnaryOp {
 // INSERT
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictResolution {
+    Abort,
+    Replace,
+    Ignore,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertStatement {
     pub table: Identifier,
     pub columns: Vec<Identifier>,
     pub values: Vec<Vec<Expr>>,
+    pub conflict: ConflictResolution,
     pub span: Span,
     pub raw: String,
 }
