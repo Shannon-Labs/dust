@@ -219,7 +219,7 @@ impl DateTime {
         let n: i64 = n_str.parse().ok()?;
         let amount = sign * n;
 
-        match unit.trim_end_matches('s').as_ref() {
+        match unit.trim_end_matches('s') {
             "day" => {
                 let unix = self.to_unix() + amount * 86400;
                 Some(DateTime::from_unix(unix))

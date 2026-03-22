@@ -408,12 +408,11 @@ impl ExecutionEngine {
                 row[col_idx] = eval_expr(source, &value_row[val_idx]);
             }
             // Fill in autoincrement value if the column is NULL or not provided
-            if let Some(ai_col) = autoincrement_col {
-                if matches!(row[ai_col], Value::Null) {
+            if let Some(ai_col) = autoincrement_col
+                && matches!(row[ai_col], Value::Null) {
                     let next_val = self.storage.next_autoincrement(table_name);
                     row[ai_col] = Value::Integer(next_val);
                 }
-            }
             let store = self.storage.table_mut(table_name).expect("table exists");
             store.insert_row(row);
         }
@@ -540,8 +539,8 @@ impl ExecutionEngine {
 
         // Validate: non-aggregate SELECT columns must appear in GROUP BY
         for item in &select.projection {
-            if let SelectItem::Expr { expr, .. } = item {
-                if !is_aggregate_expr(expr) {
+            if let SelectItem::Expr { expr, .. } = item
+                && !is_aggregate_expr(expr) {
                     for col_ref in collect_column_refs(expr) {
                         if !select.group_by.iter().any(|g| {
                             collect_column_refs(g).len() == 1
@@ -553,7 +552,6 @@ impl ExecutionEngine {
                         }
                     }
                 }
-            }
         }
 
         // 1. Apply WHERE filter
@@ -592,7 +590,7 @@ impl ExecutionEngine {
         let output_columns: Vec<String> = select
             .projection
             .iter()
-            .map(|item| select_item_name(item))
+            .map(select_item_name)
             .collect();
 
         // 4. Evaluate each group to produce output rows
@@ -753,7 +751,7 @@ fn expr_display_name(expr: &Expr) -> String {
     match expr {
         Expr::ColumnRef(cref) => cref.column.value.clone(),
         Expr::FunctionCall { name, args, .. } => {
-            let arg_strs: Vec<String> = args.iter().map(|a| expr_display_name(a)).collect();
+            let arg_strs: Vec<String> = args.iter().map(expr_display_name).collect();
             format!(
                 "{}({})",
                 name.value.to_ascii_lowercase(),
@@ -879,7 +877,7 @@ fn evaluate_window_functions(
             }
             SelectItem::Wildcard(_) => {
                 output_columns.push("*".to_string());
-                for (row_idx, row) in rows.iter().enumerate() {
+                for (row_idx, _row) in rows.iter().enumerate() {
                     output_rows[row_idx].push("*".to_string());
                 }
             }
@@ -945,11 +943,10 @@ fn eval_window_fn(
                         .iter()
                         .map(|ob| eval_datum_expr_for_order(&ob.expr, columns, &rows[row_idx]))
                         .collect();
-                    if let Some(ref prev) = prev_vals {
-                        if order_vals != *prev {
+                    if let Some(ref prev) = prev_vals
+                        && order_vals != *prev {
                             rank = (pos + 1) as i64;
                         }
-                    }
                     result[row_idx] = Value::Integer(rank);
                     prev_vals = Some(order_vals);
                 }
@@ -963,11 +960,10 @@ fn eval_window_fn(
                         .iter()
                         .map(|ob| eval_datum_expr_for_order(&ob.expr, columns, &rows[row_idx]))
                         .collect();
-                    if let Some(ref prev) = prev_vals {
-                        if order_vals != *prev {
+                    if let Some(ref prev) = prev_vals
+                        && order_vals != *prev {
                             rank += 1;
                         }
-                    }
                     result[row_idx] = Value::Integer(rank);
                     prev_vals = Some(order_vals);
                 }
@@ -1020,7 +1016,7 @@ fn eval_window_fn(
                         sorted_indices.iter().map(|&i| &rows[i]).collect();
                     if let Some(arg) = args.first() {
                         result[row_idx] =
-                            eval_aggregate_fn(name, &[arg.clone()], columns, &group_refs);
+                            eval_aggregate_fn(name, std::slice::from_ref(arg), columns, &group_refs);
                     } else if name == "count" {
                         result[row_idx] = Value::Integer(group_refs.len() as i64);
                     }

@@ -1270,15 +1270,14 @@ impl PersistentEngine {
                 }
             }
             // Fill in autoincrement value if the column is NULL or not provided
-            if let Some(ai_col) = autoincrement_col {
-                if matches!(datums[ai_col], Datum::Null) {
+            if let Some(ai_col) = autoincrement_col
+                && matches!(datums[ai_col], Datum::Null) {
                     let next_id = self
                         .store
                         .table_next_rowid(table_name)
                         .unwrap_or(1) as i64;
                     datums[ai_col] = Datum::Integer(next_id);
                 }
-            }
             self.validate_row_constraints(table_name, &table_schema, None, &datums)?;
             self.store.insert_row(table_name, datums)?;
         }
@@ -2114,7 +2113,7 @@ fn persistent_eval_window_fn(
         return Ok(Vec::new());
     }
 
-    let col_names: Vec<String> = columns.iter().map(|c| c.column_name.clone()).collect();
+    let _col_names: Vec<String> = columns.iter().map(|c| c.column_name.clone()).collect();
 
     // Partition rows
     let partitions: Vec<Vec<usize>> = if spec.partition_by.is_empty() {
@@ -2177,11 +2176,10 @@ fn persistent_eval_window_fn(
                         .iter()
                         .map(|ob| eval_datum_expr(&ob.expr, columns, &rows[row_idx]))
                         .collect();
-                    if let Some(ref prev) = prev_vals {
-                        if order_vals != *prev {
+                    if let Some(ref prev) = prev_vals
+                        && order_vals != *prev {
                             rank = (pos + 1) as i64;
                         }
-                    }
                     result[row_idx] = rank.to_string();
                     prev_vals = Some(order_vals);
                 }
@@ -2195,11 +2193,10 @@ fn persistent_eval_window_fn(
                         .iter()
                         .map(|ob| eval_datum_expr(&ob.expr, columns, &rows[row_idx]))
                         .collect();
-                    if let Some(ref prev) = prev_vals {
-                        if order_vals != *prev {
+                    if let Some(ref prev) = prev_vals
+                        && order_vals != *prev {
                             rank += 1;
                         }
-                    }
                     result[row_idx] = rank.to_string();
                     prev_vals = Some(order_vals);
                 }
