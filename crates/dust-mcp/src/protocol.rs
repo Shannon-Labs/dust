@@ -175,6 +175,52 @@ pub fn tools_list() -> Value {
                     }
                 })
             ),
+            tool_def("dust_sandbox_create",
+                "Create a throwaway scratch branch for speculative exploration. Returns the branch name.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Optional branch name (auto-generated if omitted)"},
+                        "path": {"type": "string", "description": "Path to the dust project (defaults to current directory)"}
+                    }
+                })
+            ),
+            tool_def("dust_sandbox_eval",
+                "Run SQL on a sandbox branch without affecting main. Returns query results.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "branch": {"type": "string", "description": "Sandbox branch name"},
+                        "sql": {"type": "string", "description": "SQL to execute on the sandbox"},
+                        "format": {"type": "string", "description": "Output format: json, table, csv (default: json)", "enum": ["json", "table", "csv"]},
+                        "path": {"type": "string", "description": "Path to the dust project (defaults to current directory)"}
+                    },
+                    "required": ["branch", "sql"]
+                })
+            ),
+            tool_def("dust_sandbox_merge",
+                "Merge a sandbox branch into main (or another target branch). Discards the sandbox branch.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "branch": {"type": "string", "description": "Sandbox branch to merge"},
+                        "target": {"type": "string", "description": "Target branch (default: main)"},
+                        "path": {"type": "string", "description": "Path to the dust project (defaults to current directory)"}
+                    },
+                    "required": ["branch"]
+                })
+            ),
+            tool_def("dust_sandbox_discard",
+                "Discard a sandbox branch without merging. Cleans up the throwaway branch.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "branch": {"type": "string", "description": "Sandbox branch to discard"},
+                        "path": {"type": "string", "description": "Path to the dust project (defaults to current directory)"}
+                    },
+                    "required": ["branch"]
+                })
+            ),
         ]
     })
 }

@@ -557,3 +557,20 @@ pub fn run_doctor(project_path: &Path) -> Result<DoctorResult> {
         warnings: report.live_warnings,
     })
 }
+
+/// Generate a unique sandbox branch name with timestamp.
+pub fn generate_sandbox_name() -> String {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("sandbox/{ts}")
+}
+
+/// Read the current branch name from the project HEAD ref.
+pub fn current_branch(project_path: &Path) -> Result<String> {
+    let root = find_project_root(project_path)
+        .unwrap_or_else(|| project_path.to_path_buf());
+    let project = ProjectPaths::new(&root);
+    Ok(project.read_current_branch_name())
+}

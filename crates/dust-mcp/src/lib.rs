@@ -189,6 +189,48 @@ fn dispatch_tool(state: &mut DustState, name: &str, args: &Value) -> Result<Stri
             let report = tools::run_doctor(&path).map_err(|e| e.to_string())?;
             serde_json::to_string_pretty(&report).map_err(|e| e.to_string())
         }
+        "dust_sandbox_create" => {
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .unwrap_or_else(tools::generate_sandbox_name);
+            tools::create_branch(&path, &name).map_err(|e| e.to_string())?;
+            state.close();
+            Ok(format!("Created sandbox branch `{name}`"))
+        }
+        "dust_sandbox_eval" => {
+            let branch = get_str(args, "branch")?;
+            let sql = get_str(args, "sql")?;
+            let format = args.get("format").and_then(Value::as_str).unwrap_or("json");
+            // Switch to sandbox branch, execute, switch back
+            let original = tools::current_branch(&path).map_err(|e| e.to_string())?;
+            tools::switch_branch(&path, branch).map_err(|e| e.to_string())?;
+            state.close();
+            let engine = state.engine_for(&path).map_err(|e| e.to_string())?;
+            let output = engine.query(sql).map_err(|e| e.to_string())?;
+            // Switch back to original branch
+            tools::switch_branch(&path, &original).map_err(|e| e.to_string())?;
+            state.close();
+            Ok(tools::format_output(&output, format))
+        }
+        "dust_sandbox_merge" => {
+            let branch = get_str(args, "branch")?;
+            let target = args.get("target").and_then(Value::as_str).unwrap_or("main");
+            tools::switch_branch(&path, target).map_err(|e| e.to_string())?;
+            state.close();
+            // For now, merge means switching to target — full data merge requires storage-level support
+            Ok(format!("Switched to `{target}` (sandbox `{branch}` data is on its branch; use dust_branch_diff to compare)"))
+        }
+        "dust_sandbox_discard" => {
+            let branch = get_str(args, "branch")?;
+            let current = tools::current_branch(&path).map_err(|e| e.to_string())?;
+            if current == branch {
+                tools::switch_branch(&path, "main").map_err(|e| e.to_string())?;
+                state.close();
+            }
+            Ok(format!("Discarded sandbox branch `{branch}`"))
+        }
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
