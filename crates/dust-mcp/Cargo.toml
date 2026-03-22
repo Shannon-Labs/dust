@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 description = "MCP (Model Context Protocol) server for the dust SQL database"
 
+[lib]
+name = "dust_mcp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "dust-mcp"
 path = "src/main.rs"

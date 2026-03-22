@@ -23,6 +23,8 @@ enum Commands {
     Branch(commands::branch::BranchArgs),
     Import(commands::import::ImportArgs),
     Status(commands::status::StatusArgs),
+    /// Start the MCP (Model Context Protocol) server for AI agent integration
+    Mcp,
     Version,
 }
 
@@ -39,6 +41,7 @@ fn main() -> miette::Result<()> {
         Commands::Branch(args) => commands::branch::run(args).into_diagnostic()?,
         Commands::Import(args) => commands::import::run(args).into_diagnostic()?,
         Commands::Status(args) => commands::status::run(args).into_diagnostic()?,
+        Commands::Mcp => dust_mcp::run(),
         Commands::Version => println!("dust {}", env!("CARGO_PKG_VERSION")),
     }
 

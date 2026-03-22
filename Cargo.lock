@@ -264,6 +264,7 @@ dependencies = [
  "csv",
  "dust-core",
  "dust-exec",
+ "dust-mcp",
  "dust-store",
  "dust-types",
  "miette",
