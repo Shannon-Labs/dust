@@ -99,6 +99,7 @@ pub fn run(args: ImportArgs) -> Result<()> {
         "jsonl" | "ndjson" => run_jsonl_import(file, args.table.as_deref()),
         "sql" => run_sql_import(file),
         "xlsx" | "xls" => run_xlsx_import(file, args.table.as_deref()),
+        "parquet" => run_parquet_import(file, args.table.as_deref()),
         _ => run_csv_import(
             file,
             args.table.as_deref(),
@@ -536,7 +537,9 @@ fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
 
     let height = range.height();
     if height == 0 {
-        return Err(DustError::InvalidInput("XLSX sheet has no rows".to_string()));
+        return Err(DustError::InvalidInput(
+            "XLSX sheet has no rows".to_string(),
+        ));
     }
 
     // First row is header
@@ -597,6 +600,97 @@ fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Parquet import
+// ---------------------------------------------------------------------------
+
+fn run_parquet_import(path: &Path, table: Option<&str>) -> Result<()> {
+    if !path.exists() {
+        return Err(DustError::InvalidInput(format!(
+            "file not found: {}",
+            path.display()
+        )));
+    }
+
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    use parquet::record::RowAccessor;
+
+    let file = std::fs::File::open(path)
+        .map_err(|e| DustError::InvalidInput(format!("failed to open Parquet: {e}")))?;
+    let reader = SerializedFileReader::new(file)
+        .map_err(|e| DustError::InvalidInput(format!("failed to read Parquet: {e}")))?;
+    let schema = reader.metadata().file_metadata().schema();
+
+    // Extract column names from Parquet schema
+    let columns: Vec<String> = (0..schema.get_fields().len())
+        .map(|i| {
+            schema
+                .get_fields()
+                .get(i)
+                .map(|f| f.name().to_string())
+                .unwrap_or_else(|| format!("col{}", i + 1))
+        })
+        .collect();
+
+    if columns.is_empty() {
+        return Err(DustError::InvalidInput(
+            "Parquet file has no columns".to_string(),
+        ));
+    }
+
+    let table_name = table
+        .map(String::from)
+        .unwrap_or_else(|| table_name_from_path(path));
+
+    let db_path = find_db_path(&env::current_dir()?);
+    let mut engine = PersistentEngine::open(&db_path)?;
+
+    create_text_table(&mut engine, &table_name, &columns)?;
+
+    // Read row groups and insert in batches
+    let mut total_rows = 0;
+    let batch_size = 100;
+    let mut batch: Vec<Vec<String>> = Vec::with_capacity(batch_size);
+
+    let row_iter = reader
+        .get_row_iter(None)
+        .map_err(|e| DustError::InvalidInput(format!("failed to iterate Parquet rows: {e}")))?;
+
+    for row_result in row_iter {
+        let row =
+            row_result.map_err(|e| DustError::InvalidInput(format!("Parquet row error: {e}")))?;
+        let fields: Vec<String> = (0..columns.len())
+            .map(|i| {
+                row.get_string(i)
+                    .map(|s| s.clone())
+                    .or_else(|_| row.get_int(i).map(|n| n.to_string()))
+                    .or_else(|_| row.get_long(i).map(|n| n.to_string()))
+                    .or_else(|_| row.get_bool(i).map(|b| b.to_string()))
+                    .or_else(|_| row.get_double(i).map(|f| f.to_string()))
+                    .unwrap_or_else(|_| "NULL".to_string())
+            })
+            .collect();
+
+        batch.push(fields);
+
+        if batch.len() >= batch_size {
+            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
+            batch.clear();
+        }
+    }
+
+    if !batch.is_empty() {
+        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
+    }
+
+    println!(
+        "Imported {total_rows} rows into `{table_name}` ({} columns)",
+        columns.len()
+    );
+    println!("Columns: {}", columns.join(", "));
+
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Shared helpers

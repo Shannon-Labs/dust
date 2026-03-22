@@ -27,6 +27,7 @@ blake3 = "1.8.2"
 calamine = "0.25"
 clap = { version = "4.5.48", features = ["derive"] }
 miette = { version = "7.6.0", features = ["fancy"] }
+parquet = { version = "53", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3.23.0"
