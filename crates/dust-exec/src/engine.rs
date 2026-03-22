@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
 use crate::binder::bind_statement;
+use crate::deterministic;
 use crate::storage::{Storage, Value};
 use crate::udf::UdfRegistry;
+use crate::vector::{self, DistanceMetric, HnswRegistry};
 use dust_catalog::CatalogBuilder;
 use dust_plan::{
     CatalogObjectKind, CreateIndexPlan, CreateTablePlan, IndexColumnPlan, IndexOrdering,
@@ -16,7 +18,7 @@ use dust_sql::{
 };
 
 thread_local! {
-    static UDF_REGISTRY: std::cell::RefCell<UdfRegistry> =
+    pub(crate) static UDF_REGISTRY: std::cell::RefCell<UdfRegistry> =
         std::cell::RefCell::new(UdfRegistry::new());
 }
 
@@ -128,10 +130,26 @@ impl ExplainOutput {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ExecutionEngine {
     catalog: CatalogBuilder,
     storage: Storage,
+    /// When true, queries containing non-deterministic functions are rejected.
+    deterministic_mode: bool,
+    /// HNSW index registry for vector ANN queries.
+    hnsw_registry: HnswRegistry,
+}
+
+impl Clone for ExecutionEngine {
+    fn clone(&self) -> Self {
+        Self {
+            catalog: self.catalog.clone(),
+            storage: self.storage.clone(),
+            deterministic_mode: self.deterministic_mode,
+            // HNSW indices are not cloned — they must be rebuilt.
+            hnsw_registry: HnswRegistry::new(),
+        }
+    }
 }
 
 impl Default for ExecutionEngine {
@@ -145,13 +163,39 @@ impl ExecutionEngine {
         Self {
             catalog: CatalogBuilder::new(),
             storage: Storage::default(),
+            deterministic_mode: false,
+            hnsw_registry: HnswRegistry::new(),
         }
+    }
+
+    /// Enable or disable deterministic mode.
+    /// When enabled, non-deterministic functions (random, now, etc.) are rejected.
+    pub fn set_deterministic_mode(&mut self, enabled: bool) {
+        self.deterministic_mode = enabled;
+    }
+
+    /// Returns whether deterministic mode is currently active.
+    pub fn deterministic_mode(&self) -> bool {
+        self.deterministic_mode
+    }
+
+    /// Access the HNSW registry.
+    pub fn hnsw_registry(&self) -> &HnswRegistry {
+        &self.hnsw_registry
     }
 
     pub fn query(&mut self, sql: &str) -> Result<QueryOutput> {
         let program = parse_program(sql)?;
         let mut last_output = None;
         for statement in &program.statements {
+            // Deterministic mode check
+            if self.deterministic_mode {
+                if let Err(fn_name) = check_statement_deterministic(statement) {
+                    return Err(DustError::InvalidInput(format!(
+                        "non-deterministic function `{fn_name}` is not allowed in deterministic mode"
+                    )));
+                }
+            }
             let binding = bind_statement(&self.storage, statement);
             if let Some(error) = binding.errors.first() {
                 return Err(DustError::invalid(error.clone())
@@ -264,6 +308,30 @@ impl ExecutionEngine {
                     self.storage.drop_table(name);
                 }
                 result
+            }
+            AstStatement::CreateFunction(func) => {
+                let name = &func.name.value;
+                match func.language.as_str() {
+                    "wasm" => {
+                        let path = std::path::Path::new(&func.source);
+                        UDF_REGISTRY.with(|r| {
+                            let mut reg = r.borrow_mut();
+                            match crate::wasm_udf::load_wasm_module(path, &mut reg) {
+                                Ok(names) => Ok(QueryOutput::Message(format!(
+                                    "CREATE FUNCTION (registered {} from WASM: {})",
+                                    names.len(),
+                                    names.join(", ")
+                                ))),
+                                Err(e) => Err(DustError::InvalidInput(format!(
+                                    "failed to load WASM module for function `{name}`: {e}"
+                                ))),
+                            }
+                        })
+                    }
+                    other => Err(DustError::UnsupportedQuery(format!(
+                        "unsupported function language: `{other}` (only WASM is supported)"
+                    ))),
+                }
             }
             AstStatement::Begin(_) => Ok(QueryOutput::Message("BEGIN".to_string())),
             AstStatement::Commit(_) => Ok(QueryOutput::Message("COMMIT".to_string())),
@@ -615,6 +683,70 @@ impl ExecutionEngine {
 
     fn execute_create_index(&mut self, index: &CreateIndexStatement) -> Result<QueryOutput> {
         self.catalog.register_index_from_ast(index)?;
+
+        // If USING HNSW, create an in-memory HNSW index
+        if let Some(ref using) = index.using {
+            if using.value.eq_ignore_ascii_case("hnsw") {
+                let table_name = &index.table.value;
+                let index_name = &index.name.value;
+                // Require exactly one column for HNSW
+                if index.columns.len() != 1 {
+                    return Err(DustError::InvalidInput(
+                        "HNSW index requires exactly one vector column".to_string(),
+                    ));
+                }
+                let col_expr = &index.columns[0].expression;
+                let col_name = col_expr
+                    .first()
+                    .map(|f| f.text.clone())
+                    .unwrap_or_default();
+
+                // Try to infer dimensions from existing data
+                let dimensions = if let Some(store) = self.storage.table(table_name) {
+                    if let Some(col_idx) = store.column_index(&col_name) {
+                        store
+                            .rows
+                            .first()
+                            .and_then(|row| {
+                                let val = &row[col_idx];
+                                vector::parse_vector(&val.to_string())
+                                    .map(|v| v.len())
+                            })
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+
+                let hnsw = self.hnsw_registry.create_index(
+                    index_name,
+                    table_name,
+                    &col_name,
+                    dimensions,
+                    DistanceMetric::Euclidean,
+                );
+
+                // Index existing rows
+                if let Some(store) = self.storage.table(table_name) {
+                    if let Some(col_idx) = store.column_index(&col_name) {
+                        for row in &store.rows {
+                            let val_str = row[col_idx].to_string();
+                            if let Some(v) = vector::parse_vector(&val_str) {
+                                hnsw.insert(v);
+                            }
+                        }
+                    }
+                }
+
+                return Ok(QueryOutput::Message(format!(
+                    "CREATE INDEX (HNSW on {table_name}.{col_name}, {} vectors indexed)",
+                    hnsw.len()
+                )));
+            }
+        }
+
         Ok(QueryOutput::Message("CREATE INDEX".to_string()))
     }
 
@@ -1466,6 +1598,58 @@ fn eval_expr_to_value(expr: &Expr, columns: &[String], row: &[Value]) -> Value {
                     }
                     Value::Null
                 }
+                "vector_distance" | "vec_distance" => {
+                    // vector_distance(a, b) or vector_distance(a, b, 'cosine')
+                    if args.len() < 2 {
+                        return Value::Null;
+                    }
+                    let a_val = eval_expr_to_value(&args[0], columns, row);
+                    let b_val = eval_expr_to_value(&args[1], columns, row);
+                    let a_str = a_val.to_string();
+                    let b_str = b_val.to_string();
+                    let metric = if let Some(arg) = args.get(2) {
+                        match eval_expr_to_value(arg, columns, row) {
+                            Value::Text(s) if s.eq_ignore_ascii_case("cosine") => {
+                                DistanceMetric::Cosine
+                            }
+                            _ => DistanceMetric::Euclidean,
+                        }
+                    } else {
+                        DistanceMetric::Euclidean
+                    };
+                    match (vector::parse_vector(&a_str), vector::parse_vector(&b_str)) {
+                        (Some(a), Some(b)) if a.len() == b.len() => {
+                            let d = vector::vector_distance(&a, &b, metric);
+                            Value::Text(d.to_string())
+                        }
+                        _ => Value::Null,
+                    }
+                }
+                "vector_dims" => {
+                    if let Some(arg) = args.first() {
+                        let val = eval_expr_to_value(arg, columns, row);
+                        match vector::parse_vector(&val.to_string()) {
+                            Some(v) => Value::Integer(v.len() as i64),
+                            None => Value::Null,
+                        }
+                    } else {
+                        Value::Null
+                    }
+                }
+                "vector_norm" => {
+                    if let Some(arg) = args.first() {
+                        let val = eval_expr_to_value(arg, columns, row);
+                        match vector::parse_vector(&val.to_string()) {
+                            Some(v) => {
+                                let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                                Value::Text(norm.to_string())
+                            }
+                            None => Value::Null,
+                        }
+                    } else {
+                        Value::Null
+                    }
+                }
                 f if crate::datetime::is_datetime_fn(f) => {
                     let mut str_args: Vec<String> = Vec::with_capacity(args.len());
                     for a in args {
@@ -1504,6 +1688,24 @@ fn eval_expr_to_value(expr: &Expr, columns: &[String], row: &[Value]) -> Value {
         Expr::Cast { expr: inner, .. } => eval_expr_to_value(inner, columns, row),
         Expr::Star(_) => Value::Null,
         Expr::Subquery { .. } | Expr::InSubquery { .. } => Value::Null,
+        Expr::VectorLiteral { elements, .. } => {
+            // Evaluate each element and build a vector string representation
+            let mut vals = Vec::with_capacity(elements.len());
+            for elem in elements {
+                match eval_expr_to_value(elem, columns, row) {
+                    Value::Integer(n) => vals.push(n as f32),
+                    Value::Text(s) => {
+                        if let Ok(f) = s.parse::<f32>() {
+                            vals.push(f);
+                        } else {
+                            return Value::Null;
+                        }
+                    }
+                    _ => return Value::Null,
+                }
+            }
+            Value::Text(vector::format_vector(&vals))
+        }
     }
 }
 
@@ -1645,12 +1847,72 @@ fn like_match(s: &str, pattern: &str) -> bool {
     matches(&mut si, &mut pi)
 }
 
+/// Check whether a statement contains non-deterministic function calls.
+/// Returns Ok(()) if deterministic, or Err(fn_name) with the offending function.
+fn check_statement_deterministic(statement: &AstStatement) -> std::result::Result<(), String> {
+    match statement {
+        AstStatement::Select(select) => deterministic::check_select_deterministic(select),
+        AstStatement::SetOp { left, right, .. } => {
+            check_statement_deterministic(left)?;
+            check_statement_deterministic(right)
+        }
+        AstStatement::Insert(insert) => {
+            for row in &insert.values {
+                for expr in row {
+                    deterministic::check_deterministic(expr)?;
+                }
+            }
+            Ok(())
+        }
+        AstStatement::Update(update) => {
+            for a in &update.assignments {
+                deterministic::check_deterministic(&a.value)?;
+            }
+            if let Some(ref w) = update.where_clause {
+                deterministic::check_deterministic(w)?;
+            }
+            Ok(())
+        }
+        AstStatement::Delete(delete) => {
+            if let Some(ref w) = delete.where_clause {
+                deterministic::check_deterministic(w)?;
+            }
+            Ok(())
+        }
+        AstStatement::With(with) => {
+            for cte in &with.ctes {
+                deterministic::check_select_deterministic(&cte.query)?;
+            }
+            check_statement_deterministic(&with.body)
+        }
+        _ => Ok(()),
+    }
+}
+
 fn eval_expr(_source: &str, expr: &Expr) -> Value {
     match expr {
         Expr::Integer(lit) => Value::Integer(lit.value),
+        Expr::Float(lit) => Value::Text(lit.value.clone()),
         Expr::StringLit { value, .. } => Value::Text(value.clone()),
         Expr::Null(_) => Value::Null,
         Expr::Boolean { value, .. } => Value::Boolean(*value),
+        Expr::VectorLiteral { elements, .. } => {
+            let mut vals = Vec::with_capacity(elements.len());
+            for elem in elements {
+                match eval_expr(_source, elem) {
+                    Value::Integer(n) => vals.push(n as f32),
+                    Value::Text(s) => {
+                        if let Ok(f) = s.parse::<f32>() {
+                            vals.push(f);
+                        } else {
+                            return Value::Null;
+                        }
+                    }
+                    _ => return Value::Null,
+                }
+            }
+            Value::Text(vector::format_vector(&vals))
+        }
         _ => Value::Null,
     }
 }
@@ -1684,6 +1946,11 @@ fn plan_statement(source: &str, statement: &AstStatement) -> PlannedStatement {
         ),
         AstStatement::CreateTable(table) => plan_create_table(source, table),
         AstStatement::CreateIndex(index) => plan_create_index(source, index),
+        AstStatement::CreateFunction(func) => PlannedStatement::new(
+            func.raw.clone(),
+            LogicalPlan::parse_only(func.raw.clone()),
+            PhysicalPlan::parse_only(),
+        ),
         AstStatement::DropTable(drop) => PlannedStatement::new(
             format!("drop table {}", drop.name.value),
             LogicalPlan::parse_only(format!("drop table {}", drop.name.value)),
@@ -2898,5 +3165,309 @@ mod tests {
             }
             other => panic!("expected Rows, got {:?}", other),
         }
+    }
+
+    // ===================================================================
+    // Deterministic mode tests
+    // ===================================================================
+
+    #[test]
+    fn deterministic_mode_allows_deterministic_queries() {
+        let mut engine = new_engine();
+        engine.set_deterministic_mode(true);
+        assert!(engine.deterministic_mode());
+
+        engine
+            .query("CREATE TABLE t (id INTEGER, name TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO t VALUES (1, 'alice'), (2, 'bob')")
+            .unwrap();
+
+        // Deterministic functions should work
+        let output = engine.query("SELECT lower(name) FROM t").unwrap();
+        assert!(output.has_rows());
+
+        let output = engine.query("SELECT upper(name) FROM t").unwrap();
+        assert!(output.has_rows());
+
+        let output = engine.query("SELECT coalesce(name, 'unknown') FROM t").unwrap();
+        assert!(output.has_rows());
+    }
+
+    #[test]
+    fn deterministic_mode_blocks_non_deterministic() {
+        let mut engine = new_engine();
+        engine.set_deterministic_mode(true);
+
+        engine
+            .query("CREATE TABLE t (id INTEGER)")
+            .unwrap();
+
+        // now() should be blocked
+        let result = engine.query("SELECT now()");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("non-deterministic") && err_msg.contains("now"),
+            "Expected error about non-deterministic 'now', got: {err_msg}"
+        );
+
+        // random() should be blocked
+        let result = engine.query("SELECT random()");
+        assert!(result.is_err());
+
+        // current_timestamp should be blocked
+        let result = engine.query("SELECT current_timestamp()");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deterministic_mode_can_be_toggled() {
+        let mut engine = new_engine();
+
+        // Mode off: non-deterministic should work
+        engine.set_deterministic_mode(false);
+        // now() returns NULL (as a built-in with no args) but shouldn't error
+        assert!(engine.query("SELECT 1").is_ok());
+
+        // Mode on: should block
+        engine.set_deterministic_mode(true);
+        let result = engine.query("SELECT random()");
+        assert!(result.is_err());
+
+        // Mode off again: should allow
+        engine.set_deterministic_mode(false);
+        assert!(!engine.deterministic_mode());
+    }
+
+    // ===================================================================
+    // Vector type tests
+    // ===================================================================
+
+    #[test]
+    fn vector_literal_in_select() {
+        let engine = new_engine();
+        let output = engine.explain("SELECT [1.0, 2.0, 3.0]").unwrap();
+        assert_eq!(output.statement_count(), 1);
+    }
+
+    #[test]
+    fn vector_literal_evaluates_correctly() {
+        let mut engine = new_engine();
+        let output = engine.query("SELECT [1.0, 2.0, 3.0]").unwrap();
+        match &output {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0][0], "[1, 2, 3]");
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vector_distance_euclidean() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT vector_distance([0.0, 0.0], [3.0, 4.0])")
+            .unwrap();
+        match &output {
+            QueryOutput::Rows { rows, .. } => {
+                let d: f32 = rows[0][0].parse().unwrap();
+                assert!((d - 5.0).abs() < 0.001, "expected ~5.0, got {d}");
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vector_distance_cosine() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT vector_distance([1.0, 0.0], [0.0, 1.0], 'cosine')")
+            .unwrap();
+        match &output {
+            QueryOutput::Rows { rows, .. } => {
+                let d: f32 = rows[0][0].parse().unwrap();
+                assert!((d - 1.0).abs() < 0.001, "expected ~1.0 (orthogonal), got {d}");
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vector_dims_function() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT vector_dims([1.0, 2.0, 3.0, 4.0])")
+            .unwrap();
+        match &output {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows[0][0], "4");
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vector_norm_function() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT vector_norm([3.0, 4.0])")
+            .unwrap();
+        match &output {
+            QueryOutput::Rows { rows, .. } => {
+                let n: f32 = rows[0][0].parse().unwrap();
+                assert!((n - 5.0).abs() < 0.001, "expected ~5.0, got {n}");
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vector_insert_and_query() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE items (id INTEGER, embedding TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO items VALUES (1, '[1.0, 0.0, 0.0]')")
+            .unwrap();
+        engine
+            .query("INSERT INTO items VALUES (2, '[0.0, 1.0, 0.0]')")
+            .unwrap();
+        engine
+            .query("INSERT INTO items VALUES (3, '[0.0, 0.0, 1.0]')")
+            .unwrap();
+
+        // Query all rows to verify data
+        let output = engine.query("SELECT * FROM items").unwrap();
+        match &output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(columns, &["id", "embedding"]);
+                assert_eq!(rows.len(), 3);
+                // Stored as raw text string literal
+                assert_eq!(rows[0][1], "[1.0, 0.0, 0.0]");
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+
+        // Query with vector_distance in projection (no FROM needed for scalars)
+        let output = engine
+            .query("SELECT vector_distance('[1.0, 0.0, 0.0]', '[0.0, 1.0, 0.0]')")
+            .unwrap();
+        match &output {
+            QueryOutput::Rows { rows, .. } => {
+                let d: f32 = rows[0][0].parse().unwrap();
+                assert!((d - std::f32::consts::SQRT_2).abs() < 0.01,
+                    "expected ~1.414 (sqrt(2)), got {d}");
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn vector_literal_in_insert() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE vecs (id INTEGER, v TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO vecs VALUES (1, [1.5, 2.5, 3.5])")
+            .unwrap();
+        let output = engine.query("SELECT v FROM vecs").unwrap();
+        match &output {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0][0], "[1.5, 2.5, 3.5]");
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    // ===================================================================
+    // HNSW index tests
+    // ===================================================================
+
+    #[test]
+    fn create_hnsw_index() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE items (id INTEGER, embedding TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO items VALUES (1, '[1.0, 0.0, 0.0]')")
+            .unwrap();
+        engine
+            .query("INSERT INTO items VALUES (2, '[0.0, 1.0, 0.0]')")
+            .unwrap();
+        engine
+            .query("INSERT INTO items VALUES (3, '[0.0, 0.0, 1.0]')")
+            .unwrap();
+
+        let output = engine
+            .query("CREATE INDEX items_emb_idx ON items USING hnsw (embedding)")
+            .unwrap();
+        match &output {
+            QueryOutput::Message(msg) => {
+                assert!(
+                    msg.contains("HNSW"),
+                    "Expected HNSW in message, got: {msg}"
+                );
+                assert!(msg.contains("3 vectors"), "Expected 3 vectors, got: {msg}");
+            }
+            other => panic!("expected Message, got {:?}", other),
+        }
+
+        // Verify the registry has the index
+        assert!(engine.hnsw_registry().has_index_for("items", "embedding"));
+    }
+
+    #[test]
+    fn hnsw_index_empty_table() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE items (id INTEGER, embedding TEXT)")
+            .unwrap();
+        let output = engine
+            .query("CREATE INDEX items_emb_idx ON items USING hnsw (embedding)")
+            .unwrap();
+        match &output {
+            QueryOutput::Message(msg) => {
+                assert!(msg.contains("HNSW"));
+                assert!(msg.contains("0 vectors"));
+            }
+            other => panic!("expected Message, got {:?}", other),
+        }
+    }
+
+    // ===================================================================
+    // WASM UDF tests (feature-gated, basic coverage)
+    // ===================================================================
+
+    #[test]
+    fn create_function_syntax_parses() {
+        let engine = new_engine();
+        let result = engine.explain("CREATE FUNCTION my_func FROM WASM 'path/to/module.wasm'");
+        assert!(result.is_ok(), "CREATE FUNCTION should parse successfully");
+    }
+
+    #[test]
+    fn create_function_wasm_file_not_found() {
+        let mut engine = new_engine();
+        let result = engine.query("CREATE FUNCTION my_func FROM WASM 'nonexistent.wasm'");
+        assert!(result.is_err(), "Should fail with non-existent WASM file");
+    }
+
+    #[test]
+    fn create_function_unsupported_language() {
+        let mut engine = new_engine();
+        let result = engine.query("CREATE FUNCTION my_func FROM PYTHON 'script.py'");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported function language"),
+            "Expected language error, got: {err}"
+        );
     }
 }

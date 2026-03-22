@@ -426,6 +426,31 @@ impl PersistentEngine {
                 self.rollback_transaction()?;
                 Ok(QueryOutput::Message("ROLLBACK".to_string()))
             }
+            AstStatement::CreateFunction(func) => {
+                // WASM UDF support in persistent engine — delegate to shared loader
+                let name = &func.name.value;
+                match func.language.as_str() {
+                    "wasm" => {
+                        let path = std::path::Path::new(&func.source);
+                        crate::engine::UDF_REGISTRY.with(|r| {
+                            let mut reg = r.borrow_mut();
+                            match crate::wasm_udf::load_wasm_module(path, &mut reg) {
+                                Ok(names) => Ok(QueryOutput::Message(format!(
+                                    "CREATE FUNCTION (registered {} from WASM: {})",
+                                    names.len(),
+                                    names.join(", ")
+                                ))),
+                                Err(e) => Err(DustError::InvalidInput(format!(
+                                    "failed to load WASM module for function `{name}`: {e}"
+                                ))),
+                            }
+                        })
+                    }
+                    other => Err(DustError::UnsupportedQuery(format!(
+                        "unsupported function language: `{other}` (only WASM is supported)"
+                    ))),
+                }
+            }
             AstStatement::Raw(raw) => Err(DustError::UnsupportedQuery(format!(
                 "unsupported SQL: {}",
                 raw.sql
@@ -1775,6 +1800,24 @@ fn eval_datum_expr(expr: &Expr, columns: &[ColumnBinding], row: &[Datum]) -> Dat
             // Subquery execution is handled at a higher level.
             Datum::Null
         }
+        Expr::VectorLiteral { elements, .. } => {
+            let mut vals = Vec::with_capacity(elements.len());
+            for elem in elements {
+                match eval_datum_expr(elem, columns, row) {
+                    Datum::Integer(n) => vals.push(n as f32),
+                    Datum::Real(f) => vals.push(f as f32),
+                    Datum::Text(s) => {
+                        if let Ok(f) = s.parse::<f32>() {
+                            vals.push(f);
+                        } else {
+                            return Datum::Null;
+                        }
+                    }
+                    _ => return Datum::Null,
+                }
+            }
+            Datum::Text(crate::vector::format_vector(&vals))
+        }
     }
 }
 
@@ -2530,6 +2573,12 @@ fn validate_expr_columns(columns: &[ColumnBinding], expr: &Expr) -> Result<()> {
         }
         Expr::Subquery { .. } => Ok(()), // subquery columns validated separately
         Expr::InSubquery { expr, .. } => validate_expr_columns(columns, expr),
+        Expr::VectorLiteral { elements, .. } => {
+            for elem in elements {
+                validate_expr_columns(columns, elem)?;
+            }
+            Ok(())
+        }
         Expr::Integer(_)
         | Expr::Float(_)
         | Expr::StringLit { .. }

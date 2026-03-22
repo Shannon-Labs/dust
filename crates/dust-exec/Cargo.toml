@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+wasm = ["wasmtime"]
+
 [dependencies]
 dust-catalog = { path = "../dust-catalog" }
 dust-sql = { path = "../dust-sql" }
@@ -13,6 +17,7 @@ dust-store = { path = "../dust-store" }
 dust-types = { path = "../dust-types" }
 serde.workspace = true
 toml.workspace = true
+wasmtime = { version = "29", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -529,6 +529,7 @@ fn extract_statement_sql(source: &str, stmt: &dust_sql::AstStatement) -> String 
         AstStatement::Delete(s) => s.span,
         AstStatement::CreateTable(s) => s.span,
         AstStatement::CreateIndex(s) => s.span,
+        AstStatement::CreateFunction(s) => s.span,
         AstStatement::DropTable(s) => s.span,
         AstStatement::DropIndex(s) => s.span,
         AstStatement::AlterTable(s) => s.span,

@@ -282,6 +282,11 @@ fn validate_expr_columns(
         Expr::InSubquery { expr, .. } => {
             validate_expr_columns(table_name, columns, expr, result);
         }
+        Expr::VectorLiteral { elements, .. } => {
+            for elem in elements {
+                validate_expr_columns(table_name, columns, elem, result);
+            }
+        }
         // Literals have no column references
         Expr::Integer(_)
         | Expr::Float(_)
@@ -327,6 +332,7 @@ pub fn infer_type(expr: &Expr) -> InferredType {
         Expr::Parenthesized { expr, .. } => infer_type(expr),
         Expr::Subquery { .. } => InferredType::Unknown,
         Expr::InSubquery { .. } => InferredType::Boolean,
+        Expr::VectorLiteral { .. } => InferredType::Text, // vectors stored as text
     }
 }
 

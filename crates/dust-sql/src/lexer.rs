@@ -97,6 +97,12 @@ pub enum Keyword {
     // Conflict resolution
     Replace,
     Ignore,
+    // UDF / vector
+    Function,
+    Wasm,
+    Deterministic,
+    Vector,
+    Hnsw,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +114,8 @@ pub enum TokenKind {
     Comma,
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Semicolon,
     Dot,
     Star,
@@ -180,6 +188,14 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
             ')' => {
                 index += 1;
                 make(TokenKind::RParen, input, start, index)
+            }
+            '[' => {
+                index += 1;
+                make(TokenKind::LBracket, input, start, index)
+            }
+            ']' => {
+                index += 1;
+                make(TokenKind::RBracket, input, start, index)
             }
             ',' => {
                 index += 1;
@@ -471,6 +487,11 @@ fn keyword(text: &str) -> Option<Keyword> {
         "REPLACE" => Some(Keyword::Replace),
         "IGNORE" => Some(Keyword::Ignore),
         "OVER" => Some(Keyword::Over),
+        "FUNCTION" => Some(Keyword::Function),
+        "WASM" => Some(Keyword::Wasm),
+        "DETERMINISTIC" => Some(Keyword::Deterministic),
+        "VECTOR" => Some(Keyword::Vector),
+        "HNSW" => Some(Keyword::Hnsw),
         "PARTITION" => Some(Keyword::Partition),
         "ROWS" => Some(Keyword::Rows),
         "RANGE" => Some(Keyword::Range),
