@@ -230,6 +230,7 @@ pub struct WindowSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Integer(IntegerLiteral),
+    Float(FloatLiteral),
     StringLit {
         value: String,
         span: Span,
@@ -309,6 +310,7 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Integer(lit) => lit.span,
+            Expr::Float(lit) => lit.span,
             Expr::StringLit { span, .. }
             | Expr::Null(span)
             | Expr::Boolean { span, .. }
@@ -422,6 +424,12 @@ pub struct DeleteStatement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntegerLiteral {
     pub value: i64,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloatLiteral {
+    pub value: String,
     pub span: Span,
 }
 

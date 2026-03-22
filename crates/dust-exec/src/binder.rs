@@ -22,6 +22,7 @@ pub struct ResolvedColumn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InferredType {
     Integer,
+    Real,
     Text,
     Boolean,
     Null,
@@ -283,6 +284,7 @@ fn validate_expr_columns(
         }
         // Literals have no column references
         Expr::Integer(_)
+        | Expr::Float(_)
         | Expr::StringLit { .. }
         | Expr::Null(_)
         | Expr::Boolean { .. }
@@ -294,6 +296,7 @@ fn validate_expr_columns(
 pub fn infer_type(expr: &Expr) -> InferredType {
     match expr {
         Expr::Integer(_) => InferredType::Integer,
+        Expr::Float(_) => InferredType::Real,
         Expr::StringLit { .. } => InferredType::Text,
         Expr::Null(_) => InferredType::Null,
         Expr::Boolean { .. } => InferredType::Boolean,

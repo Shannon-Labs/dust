@@ -336,6 +336,17 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                 while index < bytes.len() && (bytes[index] as char).is_ascii_digit() {
                     index += 1;
                 }
+                // Optional fractional part
+                if index < bytes.len()
+                    && bytes[index] == b'.'
+                    && index + 1 < bytes.len()
+                    && (bytes[index + 1] as char).is_ascii_digit()
+                {
+                    index += 1; // consume '.'
+                    while index < bytes.len() && (bytes[index] as char).is_ascii_digit() {
+                        index += 1;
+                    }
+                }
                 make(TokenKind::Number, input, start, index)
             }
             _ if is_ident_start(ch) => {

@@ -1336,6 +1336,7 @@ fn eval_where(expr: &Expr, columns: &[String], row: &[Value]) -> bool {
 fn eval_expr_to_value(expr: &Expr, columns: &[String], row: &[Value]) -> Value {
     match expr {
         Expr::Integer(lit) => Value::Integer(lit.value),
+        Expr::Float(lit) => Value::Text(lit.value.clone()),
         Expr::StringLit { value, .. } => Value::Text(value.clone()),
         Expr::Null(_) => Value::Null,
         Expr::Boolean { value, .. } => Value::Boolean(*value),

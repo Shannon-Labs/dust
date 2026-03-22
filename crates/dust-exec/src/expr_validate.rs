@@ -154,6 +154,7 @@ fn validate_expr(expr: &Expr, allow: AggAllow) -> Result<()> {
         }
         Expr::ColumnRef(_)
         | Expr::Integer(_)
+        | Expr::Float(_)
         | Expr::StringLit { .. }
         | Expr::Null(_)
         | Expr::Boolean { .. }

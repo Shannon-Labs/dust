@@ -263,7 +263,7 @@ impl BTree {
             let child = if pos < count {
                 let cell = page.cell_data(pos);
                 let (k, c) = decode_internal_cell(cell);
-                if key < k {
+                if key <= k {
                     c
                 } else {
                     page.right_ptr()
@@ -478,11 +478,15 @@ impl BTree {
             }
         }
 
-        // Handle right_child placement
+        // Handle right_child parent pointer update
         if pos as usize > mid {
+            // right_child is in the right node — parent is new_internal_id
             pager
                 .write_page(right_child)?
                 .set_parent_ptr(new_internal_id);
+        } else {
+            // right_child is in the left node — parent is internal_id
+            pager.write_page(right_child)?.set_parent_ptr(internal_id);
         }
 
         // Update children's parent pointers for the right node

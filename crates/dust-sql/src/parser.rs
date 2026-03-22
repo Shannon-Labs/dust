@@ -1,10 +1,10 @@
 use crate::ast::{
     AlterTableAction, AlterTableStatement, Assignment, AstStatement, BinOp, ColumnConstraint,
     ColumnDef, ColumnRef, ConflictResolution, CreateIndexStatement, CreateTableStatement, Cte,
-    DeleteStatement, DropIndexStatement, DropTableStatement, Expr, FromClause, Identifier,
-    IndexColumn, IndexOrdering, InsertStatement, IntegerLiteral, JoinClause, JoinType, OrderByItem,
-    Program, RawStatement, SelectItem, SelectProjection, SelectStatement, SetOpKind, Span,
-    Statement, TableConstraint, TableConstraintKind, TableElement, TokenFragment, TypeName,
+    DeleteStatement, DropIndexStatement, DropTableStatement, Expr, FloatLiteral, FromClause,
+    Identifier, IndexColumn, IndexOrdering, InsertStatement, IntegerLiteral, JoinClause, JoinType,
+    OrderByItem, Program, RawStatement, SelectItem, SelectProjection, SelectStatement, SetOpKind,
+    Span, Statement, TableConstraint, TableConstraintKind, TableElement, TokenFragment, TypeName,
     UnaryOp, UpdateStatement, WindowSpec, WithStatement,
 };
 use crate::lexer::{lex, Keyword, Token, TokenKind};
@@ -1397,10 +1397,23 @@ impl<'a> Parser<'a> {
         match &token.kind {
             TokenKind::Number => {
                 let token = self.bump().expect("peeked");
-                Ok(Expr::Integer(IntegerLiteral {
-                    value: token.text.parse().unwrap_or(0),
-                    span: token.span,
-                }))
+                if token.text.contains('.') {
+                    Ok(Expr::Float(FloatLiteral {
+                        value: token.text,
+                        span: token.span,
+                    }))
+                } else {
+                    let value: i64 = token.text.parse().map_err(|_| {
+                        DustError::invalid(format!(
+                            "integer literal '{}' is out of range for a 64-bit signed integer",
+                            token.text
+                        ))
+                    })?;
+                    Ok(Expr::Integer(IntegerLiteral {
+                        value,
+                        span: token.span,
+                    }))
+                }
             }
             TokenKind::String => {
                 let token = self.bump().expect("peeked");

@@ -90,6 +90,11 @@ fn parse_eq_where_column_literal(expr: &Expr) -> Option<(String, Option<String>,
 fn expr_to_literal_datum(expr: &Expr) -> Option<Datum> {
     match expr {
         Expr::Integer(lit) => Some(Datum::Integer(lit.value)),
+        Expr::Float(lit) => lit
+            .value
+            .parse::<f64>()
+            .ok()
+            .map(Datum::Real),
         Expr::StringLit { value, .. } => Some(Datum::Text(value.clone())),
         Expr::Boolean { value, .. } => Some(Datum::Boolean(*value)),
         Expr::Null(_) => Some(Datum::Null),
@@ -1302,25 +1307,103 @@ impl PersistentEngine {
         all_columns: &[ColumnBinding],
         rows: &[Vec<Datum>],
     ) -> Result<QueryOutput> {
-        let mut out_cols = Vec::new();
-        let mut out_vals = Vec::new();
+        // Build output column names from the projection
+        let out_cols: Vec<String> = select
+            .projection
+            .iter()
+            .filter_map(|item| {
+                if let SelectItem::Expr { expr, alias, .. } = item {
+                    Some(
+                        alias
+                            .as_ref()
+                            .map(|a| a.value.clone())
+                            .unwrap_or_else(|| expr_display_name(expr)),
+                    )
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        for item in &select.projection {
-            if let SelectItem::Expr { expr, alias, .. } = item {
-                let col_name = alias
-                    .as_ref()
-                    .map(|a| a.value.clone())
-                    .unwrap_or_else(|| expr_display_name(expr));
-                out_cols.push(col_name);
-
-                let val = eval_aggregate(expr, all_columns, rows)?;
-                out_vals.push(val);
+        // If no GROUP BY, return a single row with global aggregates
+        if select.group_by.is_empty() {
+            let mut out_vals = Vec::new();
+            for item in &select.projection {
+                if let SelectItem::Expr { expr, .. } = item {
+                    let val = eval_aggregate(expr, all_columns, rows)?;
+                    out_vals.push(val);
+                }
             }
+            return Ok(QueryOutput::Rows {
+                columns: out_cols,
+                rows: vec![out_vals],
+            });
+        }
+
+        // GROUP BY: group rows by evaluating GROUP BY expressions
+        let mut groups: Vec<Vec<Vec<Datum>>> = Vec::new();
+        let mut group_index: std::collections::HashMap<Vec<String>, usize> =
+            std::collections::HashMap::new();
+
+        for row in rows {
+            let key: Vec<String> = select
+                .group_by
+                .iter()
+                .map(|expr| eval_datum_expr(expr, all_columns, row).to_string())
+                .collect();
+
+            if let Some(&idx) = group_index.get(&key) {
+                groups[idx].push(row.clone());
+            } else {
+                let idx = groups.len();
+                group_index.insert(key, idx);
+                groups.push(vec![row.clone()]);
+            }
+        }
+
+        // Evaluate each group to produce output rows
+        let mut output_rows: Vec<Vec<String>> = Vec::new();
+        for group_rows in &groups {
+            let row_vals: Vec<String> = select
+                .projection
+                .iter()
+                .filter_map(|item| {
+                    if let SelectItem::Expr { expr, .. } = item {
+                        Some(if is_aggregate_expr(expr) {
+                            eval_aggregate(expr, all_columns, group_rows)
+                                .unwrap_or_else(|_| "NULL".to_string())
+                        } else {
+                            // Non-aggregate: evaluate against first row of group
+                            // (all rows in a group share the same GROUP BY values)
+                            eval_datum_expr(expr, all_columns, &group_rows[0]).to_string()
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Apply HAVING filter if present
+            if let Some(having_expr) = &select.having {
+                let having_val = if is_aggregate_expr(having_expr) {
+                    eval_aggregate(having_expr, all_columns, group_rows)
+                        .unwrap_or_else(|_| "NULL".to_string())
+                } else {
+                    eval_datum_expr(having_expr, all_columns, &group_rows[0]).to_string()
+                };
+                match having_val.as_str() {
+                    "true" => {}
+                    "1" => {}
+                    _ => continue,
+                }
+            }
+
+            output_rows.push(row_vals);
         }
 
         Ok(QueryOutput::Rows {
             columns: out_cols,
-            rows: vec![out_vals],
+            rows: output_rows,
         })
     }
 
@@ -1515,6 +1598,11 @@ fn eval_where_datums(expr: &Expr, columns: &[ColumnBinding], row: &[Datum]) -> b
 fn eval_datum_expr(expr: &Expr, columns: &[ColumnBinding], row: &[Datum]) -> Datum {
     match expr {
         Expr::Integer(lit) => Datum::Integer(lit.value),
+        Expr::Float(lit) => lit
+            .value
+            .parse::<f64>()
+            .map(Datum::Real)
+            .unwrap_or(Datum::Null),
         Expr::StringLit { value, .. } => Datum::Text(value.clone()),
         Expr::Null(_) => Datum::Null,
         Expr::Boolean { value, .. } => Datum::Boolean(*value),
@@ -2028,10 +2116,14 @@ fn like_match_inner(
                 p.next();
                 let remaining_pattern: String = p.collect();
                 let remaining_str: String = s.collect();
-                for i in 0..=remaining_str.len() {
-                    if like_match(&remaining_str[i..], &remaining_pattern) {
+                for (idx, _) in remaining_str.char_indices() {
+                    if like_match(&remaining_str[idx..], &remaining_pattern) {
                         return true;
                     }
+                }
+                // Also try starting after the last character (empty suffix)
+                if like_match(&remaining_str[remaining_str.len()..], &remaining_pattern) {
+                    return true;
                 }
                 return false;
             }
@@ -2096,14 +2188,18 @@ fn eval_aggregate(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec<Datum>]) -
                     rows.len().to_string()
                 }),
                 "sum" => Ok(if let Some(arg) = args.first() {
-                    let sum: i64 = rows
+                    let values: Vec<i64> = rows
                         .iter()
                         .filter_map(|row| match eval_datum_expr(arg, columns, row) {
                             Datum::Integer(n) => Some(n),
                             _ => None,
                         })
-                        .sum();
-                    sum.to_string()
+                        .collect();
+                    if values.is_empty() {
+                        "NULL".to_string()
+                    } else {
+                        values.iter().sum::<i64>().to_string()
+                    }
                 } else {
                     "0".to_string()
                 }),
@@ -2435,6 +2531,7 @@ fn validate_expr_columns(columns: &[ColumnBinding], expr: &Expr) -> Result<()> {
         Expr::Subquery { .. } => Ok(()), // subquery columns validated separately
         Expr::InSubquery { expr, .. } => validate_expr_columns(columns, expr),
         Expr::Integer(_)
+        | Expr::Float(_)
         | Expr::StringLit { .. }
         | Expr::Null(_)
         | Expr::Boolean { .. }
