@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use crate::engine::QueryOutput;
 use crate::expr_validate::validate_ast_statement;
 use crate::persistent_schema::{
-    ColumnSchema, PersistedSchema, SecondaryIndexDef, TableSchema, column_schema_from_def,
-    parse_default_expression, table_schema_from_ast,
+    ColumnSchema, PersistedSchema, SecondaryIndexDef, TableSchema, TypeAffinity,
+    column_schema_from_def, parse_default_expression, table_schema_from_ast, type_affinity,
 };
 
 type ColumnEvaluator = Box<dyn Fn(&[Datum]) -> String>;
@@ -178,6 +178,8 @@ impl PersistentEngine {
                     name: name.clone(),
                     nullable: true,
                     default_expr: None,
+                    autoincrement: false,
+                    type_name: None,
                 })
                 .collect();
             schema.tables.insert(
@@ -638,6 +640,8 @@ impl PersistentEngine {
                     name: name.clone(),
                     nullable: true,
                     default_expr: None,
+                    autoincrement: false,
+                    type_name: None,
                 })
                 .collect();
             self.schema.tables.insert(
@@ -1178,6 +1182,12 @@ impl PersistentEngine {
         let total_columns = columns.len();
         let row_count = insert.values.len();
 
+        // Find autoincrement column index if any
+        let autoincrement_col = table_schema
+            .columns
+            .iter()
+            .position(|c| c.autoincrement);
+
         for value_row in &insert.values {
             if value_row.len() != col_indices.len() {
                 return Err(DustError::InvalidInput(format!(
@@ -1196,6 +1206,23 @@ impl PersistentEngine {
             }
             for (val_idx, &col_idx) in col_indices.iter().enumerate() {
                 datums[col_idx] = eval_datum_expr(&value_row[val_idx], &[], &[]);
+            }
+            // Apply type affinity coercion
+            for (col_idx, col_schema) in table_schema.columns.iter().enumerate() {
+                if col_idx < datums.len() && !matches!(datums[col_idx], Datum::Null) {
+                    datums[col_idx] =
+                        coerce_by_affinity(&datums[col_idx], col_schema.type_name.as_deref());
+                }
+            }
+            // Fill in autoincrement value if the column is NULL or not provided
+            if let Some(ai_col) = autoincrement_col {
+                if matches!(datums[ai_col], Datum::Null) {
+                    let next_id = self
+                        .store
+                        .table_next_rowid(table_name)
+                        .unwrap_or(1) as i64;
+                    datums[ai_col] = Datum::Integer(next_id);
+                }
             }
             self.validate_row_constraints(table_name, &table_schema, None, &datums)?;
             self.store.insert_row(table_name, datums)?;
@@ -2155,6 +2182,9 @@ fn column_schema_from_ast(column: &dust_sql::ColumnDef) -> ColumnSchema {
                     .join(" ");
                 schema.default_expr = Some(default_sql.replace("( ", "(").replace(" )", ")"));
             }
+            dust_sql::ColumnConstraint::Autoincrement { .. } => {
+                schema.autoincrement = true;
+            }
             dust_sql::ColumnConstraint::Check { .. }
             | dust_sql::ColumnConstraint::References { .. }
             | dust_sql::ColumnConstraint::Raw { .. } => {}
@@ -2173,12 +2203,63 @@ fn unique_constraints_for_column(column: &dust_sql::ColumnDef) -> Vec<Vec<String
             }
             dust_sql::ColumnConstraint::NotNull { .. }
             | dust_sql::ColumnConstraint::Default { .. }
+            | dust_sql::ColumnConstraint::Autoincrement { .. }
             | dust_sql::ColumnConstraint::Check { .. }
             | dust_sql::ColumnConstraint::References { .. }
             | dust_sql::ColumnConstraint::Raw { .. } => {}
         }
     }
     constraints
+}
+
+/// Coerce a Datum value to match the SQLite type affinity of a column.
+fn coerce_by_affinity(value: &Datum, col_type_name: Option<&str>) -> Datum {
+    let affinity = type_affinity(col_type_name.unwrap_or(""));
+    match affinity {
+        TypeAffinity::Integer => match value {
+            Datum::Integer(_) => value.clone(),
+            Datum::Text(s) => {
+                if let Ok(n) = s.trim().parse::<i64>() {
+                    Datum::Integer(n)
+                } else {
+                    value.clone()
+                }
+            }
+            _ => value.clone(),
+        },
+        TypeAffinity::Text => match value {
+            Datum::Text(_) => value.clone(),
+            Datum::Integer(n) => Datum::Text(n.to_string()),
+            Datum::Boolean(b) => Datum::Text(b.to_string()),
+            Datum::Real(r) => Datum::Text(r.to_string()),
+            Datum::Blob(_) | Datum::Null => value.clone(),
+        },
+        TypeAffinity::Real => match value {
+            Datum::Real(_) => value.clone(),
+            Datum::Integer(n) => Datum::Real(*n as f64),
+            Datum::Text(s) => {
+                if let Ok(r) = s.trim().parse::<f64>() {
+                    Datum::Real(r)
+                } else {
+                    value.clone()
+                }
+            }
+            _ => value.clone(),
+        },
+        TypeAffinity::Numeric => match value {
+            Datum::Text(s) => {
+                if let Ok(n) = s.trim().parse::<i64>() {
+                    Datum::Integer(n)
+                } else if let Ok(r) = s.trim().parse::<f64>() {
+                    Datum::Real(r)
+                } else {
+                    value.clone()
+                }
+            }
+            _ => value.clone(),
+        },
+        TypeAffinity::Blob => value.clone(),
+    }
 }
 
 fn schema_path_for_db(db_path: &Path) -> PathBuf {
@@ -2812,6 +2893,52 @@ mod tests {
     }
 
     #[test]
+    fn autoincrement_generates_sequential_ids() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO t (name) VALUES ('Alice')")
+            .unwrap();
+        engine
+            .query("INSERT INTO t (name) VALUES ('Bob')")
+            .unwrap();
+
+        let output = engine.query("SELECT * FROM t").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["id".to_string(), "name".to_string()],
+                rows: vec![
+                    vec!["1".to_string(), "Alice".to_string()],
+                    vec!["2".to_string(), "Bob".to_string()],
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn autoincrement_with_null_generates_value() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO t (id, name) VALUES (NULL, 'Alice')")
+            .unwrap();
+
+        let output = engine.query("SELECT * FROM t").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["id".to_string(), "name".to_string()],
+                rows: vec![vec!["1".to_string(), "Alice".to_string()]],
+            }
+        );
+    }
+
+    #[test]
     fn unknown_scalar_function_is_rejected() {
         let (mut engine, _dir) = temp_engine();
         engine.query("CREATE TABLE t (x INTEGER)").unwrap();
@@ -3118,5 +3245,25 @@ mod tests {
             }
             other => panic!("expected Rows, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn type_affinity_coercion_integer() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+            .unwrap();
+        engine
+            .query("INSERT INTO t (id, val) VALUES (1, '42')")
+            .unwrap();
+
+        let output = engine.query("SELECT val FROM t WHERE id = 1").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["val".to_string()],
+                rows: vec![vec!["42".to_string()]],
+            }
+        );
     }
 }

@@ -76,6 +76,10 @@ pub struct ColumnSchema {
     pub name: String,
     pub nullable: bool,
     pub default_expr: Option<String>,
+    #[serde(default)]
+    pub autoincrement: bool,
+    #[serde(default)]
+    pub type_name: Option<String>,
 }
 
 pub fn table_schema_from_ast(table: &CreateTableStatement) -> TableSchema {
@@ -104,6 +108,9 @@ pub fn table_schema_from_ast(table: &CreateTableStatement) -> TableSchema {
                         }
                         ColumnConstraint::Default { expression, .. } => {
                             schema.default_expr = Some(fragments_to_sql(expression));
+                        }
+                        ColumnConstraint::Autoincrement { .. } => {
+                            schema.autoincrement = true;
                         }
                         ColumnConstraint::Check { .. }
                         | ColumnConstraint::References { .. }
@@ -154,10 +161,17 @@ pub fn table_schema_from_ast(table: &CreateTableStatement) -> TableSchema {
 }
 
 pub fn column_schema_from_def(column: &ColumnDef) -> ColumnSchema {
+    let type_str = fragments_to_sql(&column.data_type.tokens);
     ColumnSchema {
         name: column.name.value.clone(),
         nullable: true,
         default_expr: None,
+        autoincrement: false,
+        type_name: if type_str.is_empty() {
+            None
+        } else {
+            Some(type_str)
+        },
     }
 }
 
@@ -199,6 +213,39 @@ fn fragments_to_sql(fragments: &[TokenFragment]) -> String {
     }
 
     out
+}
+
+/// SQLite type affinity categories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeAffinity {
+    Integer,
+    Text,
+    Blob,
+    Real,
+    Numeric,
+}
+
+/// Determine the type affinity for a given SQL type name following SQLite rules.
+///
+/// Rules (from SQLite documentation):
+/// 1. If type name contains "INT" -> Integer
+/// 2. If type name contains "CHAR", "CLOB", or "TEXT" -> Text
+/// 3. If type name contains "BLOB" or is empty -> Blob
+/// 4. If type name contains "REAL", "FLOA", or "DOUB" -> Real
+/// 5. Otherwise -> Numeric
+pub fn type_affinity(type_name: &str) -> TypeAffinity {
+    let upper = type_name.to_ascii_uppercase();
+    if upper.contains("INT") {
+        TypeAffinity::Integer
+    } else if upper.contains("CHAR") || upper.contains("CLOB") || upper.contains("TEXT") {
+        TypeAffinity::Text
+    } else if upper.is_empty() || upper.contains("BLOB") {
+        TypeAffinity::Blob
+    } else if upper.contains("REAL") || upper.contains("FLOA") || upper.contains("DOUB") {
+        TypeAffinity::Real
+    } else {
+        TypeAffinity::Numeric
+    }
 }
 
 fn needs_space_between(previous: &str, next: &str) -> bool {
@@ -243,5 +290,85 @@ mod tests {
     fn parses_default_expression_sql() {
         let expr = parse_default_expression("lower('YES')").unwrap();
         assert!(matches!(expr, Expr::FunctionCall { .. }));
+    }
+
+    #[test]
+    fn type_affinity_rules() {
+        // Rule 1: contains "INT" -> Integer
+        assert_eq!(type_affinity("INTEGER"), TypeAffinity::Integer);
+        assert_eq!(type_affinity("BIGINT"), TypeAffinity::Integer);
+        assert_eq!(type_affinity("SMALLINT"), TypeAffinity::Integer);
+        assert_eq!(type_affinity("INT"), TypeAffinity::Integer);
+        assert_eq!(type_affinity("TINYINT"), TypeAffinity::Integer);
+        assert_eq!(type_affinity("MEDIUMINT"), TypeAffinity::Integer);
+        assert_eq!(type_affinity("int"), TypeAffinity::Integer);
+
+        // Rule 2: contains "CHAR", "CLOB", or "TEXT" -> Text
+        assert_eq!(type_affinity("TEXT"), TypeAffinity::Text);
+        assert_eq!(type_affinity("VARCHAR(255)"), TypeAffinity::Text);
+        assert_eq!(type_affinity("NCHAR(100)"), TypeAffinity::Text);
+        assert_eq!(type_affinity("CLOB"), TypeAffinity::Text);
+
+        // Rule 3: contains "BLOB" or is empty -> Blob
+        assert_eq!(type_affinity("BLOB"), TypeAffinity::Blob);
+        assert_eq!(type_affinity(""), TypeAffinity::Blob);
+
+        // Rule 4: contains "REAL", "FLOA", or "DOUB" -> Real
+        assert_eq!(type_affinity("REAL"), TypeAffinity::Real);
+        assert_eq!(type_affinity("FLOAT"), TypeAffinity::Real);
+        assert_eq!(type_affinity("DOUBLE"), TypeAffinity::Real);
+        assert_eq!(type_affinity("DOUBLE PRECISION"), TypeAffinity::Real);
+
+        // Rule 5: Otherwise -> Numeric
+        assert_eq!(type_affinity("NUMERIC"), TypeAffinity::Numeric);
+        assert_eq!(type_affinity("DECIMAL(10,5)"), TypeAffinity::Numeric);
+        assert_eq!(type_affinity("BOOLEAN"), TypeAffinity::Numeric);
+        assert_eq!(type_affinity("DATE"), TypeAffinity::Numeric);
+    }
+
+    #[test]
+    fn autoincrement_detected_in_schema() {
+        let program = parse_program(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)",
+        )
+        .unwrap();
+        let dust_sql::AstStatement::CreateTable(table) = &program.statements[0] else {
+            panic!("expected create table");
+        };
+
+        let schema = table_schema_from_ast(table);
+        assert_eq!(schema.columns.len(), 2);
+        assert!(schema.column("id").unwrap().autoincrement);
+        assert!(!schema.column("name").unwrap().autoincrement);
+        assert!(!schema.column("id").unwrap().nullable);
+    }
+
+    #[test]
+    fn type_name_captured_in_schema() {
+        let program = parse_program(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, data BLOB, amount REAL)",
+        )
+        .unwrap();
+        let dust_sql::AstStatement::CreateTable(table) = &program.statements[0] else {
+            panic!("expected create table");
+        };
+
+        let schema = table_schema_from_ast(table);
+        assert_eq!(
+            schema.column("id").unwrap().type_name.as_deref(),
+            Some("INTEGER")
+        );
+        assert_eq!(
+            schema.column("name").unwrap().type_name.as_deref(),
+            Some("TEXT")
+        );
+        assert_eq!(
+            schema.column("data").unwrap().type_name.as_deref(),
+            Some("BLOB")
+        );
+        assert_eq!(
+            schema.column("amount").unwrap().type_name.as_deref(),
+            Some("REAL")
+        );
     }
 }

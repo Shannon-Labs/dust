@@ -54,6 +54,8 @@ impl TableStore {
 #[derive(Debug, Clone, Default)]
 pub struct Storage {
     tables: HashMap<String, TableStore>,
+    next_rowid: HashMap<String, i64>,
+    autoincrement_columns: HashMap<String, usize>,
 }
 
 impl Storage {
@@ -142,6 +144,23 @@ impl Storage {
             })?;
         *column = to;
         Ok(())
+    }
+
+    pub fn set_autoincrement(&mut self, table: &str, column_index: usize) {
+        self.autoincrement_columns
+            .insert(table.to_string(), column_index);
+        self.next_rowid.insert(table.to_string(), 1);
+    }
+
+    pub fn autoincrement_column(&self, table: &str) -> Option<usize> {
+        self.autoincrement_columns.get(table).copied()
+    }
+
+    pub fn next_autoincrement(&mut self, table: &str) -> i64 {
+        let counter = self.next_rowid.entry(table.to_string()).or_insert(1);
+        let val = *counter;
+        *counter = val + 1;
+        val
     }
 
     pub fn rename_table(&mut self, from: &str, to: String) -> Result<()> {
