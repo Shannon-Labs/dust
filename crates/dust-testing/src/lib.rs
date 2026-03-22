@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn regression_coalesce_and_expression_evaluation() {
+    fn regression_coalesce_function() {
         use dust_exec::PersistentEngine;
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
@@ -376,12 +376,33 @@ mod tests {
 
         engine.query("CREATE TABLE t (x INTEGER)").unwrap();
         engine.query("INSERT INTO t VALUES (1), (0)").unwrap();
-        // The dust CASE is function-style: case(condition, then_val, else_val)
         let result = engine
             .query("SELECT coalesce(x, 0) FROM t ORDER BY x")
             .unwrap();
         let rows = rows_as_strings(&result);
         assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn regression_case_when_expression() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+        engine
+            .query("INSERT INTO t VALUES (1), (2), (3)")
+            .unwrap();
+
+        let result = engine
+            .query("SELECT CASE WHEN x = 1 THEN 'one' ELSE 'other' END FROM t ORDER BY x")
+            .unwrap();
+        let rows = rows_as_strings(&result);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], vec!["one".to_string()]);
+        assert_eq!(rows[1], vec!["other".to_string()]);
+        assert_eq!(rows[2], vec!["other".to_string()]);
     }
 
     #[test]
@@ -790,6 +811,192 @@ mod tests {
         );
     }
 
+    /// Regression: CSV with multiple embedded newlines in a single quoted field
+    /// must still produce one row per record, not one row per line.
+    #[test]
+    fn regression_csv_multiline_multiple_newlines() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        // Field contains three lines separated by two newlines
+        let csv_path = dir.path().join("multi2.csv");
+        fs::write(
+            &csv_path,
+            "id,body\n1,\"first\nsecond\nthird\"\n2,\"no breaks\"\n",
+        )
+        .unwrap();
+
+        engine
+            .query("CREATE TABLE multi2 (id TEXT, body TEXT)")
+            .unwrap();
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_path(&csv_path)
+            .unwrap();
+        let mut count = 0;
+        for record in reader.records() {
+            let record = record.unwrap();
+            let id = record.get(0).unwrap().replace('\'', "''");
+            let body = record.get(1).unwrap().replace('\'', "''");
+            engine
+                .query(&format!(
+                    "INSERT INTO multi2 (id, body) VALUES ('{id}', '{body}')"
+                ))
+                .unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 2, "CSV should parse as 2 rows despite 3 embedded lines in field");
+
+        let result = engine
+            .query("SELECT body FROM multi2 WHERE id = '1'")
+            .unwrap();
+        let rows = rows_as_strings(&result);
+        assert_eq!(
+            rows[0][0], "first\nsecond\nthird",
+            "all embedded newlines should be preserved"
+        );
+    }
+
+    /// Regression: CSV quoted fields containing commas must not be split into
+    /// extra columns.
+    #[test]
+    fn regression_csv_quoted_field_with_commas() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        let csv_path = dir.path().join("commas.csv");
+        fs::write(
+            &csv_path,
+            "id,address\n1,\"123 Main St, Suite 4\"\n2,plain\n",
+        )
+        .unwrap();
+
+        engine
+            .query("CREATE TABLE commas (id TEXT, address TEXT)")
+            .unwrap();
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_path(&csv_path)
+            .unwrap();
+        let mut count = 0;
+        for record in reader.records() {
+            let record = record.unwrap();
+            assert_eq!(record.len(), 2, "each record should have exactly 2 fields");
+            let id = record.get(0).unwrap().replace('\'', "''");
+            let address = record.get(1).unwrap().replace('\'', "''");
+            engine
+                .query(&format!(
+                    "INSERT INTO commas (id, address) VALUES ('{id}', '{address}')"
+                ))
+                .unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 2);
+
+        let result = engine
+            .query("SELECT address FROM commas WHERE id = '1'")
+            .unwrap();
+        let rows = rows_as_strings(&result);
+        assert_eq!(rows[0][0], "123 Main St, Suite 4");
+    }
+
+    /// Regression: CSV with escaped quotes inside quoted fields (RFC 4180 uses
+    /// doubled quotes: `""`) must round-trip correctly.
+    #[test]
+    fn regression_csv_escaped_quotes_in_field() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        // The raw CSV uses "" to represent a literal quote inside a quoted field
+        let csv_path = dir.path().join("escaped.csv");
+        fs::write(
+            &csv_path,
+            "id,phrase\n1,\"She said \"\"hello\"\"\"\n2,normal\n",
+        )
+        .unwrap();
+
+        engine
+            .query("CREATE TABLE escaped (id TEXT, phrase TEXT)")
+            .unwrap();
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_path(&csv_path)
+            .unwrap();
+        let mut count = 0;
+        for record in reader.records() {
+            let record = record.unwrap();
+            let id = record.get(0).unwrap().replace('\'', "''");
+            let phrase = record.get(1).unwrap().replace('\'', "''");
+            engine
+                .query(&format!(
+                    "INSERT INTO escaped (id, phrase) VALUES ('{id}', '{phrase}')"
+                ))
+                .unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 2);
+
+        let result = engine
+            .query("SELECT phrase FROM escaped WHERE id = '1'")
+            .unwrap();
+        let rows = rows_as_strings(&result);
+        assert_eq!(
+            rows[0][0], "She said \"hello\"",
+            "doubled quotes should be unescaped to single quotes"
+        );
+    }
+
+    /// Regression: CSV with a quoted field containing both a newline and a comma
+    /// combined must produce exactly one field value.
+    #[test]
+    fn regression_csv_multiline_with_comma_in_field() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        let csv_path = dir.path().join("combo.csv");
+        fs::write(
+            &csv_path,
+            "id,description\n1,\"line one, with comma\nline two\"\n",
+        )
+        .unwrap();
+
+        engine
+            .query("CREATE TABLE combo (id TEXT, description TEXT)")
+            .unwrap();
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_path(&csv_path)
+            .unwrap();
+        let mut count = 0;
+        for record in reader.records() {
+            let record = record.unwrap();
+            assert_eq!(record.len(), 2, "record should have exactly 2 fields");
+            let id = record.get(0).unwrap().replace('\'', "''");
+            let desc = record.get(1).unwrap().replace('\'', "''");
+            engine
+                .query(&format!(
+                    "INSERT INTO combo (id, description) VALUES ('{id}', '{desc}')"
+                ))
+                .unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 1, "should be exactly one data row");
+
+        let result = engine
+            .query("SELECT description FROM combo WHERE id = '1'")
+            .unwrap();
+        let rows = rows_as_strings(&result);
+        assert_eq!(rows[0][0], "line one, with comma\nline two");
+    }
+
     #[test]
     fn regression_branch_name_with_slashes() {
         let (_temp, project) = bootstrap_project().unwrap();
@@ -818,6 +1025,105 @@ mod tests {
             "db path should contain branch name components: {}",
             db_path.display()
         );
+    }
+
+    // -------------------------------------------------------------------
+    // SHA-3475 regression: slash branch data isolation (end-to-end)
+    // Verifies that creating a branch named "feature/auth", writing data
+    // to it, and reading back from main does NOT see the branch data.
+    // The key invariant is that no raw IO panic occurs — every operation
+    // returns a clean Result even though the branch name contains a "/".
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn regression_slash_branch_data_isolation() {
+        use dust_exec::PersistentEngine;
+        let (_temp, project) = bootstrap_project().unwrap();
+
+        // Create data on main
+        let main_db = project.active_data_db_path();
+        fs::create_dir_all(main_db.parent().unwrap()).unwrap();
+        {
+            let mut engine = PersistentEngine::open(&main_db).unwrap();
+            engine
+                .query("CREATE TABLE t (x INTEGER)")
+                .unwrap();
+            engine
+                .query("INSERT INTO t VALUES (1)")
+                .unwrap();
+            engine.sync().unwrap();
+        }
+
+        // Create slash-containing branch and add data there.
+        // This is the regression path — "feature/auth" requires the parent
+        // directory to be created; without BranchName.as_path() this would
+        // panic with a raw IO error.
+        let branch_db = project.branch_data_db_path("feature/auth");
+        let create_result = fs::create_dir_all(branch_db.parent().unwrap());
+        assert!(
+            create_result.is_ok(),
+            "creating parent dirs for feature/auth branch must not panic: {:?}",
+            create_result.err()
+        );
+        fs::copy(&main_db, &branch_db).unwrap();
+        {
+            let mut engine = PersistentEngine::open(&branch_db).unwrap();
+            engine
+                .query("INSERT INTO t VALUES (999)")
+                .unwrap();
+            engine.sync().unwrap();
+
+            // Branch should see 2 rows
+            let result = engine.query("SELECT count(*) FROM t").unwrap();
+            match &result {
+                QueryOutput::Rows { rows, .. } => {
+                    assert_eq!(
+                        rows,
+                        &[vec!["2".to_string()]],
+                        "branch feature/auth should have 2 rows"
+                    );
+                }
+                other => panic!("expected Rows, got: {other:?}"),
+            }
+        }
+
+        // Main should still see only 1 row
+        {
+            let mut engine = PersistentEngine::open(&main_db).unwrap();
+            let result = engine.query("SELECT count(*) FROM t").unwrap();
+            match &result {
+                QueryOutput::Rows { rows, .. } => {
+                    assert_eq!(
+                        rows,
+                        &[vec!["1".to_string()]],
+                        "main should have 1 row, not branch data"
+                    );
+                }
+                other => panic!("expected Rows, got: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn regression_slash_branch_name_validation_returns_result_not_panic() {
+        // Every invalid slash variant must return Err, never panic.
+        let cases = vec![
+            ("/leading", "leading slash"),
+            ("trailing/", "trailing slash"),
+            ("double//slash", "double slash"),
+            ("dot/./segment", "dot segment"),
+            ("dotdot/../escape", "dotdot segment"),
+            ("has/spa ce/in", "space in segment"),
+            ("back\\slash", "backslash"),
+            ("null\0char", "null byte"),
+        ];
+        for (input, label) in cases {
+            let result = dust_store::BranchName::new(input);
+            assert!(
+                result.is_err(),
+                "{label}: BranchName::new({input:?}) should return Err, not panic"
+            );
+        }
     }
 
     #[test]

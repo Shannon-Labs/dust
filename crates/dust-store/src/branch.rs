@@ -163,4 +163,96 @@ mod tests {
         assert_eq!(head.catalog_version, 0);
         assert!(head.last_commit_id.is_none());
     }
+
+    // -------------------------------------------------------------------
+    // SHA-3475 regression: branch names with slashes
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn slash_branch_feature_auth_accepted() {
+        let branch = BranchName::new("feature/auth");
+        assert!(
+            branch.is_ok(),
+            "feature/auth should be a valid branch name: {:?}",
+            branch.err()
+        );
+        let branch = branch.unwrap();
+        assert_eq!(branch.as_str(), "feature/auth");
+        assert_eq!(branch.as_path(), PathBuf::from("feature").join("auth"));
+    }
+
+    #[test]
+    fn deeply_nested_slash_branch_accepted() {
+        let branch = BranchName::new("team/project/feature/auth");
+        assert!(
+            branch.is_ok(),
+            "deeply nested slash branch should be valid: {:?}",
+            branch.err()
+        );
+        let b = branch.unwrap();
+        assert_eq!(b.as_str(), "team/project/feature/auth");
+        assert_eq!(
+            b.as_path(),
+            PathBuf::from("team").join("project").join("feature").join("auth")
+        );
+    }
+
+    #[test]
+    fn slash_branch_rejects_leading_slash() {
+        let err = BranchName::new("/feature/auth");
+        assert!(err.is_err(), "leading slash should be rejected");
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("cannot start or end with"),
+            "error should mention leading/trailing slash: {msg}"
+        );
+    }
+
+    #[test]
+    fn slash_branch_rejects_trailing_slash() {
+        let err = BranchName::new("feature/auth/");
+        assert!(err.is_err(), "trailing slash should be rejected");
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("cannot start or end with"),
+            "error should mention leading/trailing slash: {msg}"
+        );
+    }
+
+    #[test]
+    fn slash_branch_rejects_double_slash() {
+        let err = BranchName::new("feature//auth");
+        assert!(err.is_err(), "double slash should be rejected");
+    }
+
+    #[test]
+    fn slash_branch_rejects_dot_segment() {
+        assert!(BranchName::new("feature/./auth").is_err());
+        assert!(BranchName::new("feature/../auth").is_err());
+    }
+
+    #[test]
+    fn slash_branch_display_preserves_original() {
+        let branch = BranchName::new("feature/auth").unwrap();
+        assert_eq!(format!("{branch}"), "feature/auth");
+    }
+
+    #[test]
+    fn slash_branch_round_trips_through_serde() {
+        let branch = BranchName::new("feature/auth").unwrap();
+        let json = serde_json::to_string(&branch).unwrap();
+        let deserialized: BranchName = serde_json::from_str(&json).unwrap();
+        assert_eq!(branch, deserialized);
+    }
+
+    #[test]
+    fn slash_branch_ref_round_trips_through_toml() {
+        let branch = BranchName::new("feature/auth").unwrap();
+        let head = BranchHead::default();
+        let branch_ref = BranchRef::new(branch, head);
+        let toml_str = toml::to_string_pretty(&branch_ref).unwrap();
+        let deserialized: BranchRef = toml::from_str(&toml_str).unwrap();
+        assert_eq!(branch_ref.name, deserialized.name);
+        assert_eq!(branch_ref.head, deserialized.head);
+    }
 }

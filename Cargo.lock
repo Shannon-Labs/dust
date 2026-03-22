@@ -511,7 +511,9 @@ dependencies = [
  "blake3",
  "dust-types",
  "serde",
+ "serde_json",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
