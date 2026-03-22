@@ -246,6 +246,7 @@ dependencies = [
  "dust-types",
  "miette",
  "rustyline",
+ "serde_json",
  "tokio",
  "toml",
 ]

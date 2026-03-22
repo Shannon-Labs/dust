@@ -17,5 +17,6 @@ dust-store = { path = "../dust-store" }
 dust-types = { path = "../dust-types" }
 miette.workspace = true
 rustyline.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 toml.workspace = true
