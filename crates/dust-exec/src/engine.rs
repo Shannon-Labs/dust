@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::binder::bind_statement;
 use crate::storage::{Storage, Value};
+use crate::udf::UdfRegistry;
 use dust_catalog::CatalogBuilder;
 use dust_plan::{
     CatalogObjectKind, CreateIndexPlan, CreateTablePlan, IndexColumnPlan, IndexOrdering,
@@ -13,6 +14,21 @@ use dust_sql::{
     InsertStatement, SelectItem, SelectProjection, SetOpKind, Span, TableConstraint, TableElement,
     TokenFragment, UpdateStatement,
 };
+
+thread_local! {
+    static UDF_REGISTRY: std::cell::RefCell<UdfRegistry> =
+        std::cell::RefCell::new(UdfRegistry::new());
+}
+
+/// Register a UDF in the global thread-local registry.
+pub fn register_udf(udf: crate::udf::Udf) {
+    UDF_REGISTRY.with(|r| r.borrow_mut().register(udf));
+}
+
+/// Call a UDF from the global thread-local registry.
+fn call_udf(name: &str, args: &[String]) -> Option<String> {
+    UDF_REGISTRY.with(|r| r.borrow().call(name, args))
+}
 use dust_types::{DustError, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1331,8 +1347,18 @@ fn eval_expr_to_value(expr: &Expr, columns: &[String], row: &[Value]) -> Value {
         }
         Expr::Parenthesized { expr: inner, .. } => eval_expr_to_value(inner, columns, row),
         Expr::FunctionCall { name, args, .. } => {
-            // Basic function support
+            // Check UDF registry first
             let fn_name = name.value.to_ascii_lowercase();
+            if let Some(result) = call_udf(
+                &fn_name,
+                &args
+                    .iter()
+                    .map(|a| eval_expr_to_value(a, columns, row).to_string())
+                    .collect::<Vec<_>>(),
+            ) {
+                return Value::Text(result);
+            }
+            // Built-in function support
             match fn_name.as_str() {
                 "count" => Value::Integer(1), // placeholder
                 "lower" => {
