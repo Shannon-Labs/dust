@@ -8,8 +8,8 @@ use dust_plan::{
 use dust_sql::{
     AlterTableAction, AstStatement, BinOp, ColumnConstraint, CreateIndexStatement,
     CreateTableStatement, DeleteStatement, Expr, IndexOrdering as AstIndexOrdering,
-    InsertStatement, SelectProjection, Span, TableConstraint, TableElement, TokenFragment,
-    UpdateStatement, parse_program,
+    InsertStatement, SelectProjection, SetOpKind, Span, TableConstraint, TableElement,
+    TokenFragment, UpdateStatement, parse_program,
 };
 use dust_types::{DustError, Result};
 
@@ -94,6 +94,12 @@ impl ExecutionEngine {
     fn execute_statement(&mut self, source: &str, statement: &AstStatement) -> Result<QueryOutput> {
         match statement {
             AstStatement::Select(select) => self.execute_select(select),
+            AstStatement::SetOp {
+                kind,
+                left,
+                right,
+                ..
+            } => self.execute_set_op(*kind, left, right),
             AstStatement::Insert(insert) => self.execute_insert(source, insert),
             AstStatement::Update(update) => self.execute_update(source, update),
             AstStatement::Delete(delete) => self.execute_delete(source, delete),
@@ -229,6 +235,63 @@ impl ExecutionEngine {
                     rows: output_rows,
                 })
             }
+        }
+    }
+
+    fn execute_set_op(
+        &self,
+        kind: SetOpKind,
+        left: &dust_sql::SelectStatement,
+        right: &dust_sql::SelectStatement,
+    ) -> Result<QueryOutput> {
+        let left_output = self.execute_select(left)?;
+        let right_output = self.execute_select(right)?;
+
+        match (left_output, right_output) {
+            (
+                QueryOutput::Rows {
+                    columns,
+                    rows: left_rows,
+                },
+                QueryOutput::Rows {
+                    rows: right_rows, ..
+                },
+            ) => {
+                let rows = match kind {
+                    SetOpKind::UnionAll => {
+                        let mut combined = left_rows;
+                        combined.extend(right_rows);
+                        combined
+                    }
+                    SetOpKind::Union => {
+                        let mut combined = left_rows;
+                        combined.extend(right_rows);
+                        let mut seen = std::collections::HashSet::new();
+                        combined.retain(|row| seen.insert(row.clone()));
+                        combined
+                    }
+                    SetOpKind::Intersect => {
+                        let right_set: std::collections::HashSet<_> =
+                            right_rows.into_iter().collect();
+                        left_rows
+                            .into_iter()
+                            .filter(|row| right_set.contains(row))
+                            .collect()
+                    }
+                    SetOpKind::Except => {
+                        let right_set: std::collections::HashSet<_> =
+                            right_rows.into_iter().collect();
+                        left_rows
+                            .into_iter()
+                            .filter(|row| !right_set.contains(row))
+                            .collect()
+                    }
+                };
+                Ok(QueryOutput::Rows { columns, rows })
+            }
+            _ => Err(DustError::UnsupportedQuery(
+                "set operations require SELECT queries that return rows".to_string(),
+            )),
         }
     }
 
@@ -664,6 +727,10 @@ fn eval_expr(_source: &str, expr: &Expr) -> Value {
 fn plan_statement(source: &str, statement: &AstStatement) -> PlannedStatement {
     match statement {
         AstStatement::Select(select) => plan_select(source, select),
+        AstStatement::SetOp { left, span, .. } => {
+            let sql = slice_source(source, *span);
+            plan_select(&sql, left)
+        }
         AstStatement::Insert(insert) => plan_insert(source, insert),
         AstStatement::Update(update) => PlannedStatement::new(
             update.raw.clone(),
@@ -1284,6 +1351,71 @@ mod tests {
                     vec!["1".to_string(), "10".to_string()],
                     vec!["3".to_string(), "30".to_string()],
                 ],
+            }
+        );
+    }
+
+    #[test]
+    fn union_all_keeps_duplicates() {
+        let mut engine = ExecutionEngine::new();
+        let output = engine.query("SELECT 1 UNION ALL SELECT 1").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["?column?".to_string()],
+                rows: vec![vec!["1".to_string()], vec!["1".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn union_deduplicates() {
+        let mut engine = ExecutionEngine::new();
+        let output = engine.query("SELECT 1 UNION SELECT 1").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["?column?".to_string()],
+                rows: vec![vec!["1".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn intersect_keeps_common_rows() {
+        let mut engine = ExecutionEngine::new();
+        let output = engine.query("SELECT 1 INTERSECT SELECT 1").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["?column?".to_string()],
+                rows: vec![vec!["1".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn except_removes_matching_rows() {
+        let mut engine = ExecutionEngine::new();
+        let output = engine.query("SELECT 1 EXCEPT SELECT 1").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["?column?".to_string()],
+                rows: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn except_keeps_non_matching_rows() {
+        let mut engine = ExecutionEngine::new();
+        let output = engine.query("SELECT 1 EXCEPT SELECT 2").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["?column?".to_string()],
+                rows: vec![vec!["1".to_string()]],
             }
         );
     }

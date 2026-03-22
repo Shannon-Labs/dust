@@ -71,6 +71,11 @@ pub enum Keyword {
     Begin,
     Commit,
     Rollback,
+    // Set operations
+    Union,
+    All,
+    Intersect,
+    Except,
     // Misc
     Case,
     When,
@@ -426,6 +431,10 @@ fn keyword(text: &str) -> Option<Keyword> {
         "BEGIN" => Some(Keyword::Begin),
         "COMMIT" => Some(Keyword::Commit),
         "ROLLBACK" => Some(Keyword::Rollback),
+        "UNION" => Some(Keyword::Union),
+        "ALL" => Some(Keyword::All),
+        "INTERSECT" => Some(Keyword::Intersect),
+        "EXCEPT" => Some(Keyword::Except),
         "CASE" => Some(Keyword::Case),
         "WHEN" => Some(Keyword::When),
         "THEN" => Some(Keyword::Then),

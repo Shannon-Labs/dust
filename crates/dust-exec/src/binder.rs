@@ -51,6 +51,10 @@ pub fn bind_statement(storage: &Storage, statement: &AstStatement) -> BindResult
 
     match statement {
         AstStatement::Select(select) => bind_select(storage, select, &mut result),
+        AstStatement::SetOp { left, right, .. } => {
+            bind_select(storage, left, &mut result);
+            bind_select(storage, right, &mut result);
+        }
         AstStatement::Insert(insert) => bind_insert(storage, insert, &mut result),
         AstStatement::Update(update) => bind_update(storage, update, &mut result),
         AstStatement::Delete(delete) => bind_delete(storage, delete, &mut result),

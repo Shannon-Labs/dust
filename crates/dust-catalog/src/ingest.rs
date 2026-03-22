@@ -5,6 +5,7 @@ use dust_types::{DustError, Result};
 pub fn ingest_statement(builder: &mut CatalogBuilder, statement: &AstStatement) -> Result<()> {
     match statement {
         AstStatement::Select(_)
+        | AstStatement::SetOp { .. }
         | AstStatement::Insert(_)
         | AstStatement::Update(_)
         | AstStatement::Delete(_)
@@ -33,6 +34,7 @@ pub fn is_supported_schema_statement(statement: &AstStatement) -> bool {
     matches!(
         statement,
         AstStatement::Select(_)
+            | AstStatement::SetOp { .. }
             | AstStatement::Insert(_)
             | AstStatement::Update(_)
             | AstStatement::Delete(_)

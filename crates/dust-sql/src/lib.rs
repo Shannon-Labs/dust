@@ -7,7 +7,8 @@ pub use ast::{
     ColumnDef, ColumnRef, CreateIndexStatement, CreateTableStatement, DeleteStatement,
     DropIndexStatement, DropTableStatement, Expr, FromClause, Identifier, IndexColumn,
     IndexOrdering, InsertStatement, IntegerLiteral, JoinClause, JoinType, OrderByItem, Program,
-    RawStatement, SelectItem, SelectProjection, SelectStatement, Span, Statement, TableConstraint,
-    TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp, UpdateStatement,
+    RawStatement, SelectItem, SelectProjection, SelectStatement, SetOpKind, Span, Statement,
+    TableConstraint, TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp,
+    UpdateStatement,
 };
 pub use parser::{parse_program, parse_sql};

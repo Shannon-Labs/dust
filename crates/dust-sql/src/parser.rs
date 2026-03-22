@@ -3,8 +3,9 @@ use crate::ast::{
     ColumnDef, ColumnRef, CreateIndexStatement, CreateTableStatement, DeleteStatement,
     DropIndexStatement, DropTableStatement, Expr, FromClause, Identifier, IndexColumn,
     IndexOrdering, InsertStatement, IntegerLiteral, JoinClause, JoinType, OrderByItem, Program,
-    RawStatement, SelectItem, SelectProjection, SelectStatement, Span, Statement, TableConstraint,
-    TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp, UpdateStatement,
+    RawStatement, SelectItem, SelectProjection, SelectStatement, SetOpKind, Span, Statement,
+    TableConstraint, TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp,
+    UpdateStatement,
 };
 use crate::lexer::{Keyword, Token, TokenKind, lex};
 use dust_types::{DustError, Result};
@@ -188,7 +189,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.statement_end();
-        Ok(AstStatement::Select(Box::new(SelectStatement {
+        let left = SelectStatement {
             distinct,
             projection,
             from,
@@ -200,7 +201,118 @@ impl<'a> Parser<'a> {
             limit,
             offset,
             span: Span::new(start, end),
-        })))
+        };
+
+        // Check for set operations: UNION [ALL], INTERSECT, EXCEPT
+        let set_op_kind = match self.peek_keyword() {
+            Some(Keyword::Union) => {
+                self.bump(); // consume UNION
+                if self.eat_keyword(Keyword::All)? {
+                    Some(SetOpKind::UnionAll)
+                } else {
+                    Some(SetOpKind::Union)
+                }
+            }
+            Some(Keyword::Intersect) => {
+                self.bump(); // consume INTERSECT
+                Some(SetOpKind::Intersect)
+            }
+            Some(Keyword::Except) => {
+                self.bump(); // consume EXCEPT
+                Some(SetOpKind::Except)
+            }
+            _ => None,
+        };
+
+        if let Some(kind) = set_op_kind {
+            // Parse the right-hand SELECT
+            let right_start = self.expect_keyword(Keyword::Select)?.span.start;
+            let right_stmt = self.parse_select_body(right_start)?;
+            let full_span = Span::new(start, self.statement_end());
+            Ok(AstStatement::SetOp {
+                kind,
+                left: Box::new(left),
+                right: Box::new(right_stmt),
+                span: full_span,
+            })
+        } else {
+            Ok(AstStatement::Select(Box::new(left)))
+        }
+    }
+
+    /// Parse the body of a SELECT (after the SELECT keyword has been consumed).
+    /// Factored out so set-operation right-hand sides can reuse it.
+    fn parse_select_body(&mut self, start: usize) -> Result<SelectStatement> {
+        let distinct = self.eat_keyword(Keyword::Distinct)?;
+        let projection = self.parse_select_items()?;
+
+        let from = if self.eat_keyword(Keyword::From)? {
+            let table = self.parse_identifier()?;
+            let alias = self.parse_optional_alias();
+            let fspan = table
+                .span
+                .join(alias.as_ref().map(|a| a.span).unwrap_or(table.span));
+            Some(FromClause {
+                table,
+                alias,
+                span: fspan,
+            })
+        } else {
+            None
+        };
+
+        let joins = self.parse_join_clauses()?;
+
+        let where_clause = if self.eat_keyword(Keyword::Where)? {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        let group_by = if self.eat_keywords(&[Keyword::Group, Keyword::By]) {
+            self.parse_expression_list()?
+        } else {
+            Vec::new()
+        };
+
+        let having = if self.eat_keyword(Keyword::Having)? {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        let order_by = if self.eat_keywords(&[Keyword::Order, Keyword::By]) {
+            self.parse_order_by_list()?
+        } else {
+            Vec::new()
+        };
+
+        let limit = if self.eat_keyword(Keyword::Limit)? {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        let offset = if self.eat_keyword(Keyword::Offset)? {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        let end = self.statement_end();
+        Ok(SelectStatement {
+            distinct,
+            projection,
+            from,
+            joins,
+            where_clause,
+            group_by,
+            having,
+            order_by,
+            limit,
+            offset,
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_select_items(&mut self) -> Result<Vec<SelectItem>> {
@@ -1749,6 +1861,9 @@ impl From<AstStatement> for Statement {
                     },
                 }
             }
+            AstStatement::SetOp { .. } => Statement::Select {
+                raw: "select".to_string(),
+            },
             AstStatement::Insert(insert) => Statement::Insert {
                 table: insert.table.value,
                 raw: insert.raw,
@@ -1822,6 +1937,7 @@ fn adjust_depth(mut depth: usize, kind: &TokenKind) -> usize {
 fn statement_span(statement: &AstStatement) -> Span {
     match statement {
         AstStatement::Select(s) => s.span,
+        AstStatement::SetOp { span, .. } => *span,
         AstStatement::Insert(s) => s.span,
         AstStatement::Update(s) => s.span,
         AstStatement::Delete(s) => s.span,
@@ -2326,5 +2442,57 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         };
         assert!(select.distinct);
+    }
+
+    #[test]
+    fn parses_union_all() {
+        let sql = "SELECT 1 UNION ALL SELECT 2";
+        let program = parse_program(sql).unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            AstStatement::SetOp { kind, .. } => {
+                assert_eq!(*kind, SetOpKind::UnionAll);
+            }
+            other => panic!("expected SetOp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_union() {
+        let sql = "SELECT 1 UNION SELECT 2";
+        let program = parse_program(sql).unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            AstStatement::SetOp { kind, .. } => {
+                assert_eq!(*kind, SetOpKind::Union);
+            }
+            other => panic!("expected SetOp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_intersect() {
+        let sql = "SELECT 1 INTERSECT SELECT 1";
+        let program = parse_program(sql).unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            AstStatement::SetOp { kind, .. } => {
+                assert_eq!(*kind, SetOpKind::Intersect);
+            }
+            other => panic!("expected SetOp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_except() {
+        let sql = "SELECT 1 EXCEPT SELECT 2";
+        let program = parse_program(sql).unwrap();
+        assert_eq!(program.statements.len(), 1);
+        match &program.statements[0] {
+            AstStatement::SetOp { kind, .. } => {
+                assert_eq!(*kind, SetOpKind::Except);
+            }
+            other => panic!("expected SetOp, got {other:?}"),
+        }
     }
 }
