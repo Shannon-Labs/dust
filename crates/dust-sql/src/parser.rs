@@ -1373,7 +1373,8 @@ impl<'a> Parser<'a> {
 
     fn parse_primary_expr(&mut self) -> Result<Expr> {
         let token = self.peek().ok_or_else(|| {
-            DustError::SchemaParse("expected expression, found end of input".to_string())
+            DustError::invalid("expected expression, found end of input")
+                .with_suggestion("check for missing commas, parentheses, or trailing operators")
         })?;
 
         match &token.kind {

@@ -63,7 +63,9 @@ impl ExecutionEngine {
         for statement in &program.statements {
             let binding = bind_statement(&self.storage, statement);
             if let Some(error) = binding.errors.first() {
-                return Err(DustError::InvalidInput(error.clone()));
+                return Err(DustError::invalid(error.clone())
+                    .with_context("binding phase")
+                    .with_suggestion("verify table and column names exist"));
             }
             last_output = Some(self.execute_statement(sql, statement)?);
         }
