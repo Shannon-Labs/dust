@@ -136,6 +136,34 @@ impl ExecutionEngine {
     }
 
     fn execute_select(&self, select: &dust_sql::SelectStatement) -> Result<QueryOutput> {
+        // Handle SELECT without FROM clause (constant expressions, function calls)
+        if select.from.is_none() {
+            let mut out_cols = Vec::new();
+            let mut out_vals = Vec::new();
+            for item in &select.projection {
+                match item {
+                    dust_sql::SelectItem::Expr { expr, alias, .. } => {
+                        let col_name = alias
+                            .as_ref()
+                            .map(|a| a.value.clone())
+                            .unwrap_or_else(|| expr_column_name(expr));
+                        out_cols.push(col_name);
+                        let val = eval_expr_to_value(expr, &[], &[]);
+                        out_vals.push(val.to_string());
+                    }
+                    dust_sql::SelectItem::Wildcard(_) => {
+                        out_cols.push("*".to_string());
+                        out_vals.push("*".to_string());
+                    }
+                    _ => {}
+                }
+            }
+            return Ok(QueryOutput::Rows {
+                columns: out_cols,
+                rows: vec![out_vals],
+            });
+        }
+
         let projection = select.legacy_projection();
         match &projection {
             SelectProjection::Integer(lit) => Ok(QueryOutput::Rows {
@@ -371,6 +399,18 @@ impl ExecutionEngine {
 }
 
 // ---------------------------------------------------------------------------
+// Column name inference for expressions
+// ---------------------------------------------------------------------------
+
+fn expr_column_name(expr: &Expr) -> String {
+    match expr {
+        Expr::FunctionCall { name, .. } => format!("{}(...)", name.value.to_ascii_lowercase()),
+        Expr::ColumnRef(cref) => cref.column.value.clone(),
+        _ => "?column?".to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Expression evaluation for WHERE clauses
 // ---------------------------------------------------------------------------
 
@@ -472,7 +512,8 @@ fn eval_expr_to_value(expr: &Expr, columns: &[String], row: &[Value]) -> Value {
         Expr::Parenthesized { expr: inner, .. } => eval_expr_to_value(inner, columns, row),
         Expr::FunctionCall { name, args, .. } => {
             // Basic function support
-            match name.value.to_ascii_lowercase().as_str() {
+            let fn_name = name.value.to_ascii_lowercase();
+            match fn_name.as_str() {
                 "count" => Value::Integer(1), // placeholder
                 "lower" => {
                     if let Some(arg) = args.first() {
@@ -502,6 +543,38 @@ fn eval_expr_to_value(expr: &Expr, columns: &[String], row: &[Value]) -> Value {
                         }
                     }
                     Value::Null
+                }
+                f if crate::datetime::is_datetime_fn(f) => {
+                    let mut str_args: Vec<String> = Vec::with_capacity(args.len());
+                    for a in args {
+                        match eval_expr_to_value(a, columns, row) {
+                            Value::Text(s) => str_args.push(s),
+                            Value::Integer(n) => str_args.push(n.to_string()),
+                            Value::Boolean(b) => str_args.push(b.to_string()),
+                            Value::Null => return Value::Null,
+                        }
+                    }
+                    match f {
+                        "date" => crate::datetime::eval_date(&str_args)
+                            .map(Value::Text)
+                            .unwrap_or(Value::Null),
+                        "time" => crate::datetime::eval_time(&str_args)
+                            .map(Value::Text)
+                            .unwrap_or(Value::Null),
+                        "datetime" => crate::datetime::eval_datetime(&str_args)
+                            .map(Value::Text)
+                            .unwrap_or(Value::Null),
+                        "strftime" => crate::datetime::eval_strftime(&str_args)
+                            .map(Value::Text)
+                            .unwrap_or(Value::Null),
+                        "julianday" => crate::datetime::eval_julianday(&str_args)
+                            .map(|v| Value::Text(format!("{v}")))
+                            .unwrap_or(Value::Null),
+                        "unixepoch" => crate::datetime::eval_unixepoch(&str_args)
+                            .map(Value::Integer)
+                            .unwrap_or(Value::Null),
+                        _ => Value::Null,
+                    }
                 }
                 _ => Value::Null,
             }
@@ -1284,6 +1357,161 @@ mod tests {
                     vec!["1".to_string(), "10".to_string()],
                     vec!["3".to_string(), "30".to_string()],
                 ],
+            }
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Date/time function tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn select_date_literal() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT date('2024-01-15')")
+            .expect("date should work");
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["date(...)".to_string()],
+                rows: vec![vec!["2024-01-15".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn select_time_literal() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT time('12:30:45')")
+            .expect("time should work");
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["time(...)".to_string()],
+                rows: vec![vec!["12:30:45".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn select_datetime_literal() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT datetime('2024-01-15 12:30:45')")
+            .expect("datetime should work");
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["datetime(...)".to_string()],
+                rows: vec![vec!["2024-01-15 12:30:45".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn select_date_with_modifier() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT date('2024-01-15', '+1 month')")
+            .expect("date with modifier should work");
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["date(...)".to_string()],
+                rows: vec![vec!["2024-02-15".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn select_datetime_plus_hour() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT datetime('2024-01-15 12:00:00', '+1 hour')")
+            .expect("datetime +1 hour should work");
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["datetime(...)".to_string()],
+                rows: vec![vec!["2024-01-15 13:00:00".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn select_strftime_year() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT strftime('%Y', '2024-06-15')")
+            .expect("strftime should work");
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["strftime(...)".to_string()],
+                rows: vec![vec!["2024".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn select_unixepoch() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT unixepoch('1970-01-01 00:00:00')")
+            .expect("unixepoch should work");
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["unixepoch(...)".to_string()],
+                rows: vec![vec!["0".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn select_date_now_returns_valid_date() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT date('now')")
+            .expect("date('now') should work");
+        if let QueryOutput::Rows { rows, .. } = &output {
+            let date_str = &rows[0][0];
+            assert_eq!(date_str.len(), 10);
+            assert_eq!(date_str.as_bytes()[4], b'-');
+            assert_eq!(date_str.as_bytes()[7], b'-');
+        } else {
+            panic!("expected rows");
+        }
+    }
+
+    #[test]
+    fn select_date_start_of_month() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT date('2024-06-15', 'start of month')")
+            .expect("start of month should work");
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["date(...)".to_string()],
+                rows: vec![vec!["2024-06-01".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn select_date_chained_modifiers() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("SELECT date('2024-01-15', '+1 month', '+5 days')")
+            .expect("chained modifiers should work");
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["date(...)".to_string()],
+                rows: vec![vec!["2024-02-20".to_string()]],
             }
         );
     }
