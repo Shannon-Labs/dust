@@ -799,7 +799,30 @@ impl<'a> Parser<'a> {
                 Some(Keyword::Primary) => {
                     self.bump();
                     self.expect_keyword(Keyword::Key)?;
-                    ColumnConstraint::PrimaryKey {
+                    let pk_constraint = ColumnConstraint::PrimaryKey {
+                        span: Span::new(
+                            start,
+                            self.previous_span().map(|span| span.end).unwrap_or(start),
+                        ),
+                    };
+                    // Check for AUTOINCREMENT following PRIMARY KEY
+                    if self.peek_keyword() == Some(Keyword::Autoincrement) {
+                        let ai_start = self.peek().map(|t| t.span.start).unwrap_or(start);
+                        self.bump();
+                        constraints.push(pk_constraint);
+                        ColumnConstraint::Autoincrement {
+                            span: Span::new(
+                                ai_start,
+                                self.previous_span().map(|span| span.end).unwrap_or(ai_start),
+                            ),
+                        }
+                    } else {
+                        pk_constraint
+                    }
+                }
+                Some(Keyword::Autoincrement) => {
+                    self.bump();
+                    ColumnConstraint::Autoincrement {
                         span: Span::new(
                             start,
                             self.previous_span().map(|span| span.end).unwrap_or(start),
@@ -1806,6 +1829,7 @@ fn is_constraint_starter(token: &Token) -> bool {
                 | Keyword::Check
                 | Keyword::References
                 | Keyword::Constraint
+                | Keyword::Autoincrement
         )
     )
 }
@@ -2326,5 +2350,50 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         };
         assert!(select.distinct);
+    }
+
+    #[test]
+    fn parses_autoincrement_after_primary_key() {
+        let sql = "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)";
+        let program = parse_program(sql).unwrap();
+        let table = match &program.statements[0] {
+            AstStatement::CreateTable(t) => t,
+            other => panic!("unexpected statement: {other:?}"),
+        };
+
+        let id_col = match &table.elements[0] {
+            TableElement::Column(column) => column,
+            other => panic!("unexpected element: {other:?}"),
+        };
+        assert_eq!(id_col.name.value, "id");
+        assert_eq!(id_col.constraints.len(), 2);
+        assert!(matches!(
+            id_col.constraints[0],
+            ColumnConstraint::PrimaryKey { .. }
+        ));
+        assert!(matches!(
+            id_col.constraints[1],
+            ColumnConstraint::Autoincrement { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_standalone_autoincrement() {
+        let sql = "CREATE TABLE t (id INTEGER AUTOINCREMENT, name TEXT)";
+        let program = parse_program(sql).unwrap();
+        let table = match &program.statements[0] {
+            AstStatement::CreateTable(t) => t,
+            other => panic!("unexpected statement: {other:?}"),
+        };
+
+        let id_col = match &table.elements[0] {
+            TableElement::Column(column) => column,
+            other => panic!("unexpected element: {other:?}"),
+        };
+        assert_eq!(id_col.constraints.len(), 1);
+        assert!(matches!(
+            id_col.constraints[0],
+            ColumnConstraint::Autoincrement { .. }
+        ));
     }
 }

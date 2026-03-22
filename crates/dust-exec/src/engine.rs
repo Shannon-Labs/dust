@@ -256,9 +256,9 @@ impl ExecutionEngine {
         };
 
         let total_columns = store.columns.len();
+        let autoincrement_col = self.storage.autoincrement_column(table_name);
         let row_count = insert.values.len();
 
-        let store = self.storage.table_mut(table_name).expect("table exists");
         for value_row in &insert.values {
             if value_row.len() != col_indices.len() {
                 return Err(DustError::InvalidInput(format!(
@@ -271,6 +271,14 @@ impl ExecutionEngine {
             for (val_idx, &col_idx) in col_indices.iter().enumerate() {
                 row[col_idx] = eval_expr(source, &value_row[val_idx]);
             }
+            // Fill in autoincrement value if the column is NULL or not provided
+            if let Some(ai_col) = autoincrement_col {
+                if matches!(row[ai_col], Value::Null) {
+                    let next_val = self.storage.next_autoincrement(table_name);
+                    row[ai_col] = Value::Integer(next_val);
+                }
+            }
+            let store = self.storage.table_mut(table_name).expect("table exists");
             store.insert_row(row);
         }
 
@@ -360,6 +368,19 @@ impl ExecutionEngine {
             })
             .collect();
         self.storage.create_table(name.clone(), columns);
+
+        // Detect AUTOINCREMENT columns and register them
+        for (col_idx, element) in table.elements.iter().enumerate() {
+            if let TableElement::Column(col) = element {
+                let has_autoincrement = col
+                    .constraints
+                    .iter()
+                    .any(|c| matches!(c, ColumnConstraint::Autoincrement { .. }));
+                if has_autoincrement {
+                    self.storage.set_autoincrement(name, col_idx);
+                }
+            }
+        }
 
         Ok(QueryOutput::Message("CREATE TABLE".to_string()))
     }
@@ -867,6 +888,7 @@ fn render_column_constraint(source: &str, constraint: &ColumnConstraint) -> Stri
         ColumnConstraint::PrimaryKey { span }
         | ColumnConstraint::NotNull { span }
         | ColumnConstraint::Unique { span }
+        | ColumnConstraint::Autoincrement { span }
         | ColumnConstraint::Default { span, .. }
         | ColumnConstraint::Check { span, .. }
         | ColumnConstraint::References { span, .. }
@@ -1284,6 +1306,78 @@ mod tests {
                     vec!["1".to_string(), "10".to_string()],
                     vec!["3".to_string(), "30".to_string()],
                 ],
+            }
+        );
+    }
+
+    #[test]
+    fn autoincrement_generates_sequential_ids() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO t (name) VALUES ('Alice')")
+            .unwrap();
+        engine
+            .query("INSERT INTO t (name) VALUES ('Bob')")
+            .unwrap();
+
+        let output = engine.query("SELECT * FROM t").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["id".to_string(), "name".to_string()],
+                rows: vec![
+                    vec!["1".to_string(), "Alice".to_string()],
+                    vec!["2".to_string(), "Bob".to_string()],
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn autoincrement_with_explicit_value() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO t (id, name) VALUES (10, 'Alice')")
+            .unwrap();
+        engine
+            .query("INSERT INTO t (name) VALUES ('Bob')")
+            .unwrap();
+
+        let output = engine.query("SELECT * FROM t").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["id".to_string(), "name".to_string()],
+                rows: vec![
+                    vec!["10".to_string(), "Alice".to_string()],
+                    vec!["1".to_string(), "Bob".to_string()],
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn autoincrement_with_null_value() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO t (id, name) VALUES (NULL, 'Alice')")
+            .unwrap();
+
+        let output = engine.query("SELECT * FROM t").unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["id".to_string(), "name".to_string()],
+                rows: vec![vec!["1".to_string(), "Alice".to_string()]],
             }
         );
     }

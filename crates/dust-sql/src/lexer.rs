@@ -77,6 +77,7 @@ pub enum Keyword {
     Then,
     Else,
     End,
+    Autoincrement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -431,6 +432,7 @@ fn keyword(text: &str) -> Option<Keyword> {
         "THEN" => Some(Keyword::Then),
         "ELSE" => Some(Keyword::Else),
         "END" => Some(Keyword::End),
+        "AUTOINCREMENT" => Some(Keyword::Autoincrement),
         _ => None,
     }
 }

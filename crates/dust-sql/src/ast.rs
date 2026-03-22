@@ -433,6 +433,9 @@ pub enum ColumnConstraint {
         columns: Vec<Identifier>,
         span: Span,
     },
+    Autoincrement {
+        span: Span,
+    },
     Raw {
         tokens: Vec<TokenFragment>,
         span: Span,

@@ -273,7 +273,8 @@ fn table_spec_from_ast(table: &CreateTableStatement) -> TableSpec {
                         ColumnConstraint::Default { expression, .. } => {
                             spec.default = Some(fragments_to_sql(expression));
                         }
-                        ColumnConstraint::Check { .. }
+                        ColumnConstraint::Autoincrement { .. }
+                        | ColumnConstraint::Check { .. }
                         | ColumnConstraint::References { .. }
                         | ColumnConstraint::Raw { .. } => {}
                     }
