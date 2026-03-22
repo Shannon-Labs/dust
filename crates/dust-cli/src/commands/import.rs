@@ -37,18 +37,13 @@ pub struct ImportArgs {
     #[arg(long)]
     pub table: Option<String>,
 
-    /// Treat first row as header (default: true). Use --no-header to disable.
+    /// Treat first row as header (CSV only, default: true). Use --no-header to disable.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub header: bool,
 
     /// Import CSV without a header row; auto-generates col1, col2, ...
     #[arg(long, conflicts_with = "header")]
     pub no_header: bool,
-
-    /// Column separator
-    /// Treat first row as header (CSV only, default: true)
-    #[arg(long, default_value = "true")]
-    pub header: bool,
 
     /// Column separator (CSV only)
     #[arg(long, default_value = ",")]
@@ -92,16 +87,6 @@ pub fn run(args: ImportArgs) -> Result<()> {
         )));
     }
 
-    let table_name = args.table.clone().unwrap_or_else(|| {
-        csv_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("imported")
-            .to_string()
-    });
-
-    let separator = args.separator.as_bytes().first().copied().unwrap_or(b',');
-    let has_header = !args.skip_header();
     // Auto-detect format by extension
     let ext = file
         .extension()
@@ -112,25 +97,25 @@ pub fn run(args: ImportArgs) -> Result<()> {
     match ext.as_str() {
         "json" => run_json_import(file, args.table.as_deref()),
         "jsonl" | "ndjson" => run_jsonl_import(file, args.table.as_deref()),
-        _ => run_csv_import(file, args.table.as_deref(), args.header, &args.separator),
+        _ => run_csv_import(file, args.table.as_deref(), !args.skip_header(), &args.separator),
     }
 }
 
 // ---------------------------------------------------------------------------
-// CSV import (original logic, extracted into its own function)
+// CSV import
 // ---------------------------------------------------------------------------
 
 fn run_csv_import(
     csv_path: &Path,
     table: Option<&str>,
-    header: bool,
+    has_header: bool,
     separator: &str,
 ) -> Result<()> {
     let table_name = table
         .map(String::from)
         .unwrap_or_else(|| table_name_from_path(csv_path));
 
-    let separator = separator.chars().next().unwrap_or(',');
+    let separator = separator.as_bytes().first().copied().unwrap_or(b',');
 
     // Use the csv crate for RFC 4180 compliant parsing (handles multiline quoted fields)
     let mut reader = csv::ReaderBuilder::new()
@@ -162,26 +147,10 @@ fn run_csv_import(
             // We consumed the first record; we need to re-open the reader to include it
             drop(records);
             // Re-create reader and return column names
-            let cols: Vec<String> = (1..=count).map(|i| format!("col{i}")).collect();
-            cols
+            (1..=count).map(|i| format!("col{i}")).collect()
         } else {
             return Err(DustError::InvalidInput("CSV file is empty".to_string()));
         }
-    // Parse header
-    let header_line = lines
-        .next()
-        .ok_or_else(|| DustError::InvalidInput("CSV file is empty".to_string()))?;
-
-    let columns: Vec<String> = if header {
-        parse_csv_line(header_line, separator)
-            .into_iter()
-            .map(|s| sanitize_column_name(&s))
-            .collect()
-    } else {
-        let fields = parse_csv_line(header_line, separator);
-        (0..fields.len())
-            .map(|i| format!("col_{}", i + 1))
-            .collect()
     };
 
     if columns.is_empty() {
@@ -217,14 +186,6 @@ fn run_csv_import(
         .flexible(true)
         .from_path(csv_path)
         .map_err(|e| DustError::InvalidInput(format!("failed to open CSV: {e}")))?;
-    // Insert rows
-    let data_lines: Vec<&str> = if header {
-        lines.collect()
-    } else {
-        let mut v = vec![header_line];
-        v.extend(lines);
-        v
-    };
 
     // Insert rows in batches
     let mut total_rows = 0;
@@ -243,43 +204,12 @@ fn run_csv_import(
         if batch.len() >= batch_size {
             total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
             batch.clear();
-    for chunk in data_lines.chunks(batch_size) {
-        let mut value_parts = Vec::new();
-        for line in chunk {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let fields = parse_csv_line(line, separator);
-            let mut padded = fields;
-            padded.resize(columns.len(), String::new());
-            let values = padded
-                .iter()
-                .map(|f| {
-                    let escaped = f.replace('\'', "''");
-                    format!("'{escaped}'")
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            value_parts.push(format!("({values})"));
         }
     }
 
     // Flush remaining
     if !batch.is_empty() {
         total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
-        if value_parts.is_empty() {
-            continue;
-        }
-
-        let col_names = columns.join(", ");
-        let insert_sql = format!(
-            "INSERT INTO {} ({col_names}) VALUES {}",
-            sanitize_identifier(&table_name),
-            value_parts.join(", ")
-        );
-        engine.query(&insert_sql)?;
-        total_rows += value_parts.len();
     }
 
     println!(
@@ -308,6 +238,22 @@ fn insert_batch(
             .collect::<Vec<_>>()
             .join(", ");
         value_parts.push(format!("({values})"));
+    }
+
+    if value_parts.is_empty() {
+        return Ok(0);
+    }
+
+    let col_names = columns.join(", ");
+    let safe_name = sanitize_identifier(table_name);
+    let insert_sql = format!(
+        "INSERT INTO {safe_name} ({col_names}) VALUES {}",
+        value_parts.join(", ")
+    );
+    engine.query(&insert_sql)?;
+    Ok(value_parts.len())
+}
+
 // ---------------------------------------------------------------------------
 // JSON import
 // ---------------------------------------------------------------------------
@@ -473,6 +419,29 @@ fn sanitize_identifier(name: &str) -> String {
     }
 }
 
+/// Sanitize a string for use as a column name.
+fn sanitize_column_name(name: &str) -> String {
+    let clean: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if clean.is_empty() {
+        "column".to_string()
+    } else if clean.chars().next().unwrap().is_ascii_digit() {
+        format!("col_{clean}")
+    } else {
+        clean
+    }
+}
+
 /// Collect the union of all keys from a slice of JSON values (must be objects).
 /// Returns sorted column names.
 fn collect_json_columns(values: &[serde_json::Value]) -> Result<Vec<String>> {
@@ -549,11 +518,6 @@ fn insert_json_rows(
     let batch_size = 100;
     let mut total_rows = 0;
 
-    // Build a mapping from sanitized column name back to original key
-    // We need to look up each object by its original key, but columns are sanitized.
-    // Since we sanitize keys to produce column names, we look up each original key
-    // and find the sanitized match.
-
     for chunk in objects.chunks(batch_size) {
         let mut value_parts = Vec::new();
 
@@ -592,71 +556,4 @@ fn insert_json_rows(
     }
 
     Ok(total_rows)
-}
-
-// ---------------------------------------------------------------------------
-// CSV helpers (unchanged from original)
-// ---------------------------------------------------------------------------
-
-fn parse_csv_line(line: &str, separator: char) -> Vec<String> {
-    let mut fields = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let mut chars = line.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if in_quotes {
-            if ch == '"' {
-                if chars.peek() == Some(&'"') {
-                    current.push('"');
-                    chars.next();
-                } else {
-                    in_quotes = false;
-                }
-            } else {
-                current.push(ch);
-            }
-        } else if ch == '"' {
-            in_quotes = true;
-        } else if ch == separator {
-            fields.push(current.trim().to_string());
-            current = String::new();
-        } else {
-            current.push(ch);
-        }
-    }
-
-    if value_parts.is_empty() {
-        return Ok(0);
-    }
-
-    let col_names = columns.join(", ");
-    let insert_sql = format!(
-        "INSERT INTO {table_name} ({col_names}) VALUES {}",
-        value_parts.join(", ")
-    );
-    engine.query(&insert_sql)?;
-    Ok(value_parts.len())
-}
-
-fn sanitize_column_name(name: &str) -> String {
-    let clean: String = name
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if clean.is_empty() {
-        "column".to_string()
-    } else if clean.chars().next().unwrap().is_ascii_digit() {
-        format!("col_{clean}")
-    } else {
-        clean
-    }
 }

@@ -186,9 +186,6 @@ impl ExecutionEngine {
     }
 
     fn execute_select(&self, select: &dust_sql::SelectStatement) -> Result<QueryOutput> {
-        // No FROM clause — constant expression (e.g., SELECT 1 AS x)
-
-    #[test]
         // Handle SELECT without FROM clause (constant expressions, function calls)
         if select.from.is_none() {
             let mut out_cols = Vec::new();
@@ -199,11 +196,6 @@ impl ExecutionEngine {
                         let col_name = alias
                             .as_ref()
                             .map(|a| a.value.clone())
-                            .unwrap_or_else(|| "?column?".to_string());
-                        out_cols.push(col_name);
-                        let val = eval_expr("", expr);
-
-    #[test]
                             .unwrap_or_else(|| expr_column_name(expr));
                         out_cols.push(col_name);
                         let val = eval_expr_to_value(expr, &[], &[]);
@@ -220,13 +212,11 @@ impl ExecutionEngine {
                 columns: out_cols,
                 rows: vec![out_vals],
             });
+        }
 
-    #[test]
         // Route to grouped execution if GROUP BY is present
         if !select.group_by.is_empty() {
             return self.execute_grouped_select(select);
-
-    #[test]
         }
 
         let projection = select.legacy_projection();
@@ -1889,6 +1879,9 @@ mod tests {
             QueryOutput::Rows {
                 columns: vec!["name".to_string()],
                 rows: vec![vec!["a".to_string()], vec!["b".to_string()]],
+            }
+        );
+    }
 
     #[test]
     fn autoincrement_generates_sequential_ids() {
@@ -1934,6 +1927,9 @@ mod tests {
             QueryOutput::Rows {
                 columns: vec!["name".to_string()],
                 rows: vec![vec!["a".to_string()]],
+            }
+        );
+    }
 
     #[test]
     fn autoincrement_with_explicit_value() {
@@ -1969,6 +1965,7 @@ mod tests {
             .unwrap();
         // The CTE temp table should not persist
         assert!(!engine.storage().has_table("t"));
+    }
 
     #[test]
     fn autoincrement_with_null_value() {
@@ -1988,8 +1985,8 @@ mod tests {
                 rows: vec![vec!["1".to_string(), "Alice".to_string()]],
             }
         );
+    }
 
-    #[test]
     // -----------------------------------------------------------------------
     // GROUP BY + HAVING tests
     // -----------------------------------------------------------------------
@@ -2019,8 +2016,9 @@ mod tests {
                 assert_eq!(rows[1], vec!["B".to_string(), "150".to_string()]);
             }
             other => panic!("expected Rows, got {:?}", other),
+        }
+    }
 
-    #[test]
     // -----------------------------------------------------------------------
     // Date/time function tests
     // -----------------------------------------------------------------------
@@ -2272,6 +2270,7 @@ mod tests {
             }
             other => panic!("expected Rows, got {:?}", other),
         }
+    }
 
     #[test]
     fn select_date_start_of_month() {

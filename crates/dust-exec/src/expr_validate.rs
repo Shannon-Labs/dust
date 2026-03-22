@@ -40,7 +40,7 @@ fn is_allowed_scalar(name: &str) -> bool {
             | "hex"
             | "quote"
             | "instr"
-    )
+    ) || crate::datetime::is_datetime_fn(name)
 }
 
 fn select_contains_aggregate(select: &dust_sql::SelectStatement) -> bool {

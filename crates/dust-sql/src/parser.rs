@@ -130,8 +130,8 @@ impl<'a> Parser<'a> {
             self.expect_kind(TokenKind::LParen)?;
 
             // Parse the CTE query as a select statement
-            let inner_start = self.expect_keyword(Keyword::Select)?.span.start;
-            let select = self.parse_select_body(inner_start)?;
+            self.expect_keyword(Keyword::Select)?;
+            let select = self.parse_select_body()?;
             let cte_span = name.span.join(select.span);
 
             self.expect_kind(TokenKind::RParen)?;
@@ -164,102 +164,11 @@ impl<'a> Parser<'a> {
     // SELECT
     // -----------------------------------------------------------------------
 
+    /// Top-level SELECT: consume SELECT keyword, parse body, then check for
+    /// UNION/INTERSECT/EXCEPT set operations. Returns `AstStatement`.
     fn parse_select(&mut self) -> Result<AstStatement> {
-        let stmt = self.parse_select_statement()?;
-        Ok(AstStatement::Select(Box::new(stmt)))
-    }
-
-    /// Parse a full SELECT statement, returning the `SelectStatement` directly.
-    /// Used both for top-level SELECT and for subqueries.
-    fn parse_select_statement(&mut self) -> Result<SelectStatement> {
-        let start = self.expect_keyword(Keyword::Select)?.span.start;
-        let select = self.parse_select_body(start)?;
-        Ok(AstStatement::Select(Box::new(select)))
-    }
-
-    /// Parse the body of a SELECT statement (everything after the SELECT keyword).
-    /// `start` is the byte offset of the SELECT keyword itself.
-    fn parse_select_body(&mut self, start: usize) -> Result<SelectStatement> {
-        let distinct = self.eat_keyword(Keyword::Distinct)?;
-
-        // Parse projection items
-        let projection = self.parse_select_items()?;
-
-        // FROM
-        let from = if self.eat_keyword(Keyword::From)? {
-            let table = self.parse_identifier()?;
-            let alias = self.parse_optional_alias();
-            let fspan = table
-                .span
-                .join(alias.as_ref().map(|a| a.span).unwrap_or(table.span));
-            Some(FromClause {
-                table,
-                alias,
-                span: fspan,
-            })
-        } else {
-            None
-        };
-
-        // JOINs
-        let joins = self.parse_join_clauses()?;
-
-        // WHERE
-        let where_clause = if self.eat_keyword(Keyword::Where)? {
-            Some(self.parse_expr()?)
-        } else {
-            None
-        };
-
-        // GROUP BY
-        let group_by = if self.eat_keywords(&[Keyword::Group, Keyword::By]) {
-            self.parse_expression_list()?
-        } else {
-            Vec::new()
-        };
-
-        // HAVING
-        let having = if self.eat_keyword(Keyword::Having)? {
-            Some(self.parse_expr()?)
-        } else {
-            None
-        };
-
-        // ORDER BY
-        let order_by = if self.eat_keywords(&[Keyword::Order, Keyword::By]) {
-            self.parse_order_by_list()?
-        } else {
-            Vec::new()
-        };
-
-        // LIMIT
-        let limit = if self.eat_keyword(Keyword::Limit)? {
-            Some(self.parse_expr()?)
-        } else {
-            None
-        };
-
-        // OFFSET
-        let offset = if self.eat_keyword(Keyword::Offset)? {
-            Some(self.parse_expr()?)
-        } else {
-            None
-        };
-
-        let end = self.statement_end();
-        let left = SelectStatement {
-            distinct,
-            projection,
-            from,
-            joins,
-            where_clause,
-            group_by,
-            having,
-            order_by,
-            limit,
-            offset,
-            span: Span::new(start, end),
-        };
+        self.expect_keyword(Keyword::Select)?;
+        let left = self.parse_select_body()?;
 
         // Check for set operations: UNION [ALL], INTERSECT, EXCEPT
         let set_op_kind = match self.peek_keyword() {
@@ -284,13 +193,13 @@ impl<'a> Parser<'a> {
 
         if let Some(kind) = set_op_kind {
             // Parse the right-hand SELECT
-            let right_start = self.expect_keyword(Keyword::Select)?.span.start;
-            let right_stmt = self.parse_select_body(right_start)?;
-            let full_span = Span::new(start, self.statement_end());
+            self.expect_keyword(Keyword::Select)?;
+            let right = self.parse_select_body()?;
+            let full_span = left.span.join(right.span);
             Ok(AstStatement::SetOp {
                 kind,
                 left: Box::new(left),
-                right: Box::new(right_stmt),
+                right: Box::new(right),
                 span: full_span,
             })
         } else {
@@ -298,9 +207,20 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a full SELECT statement, returning the `SelectStatement` directly.
+    /// Used for subqueries: consumes SELECT keyword and parses the body.
+    fn parse_select_statement(&mut self) -> Result<SelectStatement> {
+        self.expect_keyword(Keyword::Select)?;
+        self.parse_select_body()
+    }
+
     /// Parse the body of a SELECT (after the SELECT keyword has been consumed).
-    /// Factored out so set-operation right-hand sides can reuse it.
-    fn parse_select_body(&mut self, start: usize) -> Result<SelectStatement> {
+    /// Gets start position from the previous token. Returns `SelectStatement`.
+    fn parse_select_body(&mut self) -> Result<SelectStatement> {
+        // The SELECT keyword was already consumed; its span end is our start
+        let start = self.tokens.get(self.pos.saturating_sub(1))
+            .map(|t| t.span.start)
+            .unwrap_or(0);
         let distinct = self.eat_keyword(Keyword::Distinct)?;
         let projection = self.parse_select_items()?;
 
@@ -2756,6 +2676,7 @@ mod tests {
         let sql = "WITH t AS (SELECT 1 AS x) SELECT x FROM t";
         let stmts = parse_sql(sql).unwrap();
         assert!(matches!(stmts[0], Statement::With { .. }));
+    }
 
     #[test]
     fn parses_autoincrement_after_primary_key() {
