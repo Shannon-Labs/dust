@@ -248,11 +248,9 @@ mod tests {
         assert_ddl_message(&drop_t, "DROP TABLE");
 
         // Inserting into a dropped table should fail
-        assert!(
-            database
-                .query("INSERT INTO t (id, name) VALUES (2, 'fail')")
-                .is_err()
-        );
+        assert!(database
+            .query("INSERT INTO t (id, name) VALUES (2, 'fail')")
+            .is_err());
     }
 
     #[test]
@@ -767,14 +765,12 @@ mod tests {
 
         // Create a CSV with a multiline quoted field (RFC 4180)
         let csv_path = dir.path().join("multi.csv");
-        fs::write(
-            &csv_path,
-            "id,note\n1,\"line one\nline two\"\n2,simple\n",
-        )
-        .unwrap();
+        fs::write(&csv_path, "id,note\n1,\"line one\nline two\"\n2,simple\n").unwrap();
 
         // Import using the CLI import module
-        engine.query("CREATE TABLE multi (id TEXT, note TEXT)").unwrap();
+        engine
+            .query("CREATE TABLE multi (id TEXT, note TEXT)")
+            .unwrap();
         let mut reader = csv::ReaderBuilder::new()
             .has_headers(true)
             .from_path(&csv_path)
@@ -785,13 +781,17 @@ mod tests {
             let id = record.get(0).unwrap().replace('\'', "''");
             let note = record.get(1).unwrap().replace('\'', "''");
             engine
-                .query(&format!("INSERT INTO multi (id, note) VALUES ('{id}', '{note}')"))
+                .query(&format!(
+                    "INSERT INTO multi (id, note) VALUES ('{id}', '{note}')"
+                ))
                 .unwrap();
             count += 1;
         }
         assert_eq!(count, 2, "CSV should parse as 2 rows, not 3");
 
-        let result = engine.query("SELECT note FROM multi WHERE id = '1'").unwrap();
+        let result = engine
+            .query("SELECT note FROM multi WHERE id = '1'")
+            .unwrap();
         match &result {
             QueryOutput::Rows { rows, .. } => {
                 assert!(
@@ -846,5 +846,147 @@ mod tests {
             .expect_err("init should refuse non-empty dirs");
         assert!(err.to_string().contains("project already exists"));
         assert!(temp.path().join("sentinel.txt").exists());
+    }
+
+    // -----------------------------------------------------------------------
+    // Agent workload benchmarks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bench_rapid_schema_changes() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bench.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        let start = std::time::Instant::now();
+        for i in 0..50 {
+            engine
+                .query(&format!(
+                    "CREATE TABLE t_{i} (id INTEGER, data TEXT, created INTEGER)"
+                ))
+                .unwrap();
+        }
+        let elapsed = start.elapsed();
+        eprintln!(
+            "  bench_rapid_schema_changes (50 CREATE TABLE): {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn bench_many_small_queries() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bench.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+        engine
+            .query("CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, score INTEGER)")
+            .unwrap();
+
+        // Seed data
+        let mut sql = String::new();
+        for i in 0..100 {
+            if !sql.is_empty() {
+                sql.push_str(", ");
+            }
+            sql.push_str(&format!("('item_{i}', {})", i * 7));
+        }
+        engine
+            .query(&format!("INSERT INTO items (name, score) VALUES {sql}"))
+            .unwrap();
+        engine.sync().unwrap();
+
+        // Run 100 small point queries (simulates agent access pattern)
+        let start = std::time::Instant::now();
+        for i in 0..100 {
+            let _ = engine
+                .query(&format!("SELECT * FROM items WHERE id = {}", i + 1))
+                .unwrap();
+        }
+        let elapsed = start.elapsed();
+        eprintln!(
+            "  bench_many_small_queries (100 SELECT): {:?} ({:?}/query)",
+            elapsed,
+            elapsed / 100
+        );
+    }
+
+    #[test]
+    fn bench_window_function_over_scan() {
+        use dust_exec::PersistentEngine;
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bench.db");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+        engine
+            .query("CREATE TABLE scores (team TEXT, player TEXT, score INTEGER)")
+            .unwrap();
+
+        let mut sql = String::new();
+        for i in 0..500 {
+            if !sql.is_empty() {
+                sql.push_str(", ");
+            }
+            let team = if i % 3 == 0 {
+                "A"
+            } else if i % 3 == 1 {
+                "B"
+            } else {
+                "C"
+            };
+            sql.push_str(&format!("('{team}', 'p{i}', {})", i * 3));
+        }
+        engine
+            .query(&format!("INSERT INTO scores VALUES {sql}"))
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let result = engine
+            .query("SELECT team, player, ROW_NUMBER() OVER (PARTITION BY team ORDER BY score DESC) AS rn FROM scores")
+            .unwrap();
+        let elapsed = start.elapsed();
+        match &result {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows.len(), 500),
+            _ => panic!("expected rows"),
+        }
+        eprintln!(
+            "  bench_window_function_over_scan (500 rows, partitioned): {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn bench_aggregate_group_by() {
+        use dust_exec::ExecutionEngine;
+        let mut engine = ExecutionEngine::new();
+        engine
+            .query("CREATE TABLE events (category TEXT, value INTEGER)")
+            .unwrap();
+
+        let mut sql = String::new();
+        for i in 0..1000 {
+            if !sql.is_empty() {
+                sql.push_str(", ");
+            }
+            let cat = format!("cat_{}", i % 20);
+            sql.push_str(&format!("('{cat}', {})", i % 100));
+        }
+        engine
+            .query(&format!("INSERT INTO events VALUES {sql}"))
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let result = engine
+            .query("SELECT category, count(*) as cnt, sum(value) as total FROM events GROUP BY category")
+            .unwrap();
+        let elapsed = start.elapsed();
+        match &result {
+            QueryOutput::Rows { rows, .. } => assert_eq!(rows.len(), 20),
+            _ => panic!("expected rows"),
+        }
+        eprintln!(
+            "  bench_aggregate_group_by (1000 rows, 20 groups): {:?}",
+            elapsed
+        );
     }
 }

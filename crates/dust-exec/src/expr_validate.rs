@@ -43,6 +43,10 @@ fn is_allowed_scalar(name: &str) -> bool {
     ) || crate::datetime::is_datetime_fn(name)
 }
 
+fn is_window_function(name: &str) -> bool {
+    matches!(name, "row_number" | "rank" | "dense_rank" | "lag" | "lead")
+}
+
 fn select_contains_aggregate(select: &dust_sql::SelectStatement) -> bool {
     select.projection.iter().any(|item| match item {
         SelectItem::Expr { expr, .. } => expr_contains_aggregate(expr),
@@ -86,8 +90,17 @@ fn expr_contains_aggregate(expr: &Expr) -> bool {
 
 fn validate_expr(expr: &Expr, allow: AggAllow) -> Result<()> {
     match expr {
-        Expr::FunctionCall { name, args, .. } => {
+        Expr::FunctionCall {
+            name, args, window, ..
+        } => {
             let n = name.value.to_ascii_lowercase();
+            // Window functions are always allowed when they have a window spec
+            if window.is_some() && is_window_function(&n) {
+                for a in args {
+                    validate_expr(a, AggAllow::Never)?;
+                }
+                return Ok(());
+            }
             let agg = is_aggregate_name(&n);
             if agg {
                 if matches!(allow, AggAllow::Never) {
