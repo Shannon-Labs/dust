@@ -6,8 +6,8 @@
 use crate::btree::BTree;
 use crate::pager::Pager;
 use crate::row::{
-    Datum, decode_key_u64, decode_row, encode_key_u64, encode_row, rowid_from_secondary_key,
-    secondary_index_key, secondary_index_value_prefix,
+    decode_key_u64, decode_row, encode_key_u64, encode_row, rowid_from_secondary_key,
+    secondary_index_key, secondary_index_value_prefix, Datum,
 };
 use dust_types::{DustError, Result};
 use std::collections::{HashMap, HashSet};
@@ -446,6 +446,44 @@ impl TableEngine {
         self.maintain_secondary_insert(table, rowid, &values)?;
 
         Ok(rowid)
+    }
+
+    /// Bulk insert rows with amortized cursor caching.
+    ///
+    /// Consecutive inserts use monotonically increasing rowids, so the B-tree
+    /// cursor cache skips the root-to-leaf traversal until a leaf page splits.
+    pub fn insert_rows_bulk(&mut self, table: &str, rows: Vec<Vec<Datum>>) -> Result<u64> {
+        let col_count = self
+            .tables
+            .get(table)
+            .map(|m| m.columns.len())
+            .ok_or_else(|| DustError::InvalidInput(format!("table `{table}` does not exist")))?;
+
+        let mut count = 0u64;
+        for values in &rows {
+            if values.len() != col_count {
+                return Err(DustError::InvalidInput(format!(
+                    "expected {col_count} columns, got {}",
+                    values.len()
+                )));
+            }
+        }
+
+        for values in rows {
+            let meta = self.tables.get_mut(table).unwrap(); // safe: checked above
+            let rowid = meta.next_rowid;
+            meta.next_rowid += 1;
+
+            let key = encode_key_u64(rowid);
+            let encoded = encode_row(&values);
+            meta.btree.insert(&mut self.pager, &key, &encoded)?;
+            count += 1;
+
+            self.maintain_secondary_insert(table, rowid, &values)?;
+        }
+
+        self.meta_dirty = true;
+        Ok(count)
     }
 
     /// Scan all rows from a table. Returns (rowid, columns) pairs.

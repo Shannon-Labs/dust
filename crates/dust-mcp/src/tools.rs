@@ -101,52 +101,64 @@ fn branch_db_path(root: &Path, branch: &str) -> PathBuf {
 pub fn format_output(output: &QueryOutput, format: &str) -> String {
     match output {
         QueryOutput::Message(msg) => msg.clone(),
-        QueryOutput::Rows { columns, rows } => match format {
-            "json" => {
-                let objects: Vec<serde_json::Value> = rows
-                    .iter()
-                    .map(|row| {
-                        let mut obj = serde_json::Map::new();
-                        for (i, col) in columns.iter().enumerate() {
-                            let val = row.get(i).map(|s| s.as_str()).unwrap_or("NULL");
-                            let json_val = if val == "NULL" {
-                                serde_json::Value::Null
-                            } else if let Ok(n) = val.parse::<i64>() {
-                                serde_json::Value::Number(n.into())
-                            } else if let Ok(f) = val.parse::<f64>() {
-                                serde_json::Number::from_f64(f)
-                                    .map(serde_json::Value::Number)
-                                    .unwrap_or_else(|| serde_json::Value::String(val.to_string()))
-                            } else {
-                                serde_json::Value::String(val.to_string())
-                            };
-                            obj.insert(col.clone(), json_val);
-                        }
-                        serde_json::Value::Object(obj)
-                    })
-                    .collect();
-                serde_json::to_string_pretty(&objects).unwrap_or_else(|_| "[]".to_string())
-            }
-            "csv" => {
-                let mut out = columns.join(",");
+        QueryOutput::RowsTyped { columns, rows } => {
+            // Convert typed rows to strings for formatting
+            let string_rows: Vec<Vec<String>> = rows
+                .iter()
+                .map(|row| row.iter().map(|d| d.to_string()).collect())
+                .collect();
+            format_rows(columns, &string_rows, format)
+        }
+        QueryOutput::Rows { columns, rows } => format_rows(columns, rows, format),
+    }
+}
+
+fn format_rows(columns: &[String], rows: &[Vec<String>], format: &str) -> String {
+    match format {
+        "json" => {
+            let objects: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|row| {
+                    let mut obj = serde_json::Map::new();
+                    for (i, col) in columns.iter().enumerate() {
+                        let val = row.get(i).map(|s| s.as_str()).unwrap_or("NULL");
+                        let json_val = if val == "NULL" {
+                            serde_json::Value::Null
+                        } else if let Ok(n) = val.parse::<i64>() {
+                            serde_json::Value::Number(n.into())
+                        } else if let Ok(f) = val.parse::<f64>() {
+                            serde_json::Number::from_f64(f)
+                                .map(serde_json::Value::Number)
+                                .unwrap_or_else(|| serde_json::Value::String(val.to_string()))
+                        } else {
+                            serde_json::Value::String(val.to_string())
+                        };
+                        obj.insert(col.clone(), json_val);
+                    }
+                    serde_json::Value::Object(obj)
+                })
+                .collect();
+            serde_json::to_string_pretty(&objects).unwrap_or_else(|_| "[]".to_string())
+        }
+        "csv" => {
+            let mut out = columns.join(",");
+            out.push('\n');
+            for row in rows {
+                out.push_str(&row.join(","));
                 out.push('\n');
-                for row in rows {
-                    out.push_str(&row.join(","));
-                    out.push('\n');
-                }
-                out
             }
-            _ => {
-                // Table format
-                let mut out = columns.join("\t");
+            out
+        }
+        _ => {
+            // Table format
+            let mut out = columns.join("\t");
+            out.push('\n');
+            for row in rows {
+                out.push_str(&row.join("\t"));
                 out.push('\n');
-                for row in rows {
-                    out.push_str(&row.join("\t"));
-                    out.push('\n');
-                }
-                out
             }
-        },
+            out
+        }
     }
 }
 
@@ -193,9 +205,10 @@ pub fn get_status(project_path: &Path) -> Result<ProjectStatus> {
     for name in &table_names {
         schema_desc.push_str(name);
         schema_desc.push(':');
-        if let Ok(QueryOutput::Rows { columns, .. }) =
+        if let Ok(output) =
             engine.query(&format!("SELECT * FROM {name} WHERE 1=0"))
         {
+            let (columns, _) = output.into_string_rows();
             schema_desc.push_str(&columns.join(","));
         }
         schema_desc.push('\n');
@@ -255,9 +268,10 @@ pub fn get_schema(engine: &mut PersistentEngine, table: Option<&str>) -> Result<
     let mut ddl_parts = Vec::new();
     for name in &names {
         // Get columns by querying with WHERE 1=0
-        if let Ok(QueryOutput::Rows { columns, .. }) =
+        if let Ok(output) =
             engine.query(&format!("SELECT * FROM {name} WHERE 1=0"))
         {
+            let (columns, _) = output.into_string_rows();
             let col_defs: Vec<String> = columns.iter().map(|c| format!("  {c} TEXT")).collect();
             ddl_parts.push(format!(
                 "CREATE TABLE {name} (\n{}\n);",

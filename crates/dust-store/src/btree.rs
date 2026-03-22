@@ -58,6 +58,9 @@ fn cell_key(cell: &[u8]) -> &[u8] {
 #[derive(Debug)]
 pub struct BTree {
     root_page_id: u64,
+    /// Cursor cache: (leaf_page_id, min_key, max_key) of last accessed leaf.
+    /// Allows skipping root-to-leaf traversal for sequential key access.
+    last_leaf: Option<(u64, Vec<u8>, Vec<u8>)>,
 }
 
 impl BTree {
@@ -66,21 +69,48 @@ impl BTree {
         let root_id = pager.allocate_page(PageType::Leaf)?;
         Ok(Self {
             root_page_id: root_id,
+            last_leaf: None,
         })
     }
 
     /// Open an existing B+tree at the given root page.
     pub fn open(root_page_id: u64) -> Self {
-        Self { root_page_id }
+        Self {
+            root_page_id,
+            last_leaf: None,
+        }
     }
 
     pub fn root_page_id(&self) -> u64 {
         self.root_page_id
     }
 
+    /// Update cursor cache with a leaf's current key range.
+    fn update_last_leaf_cache(&mut self, pager: &mut Pager, leaf_id: u64) {
+        if let Ok(page) = pager.read_page(leaf_id) {
+            let count = page.cell_count();
+            if count > 0 {
+                let min_key = cell_key(page.cell_data(0)).to_vec();
+                let max_key = cell_key(page.cell_data(count - 1)).to_vec();
+                self.last_leaf = Some((leaf_id, min_key, max_key));
+                return;
+            }
+        }
+        self.last_leaf = None;
+    }
+
     /// Insert a key-value pair.
     pub fn insert(&mut self, pager: &mut Pager, key: &[u8], value: &[u8]) -> Result<()> {
-        let leaf_id = self.search_leaf(pager, key)?;
+        // Cursor cache fast path: if key falls within last accessed leaf, skip traversal
+        let leaf_id = if let Some((leaf_id, ref min_key, ref max_key)) = self.last_leaf {
+            if key >= min_key.as_slice() && key <= max_key.as_slice() {
+                leaf_id
+            } else {
+                self.search_leaf(pager, key)?
+            }
+        } else {
+            self.search_leaf(pager, key)?
+        };
 
         // Find insert position via binary search
         let page = pager.read_page(leaf_id)?;
@@ -106,17 +136,28 @@ impl BTree {
         let cell = encode_leaf_cell(key, value);
         let page = pager.write_page(leaf_id)?;
         if page.insert_cell(pos, &cell) {
+            self.update_last_leaf_cache(pager, leaf_id);
             return Ok(());
         }
 
         // Page is full — split
         self.split_and_insert_leaf(pager, leaf_id, pos, &cell)?;
+        self.last_leaf = None; // Invalidate cache after split
         Ok(())
     }
 
     /// Look up a key. Returns the value if found.
     pub fn get(&self, pager: &mut Pager, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let leaf_id = self.search_leaf(pager, key)?;
+        // Cursor cache fast path
+        let leaf_id = if let Some((leaf_id, ref min_key, ref max_key)) = self.last_leaf {
+            if key >= min_key.as_slice() && key <= max_key.as_slice() {
+                leaf_id
+            } else {
+                self.search_leaf(pager, key)?
+            }
+        } else {
+            self.search_leaf(pager, key)?
+        };
         let page = pager.read_page(leaf_id)?;
         let count = page.cell_count();
         let pos = self.find_cell_position(page, key);
@@ -144,6 +185,7 @@ impl BTree {
             if k == key {
                 let page = pager.write_page(leaf_id)?;
                 page.remove_cell(pos);
+                self.last_leaf = None; // Invalidate cache after delete
                 return Ok(true);
             }
         }
@@ -221,7 +263,11 @@ impl BTree {
             let child = if pos < count {
                 let cell = page.cell_data(pos);
                 let (k, c) = decode_internal_cell(cell);
-                if key < k { c } else { page.right_ptr() }
+                if key < k {
+                    c
+                } else {
+                    page.right_ptr()
+                }
             } else {
                 page.right_ptr()
             };

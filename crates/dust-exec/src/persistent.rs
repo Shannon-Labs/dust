@@ -371,23 +371,32 @@ impl PersistentEngine {
                 for cte in &with.ctes {
                     let name = cte.name.value.clone();
                     let result = self.execute_select(&cte.query)?;
-                    if let QueryOutput::Rows { columns, rows } = result {
-                        self.store.create_table(&name, columns)?;
-                        for row in rows {
-                            let values: Vec<Datum> = row
-                                .into_iter()
-                                .map(|s| {
-                                    if s == "NULL" {
-                                        Datum::Null
-                                    } else if let Ok(n) = s.parse::<i64>() {
-                                        Datum::Integer(n)
-                                    } else {
-                                        Datum::Text(s)
-                                    }
-                                })
-                                .collect();
-                            self.store.insert_row(&name, values)?;
+                    match result {
+                        QueryOutput::RowsTyped { columns, rows } => {
+                            self.store.create_table(&name, columns)?;
+                            for row in rows {
+                                self.store.insert_row(&name, row)?;
+                            }
                         }
+                        QueryOutput::Rows { columns, rows } => {
+                            self.store.create_table(&name, columns)?;
+                            for row in rows {
+                                let values: Vec<Datum> = row
+                                    .into_iter()
+                                    .map(|s| {
+                                        if s == "NULL" {
+                                            Datum::Null
+                                        } else if let Ok(n) = s.parse::<i64>() {
+                                            Datum::Integer(n)
+                                        } else {
+                                            Datum::Text(s)
+                                        }
+                                    })
+                                    .collect();
+                                self.store.insert_row(&name, values)?;
+                            }
+                        }
+                        _ => {}
                     }
                     cte_names.push(name);
                 }
@@ -433,30 +442,28 @@ impl PersistentEngine {
                 let inner_rewritten = self.materialize_subqueries(inner)?;
                 // Execute the subquery to get values
                 let result = self.execute_select(query)?;
-                let values: Vec<Expr> = match result {
-                    QueryOutput::Rows { rows, .. } => rows
-                        .into_iter()
-                        .filter_map(|row| {
-                            row.into_iter().next().map(|v| {
-                                // Try to parse as integer, otherwise treat as string
-                                if v == "NULL" {
-                                    Expr::Null(*span)
-                                } else if let Ok(i) = v.parse::<i64>() {
-                                    Expr::Integer(dust_sql::IntegerLiteral {
-                                        value: i,
-                                        span: *span,
-                                    })
-                                } else {
-                                    Expr::StringLit {
-                                        value: v,
-                                        span: *span,
-                                    }
+                let (_, string_rows) = result.into_string_rows();
+                let values: Vec<Expr> = string_rows
+                    .into_iter()
+                    .filter_map(|row| {
+                        row.into_iter().next().map(|v| {
+                            // Try to parse as integer, otherwise treat as string
+                            if v == "NULL" {
+                                Expr::Null(*span)
+                            } else if let Ok(i) = v.parse::<i64>() {
+                                Expr::Integer(dust_sql::IntegerLiteral {
+                                    value: i,
+                                    span: *span,
+                                })
+                            } else {
+                                Expr::StringLit {
+                                    value: v,
+                                    span: *span,
                                 }
-                            })
+                            }
                         })
-                        .collect(),
-                    _ => Vec::new(),
-                };
+                    })
+                    .collect();
                 Ok(Expr::InList {
                     expr: Box::new(inner_rewritten),
                     list: values,
@@ -467,28 +474,24 @@ impl PersistentEngine {
             Expr::Subquery { query, span } => {
                 // Execute as scalar subquery — return first column of first row
                 let result = self.execute_select(query)?;
-                match result {
-                    QueryOutput::Rows { rows, .. } => {
-                        if let Some(row) = rows.into_iter().next()
-                            && let Some(v) = row.into_iter().next() {
-                                if v == "NULL" {
-                                    return Ok(Expr::Null(*span));
-                                } else if let Ok(i) = v.parse::<i64>() {
-                                    return Ok(Expr::Integer(dust_sql::IntegerLiteral {
-                                        value: i,
-                                        span: *span,
-                                    }));
-                                } else {
-                                    return Ok(Expr::StringLit {
-                                        value: v,
-                                        span: *span,
-                                    });
-                                }
-                            }
-                        Ok(Expr::Null(*span))
+                let (_, string_rows) = result.into_string_rows();
+                if let Some(row) = string_rows.into_iter().next()
+                    && let Some(v) = row.into_iter().next() {
+                        if v == "NULL" {
+                            return Ok(Expr::Null(*span));
+                        } else if let Ok(i) = v.parse::<i64>() {
+                            return Ok(Expr::Integer(dust_sql::IntegerLiteral {
+                                value: i,
+                                span: *span,
+                            }));
+                        } else {
+                            return Ok(Expr::StringLit {
+                                value: v,
+                                span: *span,
+                            });
+                        }
                     }
-                    _ => Ok(Expr::Null(*span)),
-                }
+                Ok(Expr::Null(*span))
             }
             Expr::BinaryOp {
                 left,
@@ -646,22 +649,23 @@ impl PersistentEngine {
             filtered.truncate(limit);
         }
 
-        let (out_cols, out_rows) = self.project_rows(select, &rowset.columns, &filtered)?;
+        let projected = self.project_rows(select, &rowset.columns, &filtered)?;
 
-        let out_rows = if select.distinct {
+        if select.distinct {
+            // Datum doesn't implement Hash, so convert to strings for dedup.
+            let (out_cols, out_rows) = projected.into_string_rows();
             let mut seen = std::collections::HashSet::new();
-            out_rows
+            let deduped: Vec<Vec<String>> = out_rows
                 .into_iter()
                 .filter(|row| seen.insert(row.clone()))
-                .collect()
+                .collect();
+            Ok(QueryOutput::Rows {
+                columns: out_cols,
+                rows: deduped,
+            })
         } else {
-            out_rows
-        };
-
-        Ok(QueryOutput::Rows {
-            columns: out_cols,
-            rows: out_rows,
-        })
+            Ok(projected)
+        }
     }
 
     fn ensure_table_schema(&mut self, table_name: &str) -> Result<&mut TableSchema> {
@@ -1108,12 +1112,81 @@ impl PersistentEngine {
         }
     }
 
+    fn is_simple_column_projection(
+        &self,
+        select: &dust_sql::SelectStatement,
+        all_columns: &[ColumnBinding],
+    ) -> bool {
+        if select.projection.is_empty() {
+            return false;
+        }
+        select.projection.iter().all(|item| match item {
+            SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard { .. } => true,
+            SelectItem::Expr { expr, .. } => {
+                if let Expr::ColumnRef(cref) = expr {
+                    resolve_column_index_runtime(all_columns, cref).is_some()
+                } else {
+                    false
+                }
+            }
+        })
+    }
+
     fn project_rows(
         &self,
         select: &dust_sql::SelectStatement,
         all_columns: &[ColumnBinding],
         rows: &[Vec<Datum>],
-    ) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+    ) -> Result<QueryOutput> {
+        // Fast path: if the projection is all simple column references (no expressions),
+        // return RowsTyped directly — avoids per-cell string conversion entirely.
+        if self.is_simple_column_projection(select, all_columns) {
+            let mut out_cols = Vec::new();
+            let mut col_indices: Vec<usize> = Vec::new();
+
+            for item in &select.projection {
+                match item {
+                    SelectItem::Wildcard(_) => {
+                        for (i, col) in all_columns.iter().enumerate() {
+                            out_cols.push(col.column_name.clone());
+                            col_indices.push(i);
+                        }
+                    }
+                    SelectItem::Expr { expr, alias, .. } => {
+                        if let Expr::ColumnRef(cref) = expr {
+                            let col_name = alias
+                                .as_ref()
+                                .map(|a| a.value.clone())
+                                .unwrap_or_else(|| expr_display_name(expr));
+                            out_cols.push(col_name);
+                            if let Some(idx) = resolve_column_index_runtime(all_columns, cref) {
+                                col_indices.push(idx);
+                            }
+                        }
+                    }
+                    SelectItem::QualifiedWildcard { table, .. } => {
+                        for (i, col) in all_columns.iter().enumerate() {
+                            if col.matches_qualifier(&table.value) {
+                                out_cols.push(col.column_name.clone());
+                                col_indices.push(i);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let out_rows: Vec<Vec<Datum>> = rows
+                .iter()
+                .map(|row| col_indices.iter().map(|&idx| row[idx].clone()).collect())
+                .collect();
+
+            return Ok(QueryOutput::RowsTyped {
+                columns: out_cols,
+                rows: out_rows,
+            });
+        }
+
+        // General path: evaluate expressions and convert to strings.
         let mut out_cols = Vec::new();
         let mut col_evaluators: Vec<ColumnEvaluator> = Vec::new();
 
@@ -1157,7 +1230,10 @@ impl PersistentEngine {
             .map(|row| col_evaluators.iter().map(|eval| eval(row)).collect())
             .collect();
 
-        Ok((out_cols, out_rows))
+        Ok(QueryOutput::Rows {
+            columns: out_cols,
+            rows: out_rows,
+        })
     }
 
     fn execute_window_select(
@@ -2114,15 +2190,7 @@ fn eval_aggregate(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec<Datum>]) -
 }
 
 fn cmp_datums(a: &Datum, b: &Datum) -> std::cmp::Ordering {
-    match (a, b) {
-        (Datum::Integer(a), Datum::Integer(b)) => a.cmp(b),
-        (Datum::Text(a), Datum::Text(b)) => a.cmp(b),
-        (Datum::Boolean(a), Datum::Boolean(b)) => a.cmp(b),
-        (Datum::Null, Datum::Null) => std::cmp::Ordering::Equal,
-        (Datum::Null, _) => std::cmp::Ordering::Less,
-        (_, Datum::Null) => std::cmp::Ordering::Greater,
-        _ => std::cmp::Ordering::Equal,
-    }
+    a.cmp_fast(b)
 }
 
 fn expr_display_name(expr: &Expr) -> String {
@@ -2577,6 +2645,14 @@ fn render_query_output(output: &QueryOutput) -> String {
         QueryOutput::Rows { columns, rows } => {
             let mut lines = vec![columns.join("\t")];
             lines.extend(rows.iter().map(|row| row.join("\t")));
+            lines.join("\n")
+        }
+        QueryOutput::RowsTyped { columns, rows } => {
+            let mut lines = vec![columns.join("\t")];
+            lines.extend(
+                rows.iter()
+                    .map(|row| row.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\t")),
+            );
             lines.join("\n")
         }
     }

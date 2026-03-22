@@ -29,15 +29,90 @@ pub fn register_udf(udf: crate::udf::Udf) {
 fn call_udf(name: &str, args: &[String]) -> Option<String> {
     UDF_REGISTRY.with(|r| r.borrow().call(name, args))
 }
+use dust_store::Datum;
 use dust_types::{DustError, Result};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum QueryOutput {
     Rows {
         columns: Vec<String>,
         rows: Vec<Vec<String>>,
     },
+    /// Typed rows — avoids string conversion overhead.
+    /// Callers that need strings can call .into_string_rows() on the result.
+    RowsTyped {
+        columns: Vec<String>,
+        rows: Vec<Vec<Datum>>,
+    },
     Message(String),
+}
+
+impl PartialEq for QueryOutput {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (QueryOutput::Rows { columns: lc, rows: lr }, QueryOutput::Rows { columns: rc, rows: rr }) => {
+                lc == rc && lr == rr
+            }
+            (QueryOutput::RowsTyped { columns: lc, rows: lr }, QueryOutput::RowsTyped { columns: rc, rows: rr }) => {
+                lc == rc && lr == rr
+            }
+            (QueryOutput::Message(l), QueryOutput::Message(r)) => l == r,
+            // Rows and RowsTyped are equivalent if their string representations match.
+            (QueryOutput::Rows { columns, rows }, QueryOutput::RowsTyped { columns: rc, rows: rr })
+            | (QueryOutput::RowsTyped { columns: rc, rows: rr }, QueryOutput::Rows { columns, rows }) => {
+                if columns != rc || rows.len() != rr.len() {
+                    return false;
+                }
+                rows.iter().zip(rr.iter()).all(|(sr, tr)| {
+                    sr.len() == tr.len()
+                        && sr.iter()
+                            .zip(tr.iter())
+                            .all(|(s, d)| s == &d.to_string())
+                })
+            }
+            _ => false,
+        }
+    }
+}
+
+impl QueryOutput {
+    /// Convert to string rows (materializes strings from typed output).
+    pub fn into_string_rows(self) -> (Vec<String>, Vec<Vec<String>>) {
+        match self {
+            QueryOutput::Rows { columns, rows } => (columns, rows),
+            QueryOutput::RowsTyped { columns, rows } => {
+                let string_rows = rows
+                    .into_iter()
+                    .map(|row| row.into_iter().map(|d| d.to_string()).collect())
+                    .collect();
+                (columns, string_rows)
+            }
+            _ => (vec![], vec![]),
+        }
+    }
+
+    /// Number of rows in the result (works for both Rows and RowsTyped).
+    pub fn row_count(&self) -> usize {
+        match self {
+            QueryOutput::Rows { rows, .. } => rows.len(),
+            QueryOutput::RowsTyped { rows, .. } => rows.len(),
+            _ => 0,
+        }
+    }
+
+    /// Column names (works for both Rows and RowsTyped).
+    pub fn column_names(&self) -> &[String] {
+        match self {
+            QueryOutput::Rows { columns, .. } => columns,
+            QueryOutput::RowsTyped { columns, .. } => columns,
+            _ => &[],
+        }
+    }
+
+    /// Check if result has rows (either variant).
+    pub fn has_rows(&self) -> bool {
+        matches!(self, QueryOutput::Rows { .. } | QueryOutput::RowsTyped { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -155,6 +155,20 @@ async fn handle_connection(
                         };
                         send_command_complete(&mut stream, &tag).await?;
                     }
+                    Ok(QueryOutput::RowsTyped { columns, rows }) => {
+                        send_row_description(&mut stream, &columns).await?;
+                        for row in &rows {
+                            let string_row: Vec<String> =
+                                row.iter().map(|d| d.to_string()).collect();
+                            send_data_row(&mut stream, &string_row).await?;
+                        }
+                        let tag = if lower.starts_with("select") {
+                            format!("SELECT {}", rows.len())
+                        } else {
+                            "SELECT".to_string()
+                        };
+                        send_command_complete(&mut stream, &tag).await?;
+                    }
                     Ok(QueryOutput::Message(msg)) => {
                         send_command_complete(&mut stream, &msg).await?;
                     }

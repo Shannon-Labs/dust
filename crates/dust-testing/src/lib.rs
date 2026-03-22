@@ -91,6 +91,18 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Extract rows as strings from either Rows or RowsTyped variant.
+    fn rows_as_strings(output: &QueryOutput) -> Vec<Vec<String>> {
+        match output {
+            QueryOutput::Rows { rows, .. } => rows.clone(),
+            QueryOutput::RowsTyped { rows, .. } => rows
+                .iter()
+                .map(|row| row.iter().map(|d| d.to_string()).collect())
+                .collect(),
+            _ => vec![],
+        }
+    }
+
     #[test]
     fn bootstrap_creates_a_healthy_project() {
         let (_temp, project) = bootstrap_project().expect("bootstrap should succeed");
@@ -332,12 +344,8 @@ mod tests {
             .unwrap();
         engine.query("INSERT INTO t (id) VALUES (1)").unwrap();
         let result = engine.query("SELECT active FROM t").unwrap();
-        match &result {
-            QueryOutput::Rows { rows, .. } => {
-                assert_eq!(rows, &[vec!["1".to_string()]], "DEFAULT should be applied");
-            }
-            other => panic!("expected Rows, got: {other:?}"),
-        }
+        let rows = rows_as_strings(&result);
+        assert_eq!(rows, &[vec!["1".to_string()]], "DEFAULT should be applied");
     }
 
     #[test]
@@ -355,12 +363,8 @@ mod tests {
 
         let mut reopened = PersistentEngine::open(&db_path).unwrap();
         let result = reopened.query("SELECT text FROM t").unwrap();
-        match &result {
-            QueryOutput::Rows { rows, .. } => {
-                assert_eq!(rows, &[vec!["日本語テスト".to_string()]]);
-            }
-            other => panic!("expected Rows, got: {other:?}"),
-        }
+        let rows = rows_as_strings(&result);
+        assert_eq!(rows, &[vec!["日本語テスト".to_string()]]);
     }
 
     #[test]
@@ -376,12 +380,8 @@ mod tests {
         let result = engine
             .query("SELECT coalesce(x, 0) FROM t ORDER BY x")
             .unwrap();
-        match &result {
-            QueryOutput::Rows { rows, .. } => {
-                assert_eq!(rows.len(), 2);
-            }
-            other => panic!("expected Rows, got: {other:?}"),
-        }
+        let rows = rows_as_strings(&result);
+        assert_eq!(rows.len(), 2);
     }
 
     #[test]
@@ -407,14 +407,10 @@ mod tests {
         let result = engine
             .query("SELECT users.name, posts.title FROM users JOIN posts ON users.id = posts.author_id ORDER BY posts.title")
             .unwrap();
-        match &result {
-            QueryOutput::Rows { rows, .. } => {
-                assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0], vec!["Alice".to_string(), "Hello".to_string()]);
-                assert_eq!(rows[1], vec!["Bob".to_string(), "World".to_string()]);
-            }
-            other => panic!("expected Rows, got: {other:?}"),
-        }
+        let rows = rows_as_strings(&result);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], vec!["Alice".to_string(), "Hello".to_string()]);
+        assert_eq!(rows[1], vec!["Bob".to_string(), "World".to_string()]);
     }
 
     #[test]
@@ -453,16 +449,12 @@ mod tests {
         engine.query("ROLLBACK").unwrap();
 
         let result = engine.query("SELECT count(*) FROM t").unwrap();
-        match &result {
-            QueryOutput::Rows { rows, .. } => {
-                assert_eq!(
-                    rows,
-                    &[vec!["1".to_string()]],
-                    "ROLLBACK should discard row 999"
-                );
-            }
-            other => panic!("expected Rows, got: {other:?}"),
-        }
+        let rows = rows_as_strings(&result);
+        assert_eq!(
+            rows,
+            &[vec!["1".to_string()]],
+            "ROLLBACK should discard row 999"
+        );
     }
 
     #[test]
@@ -526,12 +518,8 @@ mod tests {
         let result = engine
             .query("SELECT name FROM t1 WHERE id IN (SELECT ref_id FROM t2) ORDER BY name")
             .unwrap();
-        match &result {
-            QueryOutput::Rows { rows, .. } => {
-                assert_eq!(rows, &[vec!["A".to_string()], vec!["C".to_string()]]);
-            }
-            other => panic!("expected Rows, got: {other:?}"),
-        }
+        let rows = rows_as_strings(&result);
+        assert_eq!(rows, &[vec!["A".to_string()], vec!["C".to_string()]]);
     }
 
     #[test]
@@ -674,10 +662,12 @@ mod tests {
         let result = engine.query("SELECT * FROM t").unwrap();
         let elapsed = start.elapsed();
         eprintln!("  bench_full_scan_1000_rows: {:?}", elapsed);
-        match &result {
-            QueryOutput::Rows { rows, .. } => assert_eq!(rows.len(), 1000),
+        let row_count = match &result {
+            QueryOutput::Rows { rows, .. } => rows.len(),
+            QueryOutput::RowsTyped { rows, .. } => rows.len(),
             _ => panic!("expected rows"),
-        }
+        };
+        assert_eq!(row_count, 1000);
     }
 
     #[test]
@@ -792,16 +782,12 @@ mod tests {
         let result = engine
             .query("SELECT note FROM multi WHERE id = '1'")
             .unwrap();
-        match &result {
-            QueryOutput::Rows { rows, .. } => {
-                assert!(
-                    rows[0][0].contains('\n'),
-                    "multiline field should contain newline: {:?}",
-                    rows[0][0]
-                );
-            }
-            other => panic!("expected Rows, got: {other:?}"),
-        }
+        let rows = rows_as_strings(&result);
+        assert!(
+            rows[0][0].contains('\n'),
+            "multiline field should contain newline: {:?}",
+            rows[0][0]
+        );
     }
 
     #[test]

@@ -39,19 +39,30 @@ pub fn print_output(output: &QueryOutput) {
 /// Print output in the specified format.
 pub fn print_output_with_format(output: &QueryOutput, format: OutputFormat) {
     match output {
-        QueryOutput::Rows { columns, rows } => match format {
-            OutputFormat::Table => {
-                let is_tty = io::stdout().is_terminal();
-                if is_tty {
-                    print_table(columns, rows);
-                } else {
-                    print_tsv(columns, rows);
-                }
-            }
-            OutputFormat::Json => print_json(columns, rows),
-            OutputFormat::Csv => print_csv(columns, rows),
-        },
+        QueryOutput::RowsTyped { columns, rows } => {
+            let string_rows: Vec<Vec<String>> = rows
+                .iter()
+                .map(|row| row.iter().map(|d| d.to_string()).collect())
+                .collect();
+            print_rows(columns, &string_rows, format);
+        }
+        QueryOutput::Rows { columns, rows } => print_rows(columns, rows, format),
         QueryOutput::Message(msg) => println!("{msg}"),
+    }
+}
+
+fn print_rows(columns: &[String], rows: &[Vec<String>], format: OutputFormat) {
+    match format {
+        OutputFormat::Table => {
+            let is_tty = io::stdout().is_terminal();
+            if is_tty {
+                print_table(columns, rows);
+            } else {
+                print_tsv(columns, rows);
+            }
+        }
+        OutputFormat::Json => print_json(columns, rows),
+        OutputFormat::Csv => print_csv(columns, rows),
     }
 }
 
@@ -73,7 +84,11 @@ fn truncate_for_display(s: &str) -> String {
 
 /// Normalize NULL display: empty strings in query output are rendered as "NULL".
 fn normalize_null(s: &str) -> &str {
-    if s.is_empty() { NULL_DISPLAY } else { s }
+    if s.is_empty() {
+        NULL_DISPLAY
+    } else {
+        s
+    }
 }
 
 /// Postgres-style aligned table output with right-aligned numbers,

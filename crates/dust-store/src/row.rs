@@ -12,6 +12,53 @@ pub enum Datum {
     Blob(Vec<u8>),
 }
 
+impl Datum {
+    /// Fast-path comparison using enum discriminant check to avoid full match dispatch.
+    #[inline(always)]
+    pub fn cmp_fast(&self, other: &Datum) -> std::cmp::Ordering {
+        if std::mem::discriminant(self) == std::mem::discriminant(other) {
+            self.cmp_same_type(other)
+        } else if matches!(self, Datum::Null) {
+            std::cmp::Ordering::Less
+        } else if matches!(other, Datum::Null) {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_same_type(&self, other: &Datum) -> std::cmp::Ordering {
+        match self {
+            Datum::Integer(a) => {
+                let Datum::Integer(b) = other else {
+                    unreachable!()
+                };
+                a.cmp(b)
+            }
+            Datum::Text(a) => {
+                let Datum::Text(b) = other else {
+                    unreachable!()
+                };
+                a.cmp(b)
+            }
+            Datum::Boolean(a) => {
+                let Datum::Boolean(b) = other else {
+                    unreachable!()
+                };
+                a.cmp(b)
+            }
+            Datum::Real(a) => {
+                let Datum::Real(b) = other else {
+                    unreachable!()
+                };
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            }
+            _ => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
 impl std::fmt::Display for Datum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
