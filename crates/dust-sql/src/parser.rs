@@ -1,10 +1,11 @@
 use crate::ast::{
     AlterTableAction, AlterTableStatement, Assignment, AstStatement, BinOp, ColumnConstraint,
-    ColumnDef, ColumnRef, CreateIndexStatement, CreateTableStatement, DeleteStatement,
+    ColumnDef, ColumnRef, CreateIndexStatement, CreateTableStatement, Cte, DeleteStatement,
     DropIndexStatement, DropTableStatement, Expr, FromClause, Identifier, IndexColumn,
     IndexOrdering, InsertStatement, IntegerLiteral, JoinClause, JoinType, OrderByItem, Program,
     RawStatement, SelectItem, SelectProjection, SelectStatement, Span, Statement, TableConstraint,
     TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp, UpdateStatement,
+    WithStatement,
 };
 use crate::lexer::{Keyword, Token, TokenKind, lex};
 use dust_types::{DustError, Result};
@@ -67,6 +68,7 @@ impl<'a> Parser<'a> {
             .unwrap_or(self.source.len());
 
         match self.peek_keyword() {
+            Some(Keyword::With) => self.parse_with(),
             Some(Keyword::Select) => self.parse_select(),
             Some(Keyword::Insert) => self.parse_insert(),
             Some(Keyword::Update) => self.parse_update(),
@@ -115,12 +117,62 @@ impl<'a> Parser<'a> {
     }
 
     // -----------------------------------------------------------------------
+    // WITH (CTEs)
+    // -----------------------------------------------------------------------
+
+    fn parse_with(&mut self) -> Result<AstStatement> {
+        let start = self.expect_keyword(Keyword::With)?.span.start;
+        let mut ctes = Vec::new();
+
+        loop {
+            let name = self.parse_identifier()?;
+            self.expect_keyword(Keyword::As)?;
+            self.expect_kind(TokenKind::LParen)?;
+
+            // Parse the CTE query as a select statement
+            let inner_start = self.expect_keyword(Keyword::Select)?.span.start;
+            let select = self.parse_select_body(inner_start)?;
+            let cte_span = name.span.join(select.span);
+
+            self.expect_kind(TokenKind::RParen)?;
+
+            ctes.push(Cte {
+                name,
+                query: select,
+                span: cte_span,
+            });
+
+            // Check for comma (more CTEs) or break
+            if !self.eat_kind(TokenKind::Comma)? {
+                break;
+            }
+        }
+
+        // Parse the body statement (SELECT, INSERT, etc.)
+        let body = self.parse_statement()?;
+        let end = self.statement_end();
+        let span = Span::new(start, end);
+
+        Ok(AstStatement::With(WithStatement {
+            ctes,
+            body: Box::new(body),
+            span,
+        }))
+    }
+
+    // -----------------------------------------------------------------------
     // SELECT
     // -----------------------------------------------------------------------
 
     fn parse_select(&mut self) -> Result<AstStatement> {
         let start = self.expect_keyword(Keyword::Select)?.span.start;
+        let select = self.parse_select_body(start)?;
+        Ok(AstStatement::Select(Box::new(select)))
+    }
 
+    /// Parse the body of a SELECT statement (everything after the SELECT keyword).
+    /// `start` is the byte offset of the SELECT keyword itself.
+    fn parse_select_body(&mut self, start: usize) -> Result<SelectStatement> {
         let distinct = self.eat_keyword(Keyword::Distinct)?;
 
         // Parse projection items
@@ -188,7 +240,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.statement_end();
-        Ok(AstStatement::Select(Box::new(SelectStatement {
+        Ok(SelectStatement {
             distinct,
             projection,
             from,
@@ -200,7 +252,7 @@ impl<'a> Parser<'a> {
             limit,
             offset,
             span: Span::new(start, end),
-        })))
+        })
     }
 
     fn parse_select_items(&mut self) -> Result<Vec<SelectItem>> {
@@ -1779,6 +1831,9 @@ impl From<AstStatement> for Statement {
                 name: alter.name.value,
                 raw: alter.raw,
             },
+            AstStatement::With(_) => Statement::With {
+                raw: "with".to_string(),
+            },
             AstStatement::Begin(_) => Statement::Begin,
             AstStatement::Commit(_) => Statement::Commit,
             AstStatement::Rollback(_) => Statement::Rollback,
@@ -1830,6 +1885,7 @@ fn statement_span(statement: &AstStatement) -> Span {
         AstStatement::DropTable(s) => s.span,
         AstStatement::DropIndex(s) => s.span,
         AstStatement::AlterTable(s) => s.span,
+        AstStatement::With(s) => s.span,
         AstStatement::Begin(span) | AstStatement::Commit(span) | AstStatement::Rollback(span) => {
             *span
         }
@@ -2326,5 +2382,39 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         };
         assert!(select.distinct);
+    }
+
+    #[test]
+    fn parses_with_single_cte() {
+        let sql = "WITH t AS (SELECT 1 AS x) SELECT x FROM t";
+        let program = parse_program(sql).unwrap();
+        let with = match &program.statements[0] {
+            AstStatement::With(w) => w,
+            other => panic!("expected With, got {other:?}"),
+        };
+        assert_eq!(with.ctes.len(), 1);
+        assert_eq!(with.ctes[0].name.value, "t");
+        // Body should be a SELECT
+        assert!(matches!(with.body.as_ref(), AstStatement::Select(_)));
+    }
+
+    #[test]
+    fn parses_with_multiple_ctes() {
+        let sql = "WITH a AS (SELECT 1 AS x), b AS (SELECT 2 AS y) SELECT x FROM a";
+        let program = parse_program(sql).unwrap();
+        let with = match &program.statements[0] {
+            AstStatement::With(w) => w,
+            other => panic!("expected With, got {other:?}"),
+        };
+        assert_eq!(with.ctes.len(), 2);
+        assert_eq!(with.ctes[0].name.value, "a");
+        assert_eq!(with.ctes[1].name.value, "b");
+    }
+
+    #[test]
+    fn with_converts_to_statement() {
+        let sql = "WITH t AS (SELECT 1 AS x) SELECT x FROM t";
+        let stmts = parse_sql(sql).unwrap();
+        assert!(matches!(stmts[0], Statement::With { .. }));
     }
 }

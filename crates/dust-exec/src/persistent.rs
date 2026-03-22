@@ -215,6 +215,41 @@ impl PersistentEngine {
                 }
                 Ok(QueryOutput::Message("ALTER TABLE".to_string()))
             }
+            AstStatement::With(with) => {
+                // Materialize each CTE as a temporary table
+                let mut cte_names = Vec::new();
+                for cte in &with.ctes {
+                    let name = cte.name.value.clone();
+                    let result = self.execute_select(&cte.query)?;
+                    if let QueryOutput::Rows { columns, rows } = result {
+                        self.store.create_table(&name, columns)?;
+                        for row in rows {
+                            let values: Vec<Datum> = row
+                                .into_iter()
+                                .map(|s| {
+                                    if s == "NULL" {
+                                        Datum::Null
+                                    } else if let Ok(n) = s.parse::<i64>() {
+                                        Datum::Integer(n)
+                                    } else {
+                                        Datum::Text(s)
+                                    }
+                                })
+                                .collect();
+                            self.store.insert_row(&name, values)?;
+                        }
+                    }
+                    cte_names.push(name);
+                }
+                // Execute the body
+                let result = self.execute_statement(source, &with.body);
+                // Clean up temporary tables
+                for name in &cte_names {
+                    let _ = self.store.drop_table(name);
+                    self.schema.tables.remove(name);
+                }
+                result
+            }
             AstStatement::Begin(_) => {
                 self.begin_transaction()?;
                 Ok(QueryOutput::Message("BEGIN".to_string()))

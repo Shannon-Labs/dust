@@ -54,6 +54,10 @@ pub fn bind_statement(storage: &Storage, statement: &AstStatement) -> BindResult
         AstStatement::Insert(insert) => bind_insert(storage, insert, &mut result),
         AstStatement::Update(update) => bind_update(storage, update, &mut result),
         AstStatement::Delete(delete) => bind_delete(storage, delete, &mut result),
+        AstStatement::With(with) => {
+            // Bind the body statement; CTEs will be materialized at execution time
+            bind_statement(storage, &with.body);
+        }
         // DDL and transaction statements don't need column-level binding
         _ => {}
     }

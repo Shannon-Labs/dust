@@ -128,6 +128,45 @@ impl ExecutionEngine {
                 }
                 Ok(QueryOutput::Message("ALTER TABLE".to_string()))
             }
+            AstStatement::With(with) => {
+                // Materialize each CTE as a temporary table
+                let mut cte_names = Vec::new();
+                for cte in &with.ctes {
+                    let name = cte.name.value.clone();
+                    let result = self.execute_select(&cte.query)?;
+                    if let QueryOutput::Rows { columns, rows } = result {
+                        self.storage.create_table(name.clone(), columns.clone());
+                        let store = self.storage.table_mut(&name).expect("just created");
+                        for row in rows {
+                            let values: Vec<Value> = row
+                                .into_iter()
+                                .map(|s| {
+                                    if s == "NULL" {
+                                        Value::Null
+                                    } else if let Ok(n) = s.parse::<i64>() {
+                                        Value::Integer(n)
+                                    } else if s == "true" {
+                                        Value::Boolean(true)
+                                    } else if s == "false" {
+                                        Value::Boolean(false)
+                                    } else {
+                                        Value::Text(s)
+                                    }
+                                })
+                                .collect();
+                            store.insert_row(values);
+                        }
+                    }
+                    cte_names.push(name);
+                }
+                // Execute the body
+                let result = self.execute_statement(source, &with.body);
+                // Clean up temporary tables
+                for name in &cte_names {
+                    self.storage.drop_table(name);
+                }
+                result
+            }
             AstStatement::Begin(_) => Ok(QueryOutput::Message("BEGIN".to_string())),
             AstStatement::Commit(_) => Ok(QueryOutput::Message("COMMIT".to_string())),
             AstStatement::Rollback(_) => Ok(QueryOutput::Message("ROLLBACK".to_string())),
@@ -136,6 +175,34 @@ impl ExecutionEngine {
     }
 
     fn execute_select(&self, select: &dust_sql::SelectStatement) -> Result<QueryOutput> {
+        // No FROM clause — constant expression (e.g., SELECT 1 AS x)
+        if select.from.is_none() {
+            let mut out_cols = Vec::new();
+            let mut out_vals = Vec::new();
+            for item in &select.projection {
+                match item {
+                    dust_sql::SelectItem::Expr { expr, alias, .. } => {
+                        let col_name = alias
+                            .as_ref()
+                            .map(|a| a.value.clone())
+                            .unwrap_or_else(|| "?column?".to_string());
+                        out_cols.push(col_name);
+                        let val = eval_expr("", expr);
+                        out_vals.push(val.to_string());
+                    }
+                    dust_sql::SelectItem::Wildcard(_) => {
+                        out_cols.push("*".to_string());
+                        out_vals.push("*".to_string());
+                    }
+                    _ => {}
+                }
+            }
+            return Ok(QueryOutput::Rows {
+                columns: out_cols,
+                rows: vec![out_vals],
+            });
+        }
+
         let projection = select.legacy_projection();
         match &projection {
             SelectProjection::Integer(lit) => Ok(QueryOutput::Rows {
@@ -692,6 +759,10 @@ fn plan_statement(source: &str, statement: &AstStatement) -> PlannedStatement {
             LogicalPlan::parse_only(alter.raw.clone()),
             PhysicalPlan::parse_only(),
         ),
+        AstStatement::With(with) => {
+            // Plan the body statement
+            plan_statement(source, &with.body)
+        }
         AstStatement::Begin(span) | AstStatement::Commit(span) | AstStatement::Rollback(span) => {
             let sql = slice_source(source, *span);
             PlannedStatement::new(
@@ -1286,5 +1357,74 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn cte_simple_constant() {
+        let mut engine = new_engine();
+        let output = engine
+            .query("WITH t AS (SELECT 1 AS x) SELECT x FROM t")
+            .unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["x".to_string()],
+                rows: vec![vec!["1".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn cte_over_real_table() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE items (id INTEGER, name TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO items VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+            .unwrap();
+
+        let output = engine
+            .query("WITH top AS (SELECT * FROM items WHERE id <= 2) SELECT name FROM top")
+            .unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["name".to_string()],
+                rows: vec![vec!["a".to_string()], vec!["b".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn cte_multiple() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE items (id INTEGER, name TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO items VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+            .unwrap();
+
+        let output = engine
+            .query("WITH first AS (SELECT * FROM items WHERE id = 1), second AS (SELECT * FROM items WHERE id = 2) SELECT name FROM first")
+            .unwrap();
+        assert_eq!(
+            output,
+            QueryOutput::Rows {
+                columns: vec!["name".to_string()],
+                rows: vec![vec!["a".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn cte_temp_tables_are_cleaned_up() {
+        let mut engine = new_engine();
+        engine
+            .query("WITH t AS (SELECT 1 AS x) SELECT x FROM t")
+            .unwrap();
+        // The CTE temp table should not persist
+        assert!(!engine.storage().has_table("t"));
     }
 }

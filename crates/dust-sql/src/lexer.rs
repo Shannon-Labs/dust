@@ -71,6 +71,8 @@ pub enum Keyword {
     Begin,
     Commit,
     Rollback,
+    // CTE
+    With,
     // Misc
     Case,
     When,
@@ -426,6 +428,7 @@ fn keyword(text: &str) -> Option<Keyword> {
         "BEGIN" => Some(Keyword::Begin),
         "COMMIT" => Some(Keyword::Commit),
         "ROLLBACK" => Some(Keyword::Rollback),
+        "WITH" => Some(Keyword::With),
         "CASE" => Some(Keyword::Case),
         "WHEN" => Some(Keyword::When),
         "THEN" => Some(Keyword::Then),
