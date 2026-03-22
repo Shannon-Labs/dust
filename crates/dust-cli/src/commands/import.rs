@@ -98,6 +98,7 @@ pub fn run(args: ImportArgs) -> Result<()> {
         "json" => run_json_import(file, args.table.as_deref()),
         "jsonl" | "ndjson" => run_jsonl_import(file, args.table.as_deref()),
         "sql" => run_sql_import(file),
+        "xlsx" | "xls" => run_xlsx_import(file, args.table.as_deref()),
         _ => run_csv_import(
             file,
             args.table.as_deref(),
@@ -498,6 +499,104 @@ fn extract_statement_sql(source: &str, stmt: &dust_sql::AstStatement) -> String 
     };
     source[span.start..span.end].to_string()
 }
+
+// ---------------------------------------------------------------------------
+// XLSX import
+// ---------------------------------------------------------------------------
+
+fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
+    if !path.exists() {
+        return Err(DustError::InvalidInput(format!(
+            "file not found: {}",
+            path.display()
+        )));
+    }
+
+    let mut workbook: calamine::Sheets<std::io::BufReader<std::fs::File>> =
+        calamine::open_workbook_auto(path)
+            .map_err(|e| DustError::InvalidInput(format!("failed to open XLSX: {e}")))?;
+
+    use calamine::Reader;
+    let sheet_names = workbook.sheet_names();
+    if sheet_names.is_empty() {
+        return Err(DustError::InvalidInput(
+            "XLSX file has no sheets".to_string(),
+        ));
+    }
+
+    // Use first sheet
+    let sheet_name = sheet_names[0].clone();
+    let range = workbook
+        .worksheet_range(&sheet_name)
+        .map_err(|e| DustError::InvalidInput(format!("failed to read sheet: {e}")))?;
+
+    if range.is_empty() {
+        return Err(DustError::InvalidInput("XLSX sheet is empty".to_string()));
+    }
+
+    let height = range.height();
+    if height == 0 {
+        return Err(DustError::InvalidInput("XLSX sheet has no rows".to_string()));
+    }
+
+    // First row is header
+    let header_row = range.rows().next().unwrap();
+    let columns: Vec<String> = header_row
+        .iter()
+        .enumerate()
+        .map(|(i, cell)| {
+            let raw = format!("{cell}");
+            if raw.is_empty() {
+                format!("col{}", i + 1)
+            } else {
+                sanitize_column_name(&raw)
+            }
+        })
+        .collect();
+
+    if columns.is_empty() {
+        return Err(DustError::InvalidInput("XLSX has no columns".to_string()));
+    }
+
+    let table_name = table
+        .map(String::from)
+        .unwrap_or_else(|| table_name_from_path(path));
+
+    let db_path = find_db_path(&env::current_dir()?);
+    let mut engine = PersistentEngine::open(&db_path)?;
+
+    create_text_table(&mut engine, &table_name, &columns)?;
+
+    // Insert data rows (skip header)
+    let mut total_rows = 0;
+    let batch_size = 100;
+    let mut batch: Vec<Vec<String>> = Vec::with_capacity(batch_size);
+
+    for row in range.rows().skip(1) {
+        let fields: Vec<String> = row.iter().map(|cell| format!("{cell}")).collect();
+        let mut padded = fields;
+        padded.resize(columns.len(), String::new());
+        batch.push(padded);
+
+        if batch.len() >= batch_size {
+            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
+            batch.clear();
+        }
+    }
+
+    if !batch.is_empty() {
+        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
+    }
+
+    println!(
+        "Imported {total_rows} rows into `{table_name}` ({} columns)",
+        columns.len()
+    );
+    println!("Columns: {}", columns.join(", "));
+
+    Ok(())
+}
+
 
 // ---------------------------------------------------------------------------
 // Shared helpers
