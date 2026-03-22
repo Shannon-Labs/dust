@@ -1,0 +1,26 @@
+{
+  "dust": {
+    "create_50_tables_ms": 10.5,
+    "insert_1000_rows_ms": 12.5,
+    "100_point_queries_total_ms": 603.0,
+    "avg_point_query_ms": 5.5,
+    "aggregate_ms": 7.5,
+    "window_function_1000_ms": 7.5,
+    "init_ms": 9.5,
+    "branch_create_ms": 10.0
+  },
+  "sqlite": {
+    "create_50_tables_ms": 22.5,
+    "insert_1000_rows_ms": 7.0,
+    "100_point_queries_total_ms": 292.0,
+    "avg_point_query_ms": 2.0,
+    "aggregate_ms": 4.0,
+    "window_function_1000_ms": 4.5
+  },
+  "meta": {
+    "platform": "Darwin arm64",
+    "cpu": "Apple M4 Max",
+    "ram": "36 GB",
+    "runs": 4
+  }
+}

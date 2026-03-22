@@ -1,0 +1,55 @@
+
+--- 1. Initialize project ---
+
+$ dust init .
+Initialized Dust project at .
+
+--- 2. Generate sample CSV ---
+
+$ cat employees.csv
+id,name,department,salary
+1,Alice,Engineering,120000
+2,Bob,Marketing,95000
+3,Carol,Engineering,115000
+4,Dave,Sales,88000
+5,Eve,Engineering,130000
+6,Frank,Marketing,92000
+7,Grace,Sales,97000
+
+--- 3. Import CSV into Dust ---
+
+$ dust import employees.csv
+Imported 7 rows into `employees` (4 columns)
+Columns: id, name, department, salary
+
+--- 4. Explore the imported data ---
+
+$ dust query "SELECT * FROM employees"
+id	name	department	salary
+1	Alice	Engineering	120000
+2	Bob	Marketing	95000
+3	Carol	Engineering	115000
+4	Dave	Sales	88000
+5	Eve	Engineering	130000
+6	Frank	Marketing	92000
+7	Grace	Sales	97000
+$ dust query "SELECT department, count(*) AS headcount FROM employees GROUP BY department"
+department	headcount
+Engineering	3
+Marketing	2
+Sales	2
+
+--- 5. Check project status ---
+
+$ dust status
+Branch: main
+Database: ./.dust/workspace/data.db
+Schema: sch_d87554f2b948
+
+Tables:
+  employees: 7 rows
+
+Size: 32.0 KB
+
+Done. CSV to queryable table in one command.
+

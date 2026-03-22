@@ -1,0 +1,65 @@
+
+--- 1. Initialize a Dust project ---
+
+$ dust init .
+Initialized Dust project at .
+
+--- 2. Create a table and insert data ---
+
+$ dust query "CREATE TABLE users (id INTEGER, name TEXT, email TEXT, score INTEGER)"
+CREATE TABLE
+$ dust query "INSERT INTO users VALUES (1, 'Alice', 'alice@example.com', 95), (2, 'Bob', 'bob@example.com', 82), (3, 'Carol', 'carol@example.com', 91), (4, 'Dave', 'dave@example.com', 77), (5, 'Eve', 'eve@example.com', 88)"
+INSERT 0 5
+
+--- 3. Query the data ---
+
+$ dust query "SELECT * FROM users ORDER BY score DESC"
+id	name	email	score
+1	Alice	alice@example.com	95
+3	Carol	carol@example.com	91
+5	Eve	eve@example.com	88
+2	Bob	bob@example.com	82
+4	Dave	dave@example.com	77
+$ dust query "SELECT name, ROW_NUMBER() OVER (ORDER BY score DESC) AS rank FROM users"
+name	rank
+Alice	1
+Bob	4
+Carol	2
+Dave	5
+Eve	3
+
+--- 4. Create a branch for experimentation ---
+
+$ dust branch create experiment
+Created branch `experiment`
+$ dust branch list
+  experiment
+* main
+$ dust branch switch experiment
+Switched to branch `experiment`
+
+--- 5. Modify data on the branch ---
+
+$ dust query "INSERT INTO users VALUES (6, 'Frank', 'frank@example.com', 99)"
+INSERT 0 1
+$ dust query "SELECT count(*) FROM users"
+count(...)
+6
+
+--- 6. Compare branches ---
+
+$ dust branch diff main experiment
+Diff: `main` -> `experiment`
+
+  ~ users (5 -> 6, +1 rows)
+
+--- 7. Switch back to main (unchanged) ---
+
+$ dust branch switch main
+Switched to branch `main`
+$ dust query "SELECT count(*) FROM users"
+count(...)
+5
+
+Done. Branch isolation kept main at 5 rows while experiment has 6.
+

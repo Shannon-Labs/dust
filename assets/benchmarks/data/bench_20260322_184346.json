@@ -1,0 +1,24 @@
+{
+  "timestamp": "20260322_184346",
+  "platform": "Darwin arm64",
+  "cpu": "Apple M4 Max",
+  "ram": "36 GB",
+  "dust": {
+    "init_ms": 12,
+    "create_50_tables_ms": 12,
+    "insert_1000_rows_ms": 11,
+    "100_point_queries_total_ms": 556,
+    "avg_point_query_ms": 5,
+    "aggregate_ms": 7,
+    "window_function_1000_ms": 7,
+    "branch_create_ms": 11
+  },
+  "sqlite": {
+    "create_50_tables_ms": 25,
+    "insert_1000_rows_ms": 7,
+    "100_point_queries_total_ms": 264,
+    "avg_point_query_ms": 2,
+    "aggregate_ms": 4,
+    "window_function_1000_ms": 4
+  }
+}
