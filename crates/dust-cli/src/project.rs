@@ -47,10 +47,21 @@ pub(crate) fn current_branch_db_path(root: &Path) -> PathBuf {
 }
 
 /// Find the branch-specific database file path by walking up from `start`
-/// looking for `dust.toml`. Branches other than `main` are stored under
-/// `.dust/workspace/branches/<branch>/data.db`.
+/// looking for `dust.toml`. If no project exists, auto-creates one in the
+/// current directory (zero-config startup). Branches other than `main` are
+/// stored under `.dust/workspace/branches/<branch>/data.db`.
 pub fn find_db_path(start: &Path) -> PathBuf {
-    let root = find_project_root(start).unwrap_or_else(|| start.to_path_buf());
+    let root = find_project_root(start).unwrap_or_else(|| {
+        // Zero-config: auto-initialize a project in the current directory
+        let project = dust_core::ProjectPaths::new(start);
+        if project.init(false).is_ok() {
+            eprintln!(
+                "Created new dust database at {}",
+                project.root.join(".dust").display()
+            );
+        }
+        start.to_path_buf()
+    });
     ProjectPaths::new(root).active_data_db_path()
 }
 
