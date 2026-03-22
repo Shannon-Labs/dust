@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "lsp": {
+    "dust-sql": {
+      "command": ["dust-lsp"],
+      "extensions": [".sql"]
+    }
+  },
+  "mcp": {
+    "dust": {
+      "type": "local",
+      "command": ["/Users/hunterbown/bin/dust-mcp"],
+      "enabled": true
+    }
+  }
+}

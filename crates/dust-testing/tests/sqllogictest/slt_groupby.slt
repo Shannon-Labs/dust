@@ -1,0 +1,41 @@
+# GROUP BY / HAVING tests
+
+statement ok
+CREATE TABLE sales (product TEXT, category TEXT, amount INTEGER)
+
+statement ok
+INSERT INTO sales VALUES ('Widget', 'Hardware', 100)
+INSERT INTO sales VALUES ('Gadget', 'Software', 200)
+INSERT INTO sales VALUES ('Widget', 'Hardware', 150)
+INSERT INTO sales VALUES ('Doohickey', 'Hardware', 300)
+INSERT INTO sales VALUES ('Gadget', 'Software', 250)
+
+query TI
+SELECT category, count(*) FROM sales GROUP BY category
+----
+Hardware 3
+Software 2
+
+query TI
+SELECT category, sum(amount) FROM sales GROUP BY category
+----
+Hardware 550
+Software 450
+
+query TI
+SELECT category, avg(amount) FROM sales GROUP BY category
+----
+Hardware 183
+Software 225
+
+query TI
+SELECT product, count(*) FROM sales GROUP BY product
+----
+Widget 2
+Gadget 2
+Doohickey 1
+
+query TI
+SELECT category, sum(amount) FROM sales GROUP BY category HAVING sum(amount) > 500
+----
+Hardware 550

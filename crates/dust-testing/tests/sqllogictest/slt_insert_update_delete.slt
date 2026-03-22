@@ -1,0 +1,41 @@
+# INSERT / UPDATE / DELETE tests
+
+statement ok
+CREATE TABLE iud (id INTEGER, name TEXT, qty INTEGER)
+
+statement ok
+INSERT INTO iud VALUES (1, 'bolt', 100)
+
+statement ok
+INSERT INTO iud VALUES (2, 'nut', 200)
+
+statement ok
+INSERT INTO iud VALUES (3, 'washer', 50)
+
+statement ok
+UPDATE iud SET qty = 0 WHERE name = 'nut'
+
+query III
+SELECT * FROM iud
+----
+1 bolt 100
+2 nut 0
+3 washer 50
+
+statement ok
+DELETE FROM iud WHERE qty = 0
+
+query III
+SELECT * FROM iud
+----
+1 bolt 100
+3 washer 50
+
+statement ok
+UPDATE iud SET qty = qty + 10
+
+query III
+SELECT * FROM iud
+----
+1 bolt 110
+3 washer 60

@@ -29,9 +29,23 @@ pub struct Program {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOpKind {
+    Union,
+    UnionAll,
+    Intersect,
+    Except,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AstStatement {
     Select(Box<SelectStatement>),
+    SetOp {
+        kind: SetOpKind,
+        left: Box<SelectStatement>,
+        right: Box<SelectStatement>,
+        span: Span,
+    },
     Insert(InsertStatement),
     Update(UpdateStatement),
     Delete(DeleteStatement),

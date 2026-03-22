@@ -1,0 +1,27 @@
+# Subquery tests
+
+statement ok
+CREATE TABLE sq1 (id INTEGER, name TEXT)
+
+statement ok
+CREATE TABLE sq2 (ref_id INTEGER, tag TEXT)
+
+statement ok
+INSERT INTO sq1 VALUES (1, 'A')
+INSERT INTO sq1 VALUES (2, 'B')
+INSERT INTO sq1 VALUES (3, 'C')
+
+statement ok
+INSERT INTO sq2 VALUES (1, 'red')
+INSERT INTO sq2 VALUES (3, 'blue')
+
+query T
+SELECT name FROM sq1 WHERE id IN (SELECT ref_id FROM sq2)
+----
+A
+C
+
+query I
+SELECT (SELECT count(*) FROM sq1)
+----
+3

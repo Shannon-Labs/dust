@@ -1,0 +1,25 @@
+# NULL handling tests
+
+statement ok
+CREATE TABLE nl (id INTEGER, val INTEGER, name TEXT)
+
+statement ok
+INSERT INTO nl VALUES (1, 10, 'Alice')
+INSERT INTO nl VALUES (2, NULL, 'Bob')
+INSERT INTO nl VALUES (3, NULL, NULL)
+INSERT INTO nl VALUES (4, 40, 'Dave')
+
+query I
+SELECT count(*) FROM nl
+----
+4
+
+query I
+SELECT count(val) FROM nl
+----
+2
+
+query I
+SELECT coalesce(val, 0) FROM nl WHERE id = 2
+----
+0

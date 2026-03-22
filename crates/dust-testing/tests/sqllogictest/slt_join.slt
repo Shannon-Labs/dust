@@ -1,0 +1,29 @@
+# JOIN tests
+
+statement ok
+CREATE TABLE users (id INTEGER, name TEXT)
+
+statement ok
+CREATE TABLE orders (id INTEGER, user_id INTEGER, amount INTEGER)
+
+statement ok
+INSERT INTO users VALUES (1, 'Alice')
+INSERT INTO users VALUES (2, 'Bob')
+INSERT INTO users VALUES (3, 'Carol')
+
+statement ok
+INSERT INTO orders VALUES (10, 1, 100)
+INSERT INTO orders VALUES (20, 2, 200)
+INSERT INTO orders VALUES (30, 1, 150)
+
+query II
+SELECT users.name, orders.amount FROM users JOIN orders ON users.id = orders.user_id
+----
+Alice 100
+Alice 150
+Bob 200
+
+query I
+SELECT count(*) FROM users JOIN orders ON users.id = orders.user_id
+----
+3

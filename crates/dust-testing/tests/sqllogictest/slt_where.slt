@@ -1,0 +1,78 @@
+# WHERE clause tests
+
+statement ok
+CREATE TABLE wh (id INTEGER, status TEXT, score INTEGER)
+
+statement ok
+INSERT INTO wh VALUES (1, 'active', 90)
+INSERT INTO wh VALUES (2, 'inactive', 80)
+INSERT INTO wh VALUES (3, 'active', 70)
+INSERT INTO wh VALUES (4, 'active', 95)
+INSERT INTO wh VALUES (5, 'inactive', 60)
+
+query II
+SELECT id, score FROM wh WHERE status = 'active'
+----
+1 90
+3 70
+4 95
+
+query II
+SELECT id, score FROM wh WHERE score > 80
+----
+1 90
+4 95
+
+query II
+SELECT id, score FROM wh WHERE score >= 80
+----
+1 90
+2 80
+4 95
+
+query II
+SELECT id, score FROM wh WHERE score < 80
+----
+3 70
+5 60
+
+query II
+SELECT id, score FROM wh WHERE score <= 80
+----
+2 80
+3 70
+5 60
+
+query II
+SELECT id, score FROM wh WHERE score != 80
+----
+1 90
+3 70
+4 95
+5 60
+
+query II
+SELECT id, score FROM wh WHERE status = 'active' AND score > 80
+----
+1 90
+4 95
+
+query I
+SELECT id FROM wh WHERE id IN (1, 3, 5)
+----
+1
+3
+5
+
+query II
+SELECT id, score FROM wh WHERE score > 60 AND score < 90
+----
+2 80
+3 70
+
+query I
+SELECT id FROM wh WHERE status = 'active' OR score > 85
+----
+1
+3
+4

@@ -1,0 +1,42 @@
+# Scalar function tests
+
+statement ok
+CREATE TABLE sf (s TEXT, n INTEGER)
+
+statement ok
+INSERT INTO sf VALUES ('Hello', -42)
+
+query I
+SELECT length(s) FROM sf
+----
+5
+
+query T
+SELECT substr(s, 1, 3) FROM sf
+----
+Hel
+
+query T
+SELECT upper(s) FROM sf
+----
+HELLO
+
+query T
+SELECT lower(s) FROM sf
+----
+hello
+
+query I
+SELECT abs(n) FROM sf
+----
+42
+
+query T
+SELECT typeof(s) FROM sf
+----
+text
+
+query T
+SELECT typeof(n) FROM sf
+----
+integer

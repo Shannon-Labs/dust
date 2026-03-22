@@ -1,0 +1,35 @@
+# CREATE TABLE and constraint tests
+
+statement ok
+CREATE TABLE ct (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE, score INTEGER DEFAULT 0)
+
+statement ok
+INSERT INTO ct VALUES (1, 'Alice', 'alice@test.com', 100)
+
+query IIII
+SELECT * FROM ct
+----
+1 Alice alice@test.com 100
+
+statement ok
+INSERT INTO ct (id, name, email) VALUES (2, 'Bob', 'bob@test.com')
+
+query I
+SELECT score FROM ct WHERE id = 2
+----
+0
+
+statement error
+INSERT INTO ct VALUES (3, NULL, 'x@test.com')
+
+statement error
+INSERT INTO ct VALUES (1, 'Dup', 'dup@test.com')
+
+statement ok
+CREATE TABLE IF NOT EXISTS ct (id INTEGER)
+
+statement ok
+DROP TABLE IF EXISTS ghost
+
+statement ok
+DROP TABLE ct

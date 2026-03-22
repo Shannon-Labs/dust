@@ -4,7 +4,7 @@
 /// between invocations via B+tree storage.
 use dust_sql::{
     AlterTableAction, AstStatement, BinOp, ColumnRef, DeleteStatement, Expr, IndexColumn,
-    InsertStatement, JoinClause, JoinType, SelectItem, UpdateStatement, parse_program,
+    InsertStatement, JoinClause, JoinType, SelectItem, SetOpKind, UpdateStatement, parse_program,
 };
 use dust_store::{Datum, TableEngine};
 use dust_types::{DustError, Result};
@@ -228,6 +228,12 @@ impl PersistentEngine {
         validate_ast_statement(statement)?;
         match statement {
             AstStatement::Select(select) => self.execute_select(select),
+            AstStatement::SetOp {
+                kind,
+                left,
+                right,
+                ..
+            } => self.execute_set_op(*kind, left, right),
             AstStatement::Insert(insert) => self.execute_insert(source, insert),
             AstStatement::Update(update) => self.execute_update(source, update),
             AstStatement::Delete(delete) => self.execute_delete(delete),
@@ -685,6 +691,63 @@ impl PersistentEngine {
         }
 
         Ok(())
+    }
+
+    fn execute_set_op(
+        &mut self,
+        kind: SetOpKind,
+        left: &dust_sql::SelectStatement,
+        right: &dust_sql::SelectStatement,
+    ) -> Result<QueryOutput> {
+        let left_output = self.execute_select(left)?;
+        let right_output = self.execute_select(right)?;
+
+        match (left_output, right_output) {
+            (
+                QueryOutput::Rows {
+                    columns,
+                    rows: left_rows,
+                },
+                QueryOutput::Rows {
+                    rows: right_rows, ..
+                },
+            ) => {
+                let rows = match kind {
+                    SetOpKind::UnionAll => {
+                        let mut combined = left_rows;
+                        combined.extend(right_rows);
+                        combined
+                    }
+                    SetOpKind::Union => {
+                        let mut combined = left_rows;
+                        combined.extend(right_rows);
+                        let mut seen = std::collections::HashSet::new();
+                        combined.retain(|row| seen.insert(row.clone()));
+                        combined
+                    }
+                    SetOpKind::Intersect => {
+                        let right_set: std::collections::HashSet<_> =
+                            right_rows.into_iter().collect();
+                        left_rows
+                            .into_iter()
+                            .filter(|row| right_set.contains(row))
+                            .collect()
+                    }
+                    SetOpKind::Except => {
+                        let right_set: std::collections::HashSet<_> =
+                            right_rows.into_iter().collect();
+                        left_rows
+                            .into_iter()
+                            .filter(|row| !right_set.contains(row))
+                            .collect()
+                    }
+                };
+                Ok(QueryOutput::Rows { columns, rows })
+            }
+            _ => Err(DustError::UnsupportedQuery(
+                "set operations require SELECT queries that return rows".to_string(),
+            )),
+        }
     }
 
     fn build_rowset(&mut self, select: &dust_sql::SelectStatement) -> Result<RowSet> {

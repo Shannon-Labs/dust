@@ -1,0 +1,61 @@
+# Basic SELECT tests
+
+statement ok
+CREATE TABLE t1 (id INTEGER, name TEXT, val INTEGER)
+
+statement ok
+INSERT INTO t1 VALUES (1, 'Alice', 100)
+
+statement ok
+INSERT INTO t1 VALUES (2, 'Bob', 200)
+
+statement ok
+INSERT INTO t1 VALUES (3, 'Charlie', 300)
+
+query III
+SELECT * FROM t1
+----
+1 Alice 100
+2 Bob 200
+3 Charlie 300
+
+query I
+SELECT id FROM t1
+----
+1
+2
+3
+
+query T
+SELECT name FROM t1
+----
+Alice
+Bob
+Charlie
+
+query I
+SELECT val * 2 FROM t1
+----
+200
+400
+600
+
+query I
+SELECT 1
+----
+1
+
+query I
+SELECT 1 + 2
+----
+3
+
+query II
+SELECT id, name FROM t1 WHERE id = 1
+----
+1 Alice
+
+query II
+SELECT id, name FROM t1 WHERE name = 'Bob'
+----
+2 Bob

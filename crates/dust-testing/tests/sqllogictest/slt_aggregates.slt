@@ -1,0 +1,46 @@
+# Aggregate function tests
+
+statement ok
+CREATE TABLE agg (val INTEGER)
+
+statement ok
+INSERT INTO agg VALUES (10)
+INSERT INTO agg VALUES (20)
+INSERT INTO agg VALUES (30)
+INSERT INTO agg VALUES (40)
+INSERT INTO agg VALUES (50)
+
+query I
+SELECT count(*) FROM agg
+----
+5
+
+query I
+SELECT sum(val) FROM agg
+----
+150
+
+query I
+SELECT avg(val) FROM agg
+----
+30
+
+query I
+SELECT min(val) FROM agg
+----
+10
+
+query I
+SELECT max(val) FROM agg
+----
+50
+
+query I
+SELECT count(*) FROM agg WHERE val > 25
+----
+3
+
+query I
+SELECT sum(val) FROM agg WHERE val > 25
+----
+120

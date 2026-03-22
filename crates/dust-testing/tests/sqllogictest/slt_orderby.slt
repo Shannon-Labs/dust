@@ -1,0 +1,42 @@
+# ORDER BY / LIMIT tests
+
+statement ok
+CREATE TABLE ob (id INTEGER, name TEXT, score INTEGER)
+
+statement ok
+INSERT INTO ob VALUES (3, 'Carol', 90)
+INSERT INTO ob VALUES (1, 'Alice', 85)
+INSERT INTO ob VALUES (2, 'Bob', 95)
+INSERT INTO ob VALUES (4, 'Dave', 80)
+INSERT INTO ob VALUES (5, 'Eve', 92)
+
+query III
+SELECT * FROM ob ORDER BY id
+----
+1 Alice 85
+2 Bob 95
+3 Carol 90
+4 Dave 80
+5 Eve 92
+
+query III
+SELECT * FROM ob ORDER BY score DESC
+----
+2 Bob 95
+5 Eve 92
+3 Carol 90
+1 Alice 85
+4 Dave 80
+
+query II
+SELECT id, name FROM ob ORDER BY id LIMIT 2
+----
+1 Alice
+2 Bob
+
+query II
+SELECT id, name FROM ob ORDER BY score DESC LIMIT 3
+----
+2 Bob
+5 Eve
+3 Carol

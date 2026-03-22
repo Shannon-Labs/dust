@@ -1,0 +1,17 @@
+[package]
+name = "dust-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "dust-lsp"
+path = "src/main.rs"
+
+[dependencies]
+dust-catalog = { path = "../dust-catalog" }
+dust-sql = { path = "../dust-sql" }
+dust-types = { path = "../dust-types" }
+serde.workspace = true
+serde_json.workspace = true

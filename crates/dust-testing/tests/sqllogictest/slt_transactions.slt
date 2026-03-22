@@ -1,0 +1,38 @@
+# Transaction tests
+
+statement ok
+CREATE TABLE tx (id INTEGER, val INTEGER)
+
+statement ok
+INSERT INTO tx VALUES (1, 10)
+
+statement ok
+INSERT INTO tx VALUES (2, 20)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO tx VALUES (3, 30)
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM tx
+----
+2
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO tx VALUES (3, 30)
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM tx
+----
+3
