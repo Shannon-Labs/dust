@@ -55,6 +55,7 @@ pub enum AstStatement {
     DropIndex(DropIndexStatement),
     AlterTable(AlterTableStatement),
     With(WithStatement),
+    CreateFunction(CreateFunctionStatement),
     Begin(Span),
     Commit(Span),
     Rollback(Span),
@@ -304,6 +305,11 @@ pub enum Expr {
         negated: bool,
         span: Span,
     },
+    /// Vector literal: `[1.0, 2.0, 3.0]`
+    VectorLiteral {
+        elements: Vec<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -325,7 +331,8 @@ impl Expr {
             | Expr::Star(span)
             | Expr::Parenthesized { span, .. }
             | Expr::Subquery { span, .. }
-            | Expr::InSubquery { span, .. } => *span,
+            | Expr::InSubquery { span, .. }
+            | Expr::VectorLiteral { span, .. } => *span,
             Expr::ColumnRef(cref) => cref.span,
         }
     }
@@ -455,6 +462,21 @@ pub struct TokenFragment {
 pub struct TypeName {
     pub tokens: Vec<TokenFragment>,
     pub span: Span,
+}
+
+// ---------------------------------------------------------------------------
+// CREATE FUNCTION
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateFunctionStatement {
+    pub name: Identifier,
+    /// Source kind: currently "wasm"
+    pub language: String,
+    /// Path or module reference (e.g. path to .wasm file)
+    pub source: String,
+    pub span: Span,
+    pub raw: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +634,7 @@ pub enum Statement {
     Delete { table: String, raw: String },
     CreateTable { name: String, raw: String },
     CreateIndex { name: String, raw: String },
+    CreateFunction { name: String, raw: String },
     DropTable { name: String },
     DropIndex { name: String },
     AlterTable { name: String, raw: String },
@@ -632,6 +655,7 @@ impl Statement {
             Self::Delete { table, .. } => format!("delete from {table}"),
             Self::CreateTable { name, .. } => format!("create table {name}"),
             Self::CreateIndex { name, .. } => format!("create index {name}"),
+            Self::CreateFunction { name, .. } => format!("create function {name}"),
             Self::DropTable { name } => format!("drop table {name}"),
             Self::DropIndex { name } => format!("drop index {name}"),
             Self::AlterTable { name, .. } => format!("alter table {name}"),

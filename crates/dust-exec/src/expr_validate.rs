@@ -40,7 +40,25 @@ fn is_allowed_scalar(name: &str) -> bool {
             | "hex"
             | "quote"
             | "instr"
+            // Vector functions
+            | "vector_distance"
+            | "vec_distance"
+            | "vector_dims"
+            | "vector_norm"
+            // Non-deterministic but allowed (deterministic mode blocks separately)
+            | "random"
+            | "now"
+            | "current_timestamp"
+            | "current_date"
+            | "current_time"
+            | "uuid"
     ) || crate::datetime::is_datetime_fn(name)
+        || is_registered_udf(name)
+}
+
+/// Check if a function name is registered as a UDF in the global registry.
+fn is_registered_udf(name: &str) -> bool {
+    crate::engine::UDF_REGISTRY.with(|r| r.borrow().has(name))
 }
 
 fn is_window_function(name: &str) -> bool {
@@ -151,6 +169,12 @@ fn validate_expr(expr: &Expr, allow: AggAllow) -> Result<()> {
         Expr::InSubquery { expr, query, .. } => {
             validate_expr(expr, allow)?;
             validate_select(query)
+        }
+        Expr::VectorLiteral { elements, .. } => {
+            for e in elements {
+                validate_expr(e, AggAllow::Never)?;
+            }
+            Ok(())
         }
         Expr::ColumnRef(_)
         | Expr::Integer(_)

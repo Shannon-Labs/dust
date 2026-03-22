@@ -1,11 +1,12 @@
 use crate::ast::{
     AlterTableAction, AlterTableStatement, Assignment, AstStatement, BinOp, ColumnConstraint,
-    ColumnDef, ColumnRef, ConflictResolution, CreateIndexStatement, CreateTableStatement, Cte,
-    DeleteStatement, DropIndexStatement, DropTableStatement, Expr, FloatLiteral, FromClause,
-    Identifier, IndexColumn, IndexOrdering, InsertStatement, IntegerLiteral, JoinClause, JoinType,
-    OrderByItem, Program, RawStatement, SelectItem, SelectProjection, SelectStatement, SetOpKind,
-    Span, Statement, TableConstraint, TableConstraintKind, TableElement, TokenFragment, TypeName,
-    UnaryOp, UpdateStatement, WindowSpec, WithStatement,
+    ColumnDef, ColumnRef, ConflictResolution, CreateFunctionStatement, CreateIndexStatement,
+    CreateTableStatement, Cte, DeleteStatement, DropIndexStatement, DropTableStatement, Expr,
+    FloatLiteral, FromClause, Identifier, IndexColumn, IndexOrdering, InsertStatement,
+    IntegerLiteral, JoinClause, JoinType, OrderByItem, Program, RawStatement, SelectItem,
+    SelectProjection, SelectStatement, SetOpKind, Span, Statement, TableConstraint,
+    TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp, UpdateStatement,
+    WindowSpec, WithStatement,
 };
 use crate::lexer::{lex, Keyword, Token, TokenKind};
 use dust_types::{DustError, Result};
@@ -80,6 +81,8 @@ impl<'a> Parser<'a> {
                     || self.peek_keyword_n(1) == Some(Keyword::Unique)
                 {
                     self.parse_create_index()
+                } else if self.peek_keyword_n(1) == Some(Keyword::Function) {
+                    self.parse_create_function()
                 } else {
                     Ok(self.parse_raw(start))
                 }
@@ -866,6 +869,39 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// Parse: CREATE FUNCTION name FROM WASM 'path/to/module.wasm'
+    fn parse_create_function(&mut self) -> Result<AstStatement> {
+        let start = self.expect_keyword(Keyword::Create)?.span.start;
+        self.expect_keyword(Keyword::Function)?;
+        let name = self.parse_identifier()?;
+        self.expect_keyword(Keyword::From)?;
+        // Expect the language keyword (WASM)
+        let lang_token = self.bump().ok_or_else(|| {
+            DustError::SchemaParse("expected language (e.g., WASM) after FROM".to_string())
+        })?;
+        let language = lang_token.text.to_ascii_lowercase();
+        // Expect a string literal for the source/path
+        let source_token = self.bump().ok_or_else(|| {
+            DustError::SchemaParse("expected source path string after language".to_string())
+        })?;
+        if source_token.kind != TokenKind::String {
+            return Err(DustError::SchemaParse(format!(
+                "expected string literal for function source, got `{}`",
+                source_token.text
+            )));
+        }
+        let source = source_token.text.clone();
+        let end = self.statement_end();
+        let span = Span::new(start, end);
+        Ok(AstStatement::CreateFunction(CreateFunctionStatement {
+            name,
+            language,
+            source,
+            span,
+            raw: self.slice(span).to_string(),
+        }))
+    }
+
     fn parse_table_element(&mut self) -> Result<TableElement> {
         let start = self
             .peek()
@@ -1464,6 +1500,24 @@ impl<'a> Parser<'a> {
                     span: Span::new(start, end),
                 })
             }
+            TokenKind::LBracket => {
+                let start = self.bump().expect("peeked").span.start;
+                let mut elements = Vec::new();
+                if self.peek_kind() != Some(&TokenKind::RBracket) {
+                    elements.push(self.parse_expr()?);
+                    while self.eat_kind(TokenKind::Comma)? {
+                        if self.peek_kind() == Some(&TokenKind::RBracket) {
+                            break;
+                        }
+                        elements.push(self.parse_expr()?);
+                    }
+                }
+                let end = self.expect_kind(TokenKind::RBracket)?.span.end;
+                Ok(Expr::VectorLiteral {
+                    elements,
+                    span: Span::new(start, end),
+                })
+            }
             TokenKind::Ident | TokenKind::Keyword(_) => self.parse_identifier_or_function_expr(),
             _ => Err(DustError::SchemaParse(format!(
                 "expected expression, found `{}`",
@@ -1999,6 +2053,10 @@ impl From<AstStatement> for Statement {
                 name: index.name.value,
                 raw: index.raw,
             },
+            AstStatement::CreateFunction(func) => Statement::CreateFunction {
+                name: func.name.value,
+                raw: func.raw,
+            },
             AstStatement::DropTable(drop) => Statement::DropTable {
                 name: drop.name.value,
             },
@@ -2062,6 +2120,7 @@ fn statement_span(statement: &AstStatement) -> Span {
         AstStatement::Delete(s) => s.span,
         AstStatement::CreateTable(s) => s.span,
         AstStatement::CreateIndex(s) => s.span,
+        AstStatement::CreateFunction(s) => s.span,
         AstStatement::DropTable(s) => s.span,
         AstStatement::DropIndex(s) => s.span,
         AstStatement::AlterTable(s) => s.span,
