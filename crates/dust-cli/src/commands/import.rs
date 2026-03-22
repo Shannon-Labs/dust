@@ -197,7 +197,7 @@ fn run_csv_import(
 
     // Insert rows in batches
     let mut total_rows = 0;
-    let batch_size = 100;
+    let batch_size = 1000;
     let mut batch: Vec<Vec<String>> = Vec::with_capacity(batch_size);
 
     for result in reader.records() {
@@ -212,6 +212,9 @@ fn run_csv_import(
         if batch.len() >= batch_size {
             total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
             batch.clear();
+            if total_rows % 10000 == 0 {
+                eprint!("\r  Imported {total_rows} rows...");
+            }
         }
     }
 
@@ -572,7 +575,7 @@ fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
 
     // Insert data rows (skip header)
     let mut total_rows = 0;
-    let batch_size = 100;
+    let batch_size = 1000;
     let mut batch: Vec<Vec<String>> = Vec::with_capacity(batch_size);
 
     for row in range.rows().skip(1) {
@@ -649,7 +652,7 @@ fn run_parquet_import(path: &Path, table: Option<&str>) -> Result<()> {
 
     // Read row groups and insert in batches
     let mut total_rows = 0;
-    let batch_size = 100;
+    let batch_size = 1000;
     let mut batch: Vec<Vec<String>> = Vec::with_capacity(batch_size);
 
     let row_iter = reader
@@ -811,7 +814,7 @@ fn insert_json_rows(
 ) -> Result<usize> {
     let safe_name = sanitize_identifier(table_name);
     let col_names = columns.join(", ");
-    let batch_size = 100;
+    let batch_size = 1000;
     let mut total_rows = 0;
 
     for chunk in objects.chunks(batch_size) {
