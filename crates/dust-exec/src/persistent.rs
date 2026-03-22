@@ -526,7 +526,7 @@ impl PersistentEngine {
                         let col_name = alias
                             .as_ref()
                             .map(|a| a.value.clone())
-                            .unwrap_or_else(|| "?column?".to_string());
+                            .unwrap_or_else(|| expr_display_name(expr));
                         out_cols.push(col_name);
                         let materialized = self.materialize_subqueries(expr)?;
                         let val = eval_datum_expr(&materialized, &[], &[]);
@@ -1712,6 +1712,75 @@ fn eval_scalar_fn(name: &str, args: &[Expr], columns: &[ColumnBinding], row: &[D
             }
         }
         _ => Datum::Null,
+
+    #[test]
+            let fn_name = name.value.to_ascii_lowercase();
+            match fn_name.as_str() {
+                "lower" => args
+                    .first()
+                    .map(|a| match eval_datum_expr(a, columns, row) {
+                        Datum::Text(s) => Datum::Text(s.to_lowercase()),
+                        other => other,
+                    })
+                    .unwrap_or(Datum::Null),
+                "upper" => args
+                    .first()
+                    .map(|a| match eval_datum_expr(a, columns, row) {
+                        Datum::Text(s) => Datum::Text(s.to_uppercase()),
+                        other => other,
+                    })
+                    .unwrap_or(Datum::Null),
+                "coalesce" => args
+                    .iter()
+                    .map(|arg| eval_datum_expr(arg, columns, row))
+                    .find(|value| !matches!(value, Datum::Null))
+                    .unwrap_or(Datum::Null),
+                "length" => args
+                    .first()
+                    .map(|arg| match eval_datum_expr(arg, columns, row) {
+                        Datum::Text(value) => Datum::Integer(value.chars().count() as i64),
+                        _ => Datum::Null,
+                    })
+                    .unwrap_or(Datum::Null),
+                "case" => eval_case_function(args, columns, row),
+                f if crate::datetime::is_datetime_fn(f) => {
+                    let mut str_args: Vec<String> = Vec::with_capacity(args.len());
+                    for a in args {
+                        match eval_datum_expr(a, columns, row) {
+                            Datum::Text(s) => str_args.push(s),
+                            Datum::Integer(n) => str_args.push(n.to_string()),
+                            Datum::Real(r) => str_args.push(r.to_string()),
+                            Datum::Boolean(b) => str_args.push(b.to_string()),
+                            Datum::Null | Datum::Blob(_) => return Datum::Null,
+                        }
+                    }
+                    match f {
+                        "date" => crate::datetime::eval_date(&str_args)
+                            .map(Datum::Text)
+                            .unwrap_or(Datum::Null),
+                        "time" => crate::datetime::eval_time(&str_args)
+                            .map(Datum::Text)
+                            .unwrap_or(Datum::Null),
+                        "datetime" => crate::datetime::eval_datetime(&str_args)
+                            .map(Datum::Text)
+                            .unwrap_or(Datum::Null),
+                        "strftime" => crate::datetime::eval_strftime(&str_args)
+                            .map(Datum::Text)
+                            .unwrap_or(Datum::Null),
+                        "julianday" => crate::datetime::eval_julianday(&str_args)
+                            .map(Datum::Real)
+                            .unwrap_or(Datum::Null),
+                        "unixepoch" => crate::datetime::eval_unixepoch(&str_args)
+                            .map(Datum::Integer)
+                            .unwrap_or(Datum::Null),
+                        _ => Datum::Null,
+                    }
+                }
+                _ => Datum::Null,
+            }
+        }
+        Expr::Cast { expr: inner, .. } => eval_datum_expr(inner, columns, row),
+        Expr::Star(_) => Datum::Null,
     }
 }
 
@@ -2809,7 +2878,7 @@ mod tests {
                 .query("SELECT CASE WHEN 1 = 1 THEN 'yes' ELSE 'no' END")
                 .unwrap(),
             QueryOutput::Rows {
-                columns: vec!["?column?".to_string()],
+                columns: vec!["CASE(...)".to_string()],
                 rows: vec![vec!["yes".to_string()]],
             }
         );
@@ -2888,6 +2957,60 @@ mod tests {
             QueryOutput::Rows {
                 columns: vec!["id".to_string()],
                 rows: vec![vec!["2".to_string()]],
+
+    #[test]
+    // -----------------------------------------------------------------------
+    // Date/time function tests (persistent engine)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn persistent_date_function() {
+        let (mut engine, _dir) = temp_engine();
+        assert_eq!(
+            engine.query("SELECT date('2024-01-15')").unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["date(...)".to_string()],
+                rows: vec![vec!["2024-01-15".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn persistent_time_function() {
+        let (mut engine, _dir) = temp_engine();
+        assert_eq!(
+            engine.query("SELECT time('12:30:45')").unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["time(...)".to_string()],
+                rows: vec![vec!["12:30:45".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn persistent_datetime_function() {
+        let (mut engine, _dir) = temp_engine();
+        assert_eq!(
+            engine
+                .query("SELECT datetime('2024-01-15 12:30:45')")
+                .unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["datetime(...)".to_string()],
+                rows: vec![vec!["2024-01-15 12:30:45".to_string()]],
+            }
+        );
+    }
+
+    #[test]
+    fn persistent_date_with_modifier() {
+        let (mut engine, _dir) = temp_engine();
+        assert_eq!(
+            engine
+                .query("SELECT date('2024-01-15', '+1 month')")
+                .unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["date(...)".to_string()],
+                rows: vec![vec!["2024-02-15".to_string()]],
             }
         );
     }
@@ -2914,6 +3037,17 @@ mod tests {
                     vec!["1".to_string(), "Alice".to_string()],
                     vec!["2".to_string(), "Bob".to_string()],
                 ],
+
+    #[test]
+    fn persistent_strftime_year() {
+        let (mut engine, _dir) = temp_engine();
+        assert_eq!(
+            engine
+                .query("SELECT strftime('%Y', '2024-06-15')")
+                .unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["strftime(...)".to_string()],
+                rows: vec![vec!["2024".to_string()]],
             }
         );
     }
@@ -2934,6 +3068,17 @@ mod tests {
             QueryOutput::Rows {
                 columns: vec!["id".to_string(), "name".to_string()],
                 rows: vec![vec!["1".to_string(), "Alice".to_string()]],
+
+    #[test]
+    fn persistent_unixepoch() {
+        let (mut engine, _dir) = temp_engine();
+        assert_eq!(
+            engine
+                .query("SELECT unixepoch('1970-01-01 00:00:00')")
+                .unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["unixepoch(...)".to_string()],
+                rows: vec![vec!["0".to_string()]],
             }
         );
     }
@@ -3263,6 +3408,26 @@ mod tests {
             QueryOutput::Rows {
                 columns: vec!["val".to_string()],
                 rows: vec![vec!["42".to_string()]],
+
+    #[test]
+    fn persistent_datetime_in_where_clause() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("CREATE TABLE events (id INTEGER PRIMARY KEY, name TEXT, event_date TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO events (id, name, event_date) VALUES (1, 'meeting', '2024-01-15')")
+            .unwrap();
+        engine
+            .query("INSERT INTO events (id, name, event_date) VALUES (2, 'lunch', '2024-02-15')")
+            .unwrap();
+        assert_eq!(
+            engine
+                .query("SELECT name FROM events WHERE event_date = date('2024-01-15')")
+                .unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["name".to_string()],
+                rows: vec![vec!["meeting".to_string()]],
             }
         );
     }
