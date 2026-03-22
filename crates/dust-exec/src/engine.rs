@@ -216,6 +216,11 @@ impl ExecutionEngine {
             return self.execute_grouped_select(select);
         }
 
+        // Route to window function execution if any projection has OVER
+        if has_window_functions(select) {
+            return self.execute_window_select(select);
+        }
+
         let projection = select.legacy_projection();
         match &projection {
             SelectProjection::Integer(lit) => Ok(QueryOutput::Rows {
@@ -656,6 +661,75 @@ impl ExecutionEngine {
             rows: output_rows,
         })
     }
+
+    fn execute_window_select(&self, select: &dust_sql::SelectStatement) -> Result<QueryOutput> {
+        let table_name = select
+            .legacy_from()
+            .ok_or_else(|| {
+                DustError::UnsupportedQuery("window functions require a FROM clause".to_string())
+            })?
+            .value
+            .as_str();
+        let store = self.storage.table(table_name).ok_or_else(|| {
+            DustError::InvalidInput(format!("table `{table_name}` does not exist"))
+        })?;
+
+        // Apply WHERE filter
+        let filtered_rows: Vec<Vec<Value>> = if let Some(where_expr) = &select.where_clause {
+            store
+                .rows
+                .iter()
+                .filter(|row| eval_where(where_expr, &store.columns, row))
+                .cloned()
+                .collect()
+        } else {
+            store.rows.clone()
+        };
+
+        // Evaluate window functions
+        let (output_columns, output_rows) =
+            evaluate_window_functions(select, &store.columns, &filtered_rows)?;
+
+        // Apply ORDER BY
+        let mut final_rows = output_rows;
+        if !select.order_by.is_empty() {
+            final_rows.sort_by(|a, b| {
+                for item in &select.order_by {
+                    let col_idx = match &item.expr {
+                        Expr::ColumnRef(cref) => {
+                            output_columns.iter().position(|c| c == &cref.column.value)
+                        }
+                        _ => None,
+                    };
+                    if let Some(idx) = col_idx {
+                        let aval = a.get(idx).map(|s| s.as_str()).unwrap_or("");
+                        let bval = b.get(idx).map(|s| s.as_str()).unwrap_or("");
+                        let cmp = cmp_string_values(aval, bval);
+                        let cmp = if item.ordering == Some(dust_sql::IndexOrdering::Desc) {
+                            cmp.reverse()
+                        } else {
+                            cmp
+                        };
+                        if cmp != std::cmp::Ordering::Equal {
+                            return cmp;
+                        }
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+
+        // Apply DISTINCT
+        if select.distinct {
+            let mut seen = std::collections::HashSet::new();
+            final_rows.retain(|row| seen.insert(row.clone()));
+        }
+
+        Ok(QueryOutput::Rows {
+            columns: output_columns,
+            rows: final_rows,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +815,263 @@ fn cmp_string_values(a: &str, b: &str) -> std::cmp::Ordering {
     } else {
         a.cmp(b)
     }
+}
+
+/// Returns true if any projection item contains a window function.
+fn has_window_functions(select: &dust_sql::SelectStatement) -> bool {
+    select.projection.iter().any(|item| match item {
+        SelectItem::Expr { expr, .. } => expr_has_window_fn(expr),
+        _ => false,
+    })
+}
+
+/// Returns true if an expression tree contains a window function call.
+fn expr_has_window_fn(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { window, args, .. } => {
+            window.is_some() || args.iter().any(expr_has_window_fn)
+        }
+        Expr::BinaryOp { left, right, .. } => expr_has_window_fn(left) || expr_has_window_fn(right),
+        Expr::UnaryOp { operand, .. } => expr_has_window_fn(operand),
+        Expr::Parenthesized { expr, .. } => expr_has_window_fn(expr),
+        _ => false,
+    }
+}
+
+/// Evaluate window functions in a SELECT projection.
+/// Returns a new set of rows with window function values materialized.
+fn evaluate_window_functions(
+    select: &dust_sql::SelectStatement,
+    columns: &[String],
+    rows: &[Vec<Value>],
+) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+    let mut output_columns: Vec<String> = Vec::new();
+    let mut output_rows: Vec<Vec<String>> = vec![Vec::new(); rows.len()];
+
+    for item in &select.projection {
+        match item {
+            SelectItem::Expr { expr, alias, .. } => {
+                let col_name = alias
+                    .as_ref()
+                    .map(|a| a.value.clone())
+                    .unwrap_or_else(|| expr_display_name(expr));
+                output_columns.push(col_name);
+
+                if let Expr::FunctionCall {
+                    name,
+                    args,
+                    window: Some(spec),
+                    ..
+                } = expr
+                {
+                    let fn_name = name.value.to_ascii_lowercase();
+                    let values = eval_window_fn(&fn_name, args, spec, columns, rows)?;
+                    for (row_idx, val) in values.into_iter().enumerate() {
+                        output_rows[row_idx].push(val.to_string());
+                    }
+                } else {
+                    // Non-window expression: evaluate per-row
+                    for (row_idx, row) in rows.iter().enumerate() {
+                        let val = eval_expr_to_value(expr, columns, row);
+                        output_rows[row_idx].push(val.to_string());
+                    }
+                }
+            }
+            SelectItem::Wildcard(_) => {
+                output_columns.push("*".to_string());
+                for (row_idx, row) in rows.iter().enumerate() {
+                    output_rows[row_idx].push("*".to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((output_columns, output_rows))
+}
+
+/// Evaluate a window function over all rows, returning one value per row.
+fn eval_window_fn(
+    name: &str,
+    args: &[Expr],
+    spec: &dust_sql::WindowSpec,
+    columns: &[String],
+    rows: &[Vec<Value>],
+) -> Result<Vec<Value>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Partition rows
+    let partitions = partition_rows(rows, &spec.partition_by, columns);
+
+    let mut result = vec![Value::Null; rows.len()];
+
+    for partition_indices in &partitions {
+        // Sort partition by ORDER BY (or keep original order if no ORDER BY)
+        let mut sorted_indices = partition_indices.clone();
+        if !spec.order_by.is_empty() {
+            sorted_indices.sort_by(|&a, &b| {
+                for item in &spec.order_by {
+                    let aval = eval_datum_expr_for_order(&item.expr, columns, &rows[a]);
+                    let bval = eval_datum_expr_for_order(&item.expr, columns, &rows[b]);
+                    let cmp = cmp_string_values(&aval, &bval);
+                    let cmp = if item.ordering == Some(dust_sql::IndexOrdering::Desc) {
+                        cmp.reverse()
+                    } else {
+                        cmp
+                    };
+                    if cmp != std::cmp::Ordering::Equal {
+                        return cmp;
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+
+        // Compute window function values
+        match name {
+            "row_number" => {
+                for (rank, &row_idx) in sorted_indices.iter().enumerate() {
+                    result[row_idx] = Value::Integer((rank + 1) as i64);
+                }
+            }
+            "rank" => {
+                let mut rank = 1i64;
+                let mut prev_vals: Option<Vec<String>> = None;
+                for (pos, &row_idx) in sorted_indices.iter().enumerate() {
+                    let order_vals: Vec<String> = spec
+                        .order_by
+                        .iter()
+                        .map(|ob| eval_datum_expr_for_order(&ob.expr, columns, &rows[row_idx]))
+                        .collect();
+                    if let Some(ref prev) = prev_vals {
+                        if order_vals != *prev {
+                            rank = (pos + 1) as i64;
+                        }
+                    }
+                    result[row_idx] = Value::Integer(rank);
+                    prev_vals = Some(order_vals);
+                }
+            }
+            "dense_rank" => {
+                let mut rank = 1i64;
+                let mut prev_vals: Option<Vec<String>> = None;
+                for &row_idx in &sorted_indices {
+                    let order_vals: Vec<String> = spec
+                        .order_by
+                        .iter()
+                        .map(|ob| eval_datum_expr_for_order(&ob.expr, columns, &rows[row_idx]))
+                        .collect();
+                    if let Some(ref prev) = prev_vals {
+                        if order_vals != *prev {
+                            rank += 1;
+                        }
+                    }
+                    result[row_idx] = Value::Integer(rank);
+                    prev_vals = Some(order_vals);
+                }
+            }
+            "lag" => {
+                let offset = if let Some(Expr::Integer(lit)) = args.get(1) {
+                    lit.value.max(1) as usize
+                } else {
+                    1
+                };
+                let default = args
+                    .get(2)
+                    .map(|e| eval_expr_to_value(e, columns, &rows[0]));
+                for (pos, &row_idx) in sorted_indices.iter().enumerate() {
+                    if pos >= offset {
+                        let src_idx = sorted_indices[pos - offset];
+                        if let Some(arg) = args.first() {
+                            result[row_idx] = eval_expr_to_value(arg, columns, &rows[src_idx]);
+                        }
+                    } else if let Some(ref d) = default {
+                        result[row_idx] = d.clone();
+                    }
+                }
+            }
+            "lead" => {
+                let offset = if let Some(Expr::Integer(lit)) = args.get(1) {
+                    lit.value.max(1) as usize
+                } else {
+                    1
+                };
+                let default = args
+                    .get(2)
+                    .map(|e| eval_expr_to_value(e, columns, &rows[0]));
+                for (pos, &row_idx) in sorted_indices.iter().enumerate() {
+                    if pos + offset < sorted_indices.len() {
+                        let src_idx = sorted_indices[pos + offset];
+                        if let Some(arg) = args.first() {
+                            result[row_idx] = eval_expr_to_value(arg, columns, &rows[src_idx]);
+                        }
+                    } else if let Some(ref d) = default {
+                        result[row_idx] = d.clone();
+                    }
+                }
+            }
+            "sum" | "avg" | "count" | "min" | "max" => {
+                // Windowed aggregates: compute running aggregate over ordered partition
+                for &row_idx in &sorted_indices {
+                    // For windowed aggregates without a frame, use all rows in partition
+                    let group_refs: Vec<&Vec<Value>> =
+                        sorted_indices.iter().map(|&i| &rows[i]).collect();
+                    if let Some(arg) = args.first() {
+                        result[row_idx] =
+                            eval_aggregate_fn(name, &[arg.clone()], columns, &group_refs);
+                    } else if name == "count" {
+                        result[row_idx] = Value::Integer(group_refs.len() as i64);
+                    }
+                }
+            }
+            _ => {
+                return Err(DustError::UnsupportedQuery(format!(
+                    "unsupported window function `{name}`"
+                )));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Group row indices by partition expressions.
+fn partition_rows(
+    rows: &[Vec<Value>],
+    partition_by: &[Expr],
+    columns: &[String],
+) -> Vec<Vec<usize>> {
+    if partition_by.is_empty() {
+        return vec![(0..rows.len()).collect()];
+    }
+
+    let mut partitions: Vec<Vec<usize>> = Vec::new();
+    let mut key_to_partition: std::collections::HashMap<Vec<String>, usize> =
+        std::collections::HashMap::new();
+
+    for (idx, row) in rows.iter().enumerate() {
+        let key: Vec<String> = partition_by
+            .iter()
+            .map(|expr| eval_expr_to_value(expr, columns, row).to_string())
+            .collect();
+
+        if let Some(&pidx) = key_to_partition.get(&key) {
+            partitions[pidx].push(idx);
+        } else {
+            let pidx = partitions.len();
+            key_to_partition.insert(key, pidx);
+            partitions.push(vec![idx]);
+        }
+    }
+
+    partitions
+}
+
+/// Evaluate an expression to a string for ordering purposes.
+fn eval_datum_expr_for_order(expr: &Expr, columns: &[String], row: &[Value]) -> String {
+    eval_expr_to_value(expr, columns, row).to_string()
 }
 
 /// Evaluate an expression within a GROUP BY aggregate context.
@@ -2384,5 +2715,88 @@ mod tests {
                 rows: vec![vec!["2024-02-20".to_string()]],
             }
         );
+    }
+
+    #[test]
+    fn window_row_number() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE players (name TEXT, score INTEGER)")
+            .unwrap();
+        engine
+            .query("INSERT INTO players VALUES ('Alice', 90), ('Bob', 85), ('Carol', 95)")
+            .unwrap();
+        let output = engine
+            .query("SELECT name, ROW_NUMBER() OVER (ORDER BY score DESC) AS rank FROM players")
+            .unwrap();
+        match &output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(columns, &["name", "rank"]);
+                assert_eq!(rows.len(), 3);
+                // Original row order preserved; window assigns ranks by score DESC
+                assert_eq!(rows[0], vec!["Alice".to_string(), "2".to_string()]);
+                assert_eq!(rows[1], vec!["Bob".to_string(), "3".to_string()]);
+                assert_eq!(rows[2], vec!["Carol".to_string(), "1".to_string()]);
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn window_rank_with_partition() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE employees (dept TEXT, name TEXT, salary INTEGER)")
+            .unwrap();
+        engine
+            .query("INSERT INTO employees VALUES ('Eng', 'Alice', 100), ('Eng', 'Bob', 90), ('Sales', 'Carol', 80)")
+            .unwrap();
+        let output = engine
+            .query("SELECT dept, name, RANK() OVER (PARTITION BY dept ORDER BY salary DESC) AS rnk FROM employees")
+            .unwrap();
+        match &output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(columns, &["dept", "name", "rnk"]);
+                assert_eq!(rows.len(), 3);
+                // Alice (Eng, 100) -> rank 1, Bob (Eng, 90) -> rank 2, Carol (Sales, 80) -> rank 1
+                assert_eq!(
+                    rows[0],
+                    vec!["Eng".to_string(), "Alice".to_string(), "1".to_string()]
+                );
+                assert_eq!(
+                    rows[1],
+                    vec!["Eng".to_string(), "Bob".to_string(), "2".to_string()]
+                );
+                assert_eq!(
+                    rows[2],
+                    vec!["Sales".to_string(), "Carol".to_string(), "1".to_string()]
+                );
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn window_lag_lead() {
+        let mut engine = new_engine();
+        engine
+            .query("CREATE TABLE scores (id INTEGER, val INTEGER)")
+            .unwrap();
+        engine
+            .query("INSERT INTO scores VALUES (1, 10), (2, 20), (3, 30)")
+            .unwrap();
+        let output = engine
+            .query("SELECT id, LAG(val, 1, 0) OVER (ORDER BY id) AS prev FROM scores")
+            .unwrap();
+        match &output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(columns, &["id", "prev"]);
+                assert_eq!(rows.len(), 3);
+                assert_eq!(rows[0], vec!["1".to_string(), "0".to_string()]); // lag default 0
+                assert_eq!(rows[1], vec!["2".to_string(), "10".to_string()]); // lag of 10
+                assert_eq!(rows[2], vec!["3".to_string(), "20".to_string()]); // lag of 20
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
     }
 }

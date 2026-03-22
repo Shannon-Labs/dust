@@ -78,6 +78,15 @@ pub enum Keyword {
     Except,
     // CTE
     With,
+    // Window functions
+    Over,
+    Partition,
+    Rows,
+    Range,
+    Preceding,
+    Following,
+    Current,
+    Unbounded,
     // Misc
     Case,
     When,
@@ -445,6 +454,14 @@ fn keyword(text: &str) -> Option<Keyword> {
         "ELSE" => Some(Keyword::Else),
         "END" => Some(Keyword::End),
         "AUTOINCREMENT" => Some(Keyword::Autoincrement),
+        "OVER" => Some(Keyword::Over),
+        "PARTITION" => Some(Keyword::Partition),
+        "ROWS" => Some(Keyword::Rows),
+        "RANGE" => Some(Keyword::Range),
+        "PRECEDING" => Some(Keyword::Preceding),
+        "FOLLOWING" => Some(Keyword::Following),
+        "CURRENT" => Some(Keyword::Current),
+        "UNBOUNDED" => Some(Keyword::Unbounded),
         _ => None,
     }
 }

@@ -572,8 +572,17 @@ impl PersistentEngine {
             _ => false,
         });
 
-        if has_aggregates {
+        let has_windows = select.projection.iter().any(|item| match item {
+            SelectItem::Expr { expr, .. } => persistent_has_window_fn(expr),
+            _ => false,
+        });
+
+        if has_aggregates && !has_windows {
             return self.execute_aggregate_select(select, &rowset.columns, &filtered);
+        }
+
+        if has_windows {
+            return self.execute_window_select(select, &rowset.columns, &filtered);
         }
 
         if !select.order_by.is_empty() {
@@ -1109,6 +1118,66 @@ impl PersistentEngine {
             .collect();
 
         Ok((out_cols, out_rows))
+    }
+
+    fn execute_window_select(
+        &mut self,
+        select: &dust_sql::SelectStatement,
+        columns: &[ColumnBinding],
+        rows: &[Vec<Datum>],
+    ) -> Result<QueryOutput> {
+        let col_names: Vec<String> = columns.iter().map(|c| c.column_name.clone()).collect();
+        let mut output_columns: Vec<String> = Vec::new();
+        let mut output_rows: Vec<Vec<String>> = vec![Vec::new(); rows.len()];
+
+        for item in &select.projection {
+            match item {
+                SelectItem::Expr {
+                    expr, alias, ..
+                } => {
+                    let col_name = alias
+                        .as_ref()
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| expr_display_name(expr));
+                    output_columns.push(col_name);
+
+                    if let Expr::FunctionCall {
+                        name,
+                        args,
+                        window: Some(spec),
+                        ..
+                    } = expr
+                    {
+                        let fn_name = name.value.to_ascii_lowercase();
+                        let values =
+                            persistent_eval_window_fn(&fn_name, args, spec, columns, rows)?;
+                        for (row_idx, val) in values.into_iter().enumerate() {
+                            output_rows[row_idx].push(val);
+                        }
+                    } else {
+                        for (row_idx, row) in rows.iter().enumerate() {
+                            output_rows[row_idx].push(eval_datum_expr(expr, columns, row).to_string());
+                        }
+                    }
+                }
+                SelectItem::Wildcard(_) => {
+                    for (ci, col) in col_names.iter().enumerate() {
+                        output_columns.push(col.clone());
+                        for (row_idx, row) in rows.iter().enumerate() {
+                            output_rows[row_idx].push(
+                                row.get(ci).map(|d| d.to_string()).unwrap_or_default(),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(QueryOutput::Rows {
+            columns: output_columns,
+            rows: output_rows,
+        })
     }
 
     fn execute_aggregate_select(
@@ -1883,6 +1952,18 @@ fn is_aggregate_expr(expr: &Expr) -> bool {
     }
 }
 
+fn persistent_has_window_fn(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { window, args, .. } => {
+            window.is_some() || args.iter().any(persistent_has_window_fn)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            persistent_has_window_fn(left) || persistent_has_window_fn(right)
+        }
+        _ => false,
+    }
+}
+
 fn eval_aggregate(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec<Datum>]) -> Result<String> {
     match expr {
         Expr::FunctionCall { name, args, .. } => {
@@ -2020,6 +2101,154 @@ fn expr_display_name(expr: &Expr) -> String {
         Expr::Star(_) => "*".to_string(),
         _ => "?column?".to_string(),
     }
+}
+
+fn persistent_eval_window_fn(
+    name: &str,
+    args: &[Expr],
+    spec: &dust_sql::WindowSpec,
+    columns: &[ColumnBinding],
+    rows: &[Vec<Datum>],
+) -> Result<Vec<String>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let col_names: Vec<String> = columns.iter().map(|c| c.column_name.clone()).collect();
+
+    // Partition rows
+    let partitions: Vec<Vec<usize>> = if spec.partition_by.is_empty() {
+        vec![(0..rows.len()).collect()]
+    } else {
+        let mut parts: Vec<Vec<usize>> = Vec::new();
+        let mut key_map: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (idx, row) in rows.iter().enumerate() {
+            let key: String = spec
+                .partition_by
+                .iter()
+                .map(|e| eval_datum_expr(e, columns, row).to_string())
+                .collect::<Vec<_>>()
+                .join("\x00");
+            if let Some(&pidx) = key_map.get(&key) {
+                parts[pidx].push(idx);
+            } else {
+                let pidx = parts.len();
+                key_map.insert(key, pidx);
+                parts.push(vec![idx]);
+            }
+        }
+        parts
+    };
+
+    let mut result = vec!["NULL".to_string(); rows.len()];
+
+    for partition_indices in &partitions {
+        let mut sorted_indices = partition_indices.clone();
+        if !spec.order_by.is_empty() {
+            sorted_indices.sort_by(|&a, &b| {
+                for item in &spec.order_by {
+                    let aval = eval_datum_expr(&item.expr, columns, &rows[a]);
+                    let bval = eval_datum_expr(&item.expr, columns, &rows[b]);
+                    let mut cmp = cmp_datums(&aval, &bval);
+                    if item.ordering == Some(dust_sql::IndexOrdering::Desc) {
+                        cmp = cmp.reverse();
+                    }
+                    if cmp != std::cmp::Ordering::Equal {
+                        return cmp;
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+
+        match name {
+            "row_number" => {
+                for (rank, &row_idx) in sorted_indices.iter().enumerate() {
+                    result[row_idx] = (rank + 1).to_string();
+                }
+            }
+            "rank" => {
+                let mut rank = 1i64;
+                let mut prev_vals: Option<Vec<Datum>> = None;
+                for (pos, &row_idx) in sorted_indices.iter().enumerate() {
+                    let order_vals: Vec<Datum> = spec
+                        .order_by
+                        .iter()
+                        .map(|ob| eval_datum_expr(&ob.expr, columns, &rows[row_idx]))
+                        .collect();
+                    if let Some(ref prev) = prev_vals {
+                        if order_vals != *prev {
+                            rank = (pos + 1) as i64;
+                        }
+                    }
+                    result[row_idx] = rank.to_string();
+                    prev_vals = Some(order_vals);
+                }
+            }
+            "dense_rank" => {
+                let mut rank = 1i64;
+                let mut prev_vals: Option<Vec<Datum>> = None;
+                for &row_idx in &sorted_indices {
+                    let order_vals: Vec<Datum> = spec
+                        .order_by
+                        .iter()
+                        .map(|ob| eval_datum_expr(&ob.expr, columns, &rows[row_idx]))
+                        .collect();
+                    if let Some(ref prev) = prev_vals {
+                        if order_vals != *prev {
+                            rank += 1;
+                        }
+                    }
+                    result[row_idx] = rank.to_string();
+                    prev_vals = Some(order_vals);
+                }
+            }
+            "lag" => {
+                let offset = if let Some(Expr::Integer(lit)) = args.get(1) {
+                    lit.value.max(1) as usize
+                } else {
+                    1
+                };
+                let default = args.get(2).map(|e| eval_datum_expr(e, columns, &rows[0]).to_string());
+                for (pos, &row_idx) in sorted_indices.iter().enumerate() {
+                    if pos >= offset {
+                        let src_idx = sorted_indices[pos - offset];
+                        if let Some(arg) = args.first() {
+                            result[row_idx] = eval_datum_expr(arg, columns, &rows[src_idx]).to_string();
+                        }
+                    } else if let Some(ref d) = default {
+                        result[row_idx] = d.clone();
+                    }
+                }
+            }
+            "lead" => {
+                let offset = if let Some(Expr::Integer(lit)) = args.get(1) {
+                    lit.value.max(1) as usize
+                } else {
+                    1
+                };
+                let default = args.get(2).map(|e| eval_datum_expr(e, columns, &rows[0]).to_string());
+                for (pos, &row_idx) in sorted_indices.iter().enumerate() {
+                    if pos + offset < sorted_indices.len() {
+                        let src_idx = sorted_indices[pos + offset];
+                        if let Some(arg) = args.first() {
+                            result[row_idx] = eval_datum_expr(arg, columns, &rows[src_idx]).to_string();
+                        }
+                    } else if let Some(ref d) = default {
+                        result[row_idx] = d.clone();
+                    }
+                }
+            }
+            _ => {
+                return Err(DustError::UnsupportedQuery(format!(
+                    "unsupported window function `{name}`"
+                )));
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 fn validate_select_columns(

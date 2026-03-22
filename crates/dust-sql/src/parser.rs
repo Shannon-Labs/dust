@@ -5,7 +5,7 @@ use crate::ast::{
     IndexOrdering, InsertStatement, IntegerLiteral, JoinClause, JoinType, OrderByItem, Program,
     RawStatement, SelectItem, SelectProjection, SelectStatement, SetOpKind, Span, Statement,
     TableConstraint, TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp,
-    UpdateStatement, WithStatement,
+    UpdateStatement, WindowSpec, WithStatement,
 };
 use crate::lexer::{lex, Keyword, Token, TokenKind};
 use dust_types::{DustError, Result};
@@ -498,6 +498,33 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(exprs)
+    }
+
+    fn parse_window_spec(&mut self) -> Result<WindowSpec> {
+        let start = self
+            .peek()
+            .map(|t| t.span.start)
+            .unwrap_or(self.source.len());
+
+        let partition_by = if self.eat_keywords(&[Keyword::Partition, Keyword::By]) {
+            self.parse_expression_list()?
+        } else {
+            Vec::new()
+        };
+
+        let order_by = if self.eat_keywords(&[Keyword::Order, Keyword::By]) {
+            self.parse_order_by_list()?
+        } else {
+            Vec::new()
+        };
+
+        let end = self.previous_span().map(|s| s.end).unwrap_or(start);
+
+        Ok(WindowSpec {
+            partition_by,
+            order_by,
+            span: Span::new(start, end),
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1461,6 +1488,7 @@ impl<'a> Parser<'a> {
                 span: case_token.span,
             },
             args,
+            window: None,
             span: Span::new(start, end),
         })
     }
@@ -1482,6 +1510,17 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
+
+            // Check for window function: OVER (...)
+            let window = if self.eat_keyword(Keyword::Over)? {
+                self.expect_kind(TokenKind::LParen)?;
+                let spec = self.parse_window_spec()?;
+                self.expect_kind(TokenKind::RParen)?;
+                Some(spec)
+            } else {
+                None
+            };
+
             let end = self
                 .previous_span()
                 .map(|s| s.end)
@@ -1490,6 +1529,7 @@ impl<'a> Parser<'a> {
                 span: Span::new(ident.span.start, end),
                 name: ident,
                 args,
+                window,
             });
         }
 

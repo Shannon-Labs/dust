@@ -9,6 +9,6 @@ pub use ast::{
     IndexOrdering, InsertStatement, IntegerLiteral, JoinClause, JoinType, OrderByItem, Program,
     RawStatement, SelectItem, SelectProjection, SelectStatement, SetOpKind, Span, Statement,
     TableConstraint, TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp,
-    UpdateStatement, WithStatement,
+    UpdateStatement, WindowSpec, WithStatement,
 };
 pub use parser::{parse_program, parse_sql};

@@ -213,6 +213,17 @@ impl SelectStatement {
 }
 
 // ---------------------------------------------------------------------------
+// Window functions
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowSpec {
+    pub partition_by: Vec<Expr>,
+    pub order_by: Vec<OrderByItem>,
+    pub span: Span,
+}
+
+// ---------------------------------------------------------------------------
 // Expressions
 // ---------------------------------------------------------------------------
 
@@ -272,6 +283,7 @@ pub enum Expr {
     FunctionCall {
         name: Identifier,
         args: Vec<Expr>,
+        window: Option<WindowSpec>,
         span: Span,
     },
     Star(Span),
