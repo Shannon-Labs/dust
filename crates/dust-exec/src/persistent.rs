@@ -586,12 +586,35 @@ impl PersistentEngine {
         }
 
         if !select.order_by.is_empty() {
-            filtered.sort_by(|a, b| {
-                for item in &select.order_by {
-                    let aval = eval_datum_expr(&item.expr, &rowset.columns, a);
-                    let bval = eval_datum_expr(&item.expr, &rowset.columns, b);
-                    let mut cmp = cmp_datums(&aval, &bval);
-                    if item.ordering == Some(dust_sql::IndexOrdering::Desc) {
+            // Pre-compute sort keys to avoid N*log(N) re-evaluation
+            let sort_expressions: Vec<(&Expr, bool)> = select
+                .order_by
+                .iter()
+                .map(|item| {
+                    (
+                        &item.expr,
+                        item.ordering == Some(dust_sql::IndexOrdering::Desc),
+                    )
+                })
+                .collect();
+
+            // Compute sort keys for all rows upfront
+            let mut indexed: Vec<(Vec<Datum>, usize)> = filtered
+                .iter()
+                .enumerate()
+                .map(|(idx, row)| {
+                    let keys: Vec<Datum> = sort_expressions
+                        .iter()
+                        .map(|(expr, _)| eval_datum_expr(expr, &rowset.columns, row))
+                        .collect();
+                    (keys, idx)
+                })
+                .collect();
+
+            indexed.sort_by(|(a_keys, _), (b_keys, _)| {
+                for (i, (_, desc)) in sort_expressions.iter().enumerate() {
+                    let mut cmp = cmp_datums(&a_keys[i], &b_keys[i]);
+                    if *desc {
                         cmp = cmp.reverse();
                     }
                     if cmp != std::cmp::Ordering::Equal {
@@ -600,6 +623,11 @@ impl PersistentEngine {
                 }
                 std::cmp::Ordering::Equal
             });
+
+            filtered = indexed
+                .into_iter()
+                .map(|(_, idx)| std::mem::take(&mut filtered[idx]))
+                .collect();
         }
 
         if let Some(offset_expr) = &select.offset {
@@ -697,6 +725,14 @@ impl PersistentEngine {
         current_rowid: Option<u64>,
         row: &[Datum],
     ) -> Result<()> {
+        // Fast path: skip if no constraints exist
+        if table_schema.unique_constraints.is_empty() {
+            // Still check NOT NULL but skip if all columns are nullable
+            if !table_schema.columns.iter().any(|c| !c.nullable) {
+                return Ok(());
+            }
+        }
+
         for (index, column) in table_schema.columns.iter().enumerate() {
             if !column.nullable && matches!(row.get(index), Some(Datum::Null) | None) {
                 return Err(DustError::InvalidInput(format!(
@@ -704,6 +740,10 @@ impl PersistentEngine {
                     column.name
                 )));
             }
+        }
+
+        if table_schema.unique_constraints.is_empty() {
+            return Ok(());
         }
 
         for unique_group in &table_schema.unique_constraints {
@@ -2362,17 +2402,18 @@ fn resolve_column_index(columns: &[ColumnBinding], cref: &ColumnRef) -> Result<u
 }
 
 fn resolve_column_index_runtime(columns: &[ColumnBinding], cref: &ColumnRef) -> Option<usize> {
-    columns
-        .iter()
-        .enumerate()
-        .find(|(_, column)| {
-            column.column_name == cref.column.value
-                && cref
-                    .table
-                    .as_ref()
-                    .is_none_or(|table| column.matches_qualifier(&table.value))
-        })
-        .map(|(index, _)| index)
+    // Fast path: unqualified column name — linear scan but with early exit
+    let col_name = &cref.column.value;
+    if cref.table.is_none() {
+        // Unqualified: find first matching column name
+        columns.iter().position(|c| c.column_name == *col_name)
+    } else {
+        // Qualified: match both table and column
+        let table_name = cref.table.as_ref().unwrap();
+        columns
+            .iter()
+            .position(|c| c.column_name == *col_name && c.matches_qualifier(&table_name.value))
+    }
 }
 
 fn render_column_ref(cref: &ColumnRef) -> String {
