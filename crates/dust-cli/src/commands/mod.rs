@@ -1,6 +1,7 @@
 pub mod branch;
 pub mod doctor;
 pub mod explain;
+pub mod export;
 pub mod import;
 pub mod init;
 pub mod query;

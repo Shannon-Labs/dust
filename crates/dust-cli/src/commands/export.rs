@@ -54,7 +54,7 @@ fn export_dustdb(output_path: &Path) -> Result<()> {
 
     for table_name in &tables {
         let columns = engine
-            .query(&format!("SELECT * FROM [{table_name}] LIMIT 0"))
+            .query(&format!("SELECT * FROM \"{table_name}\" LIMIT 0"))
             .ok()
             .and_then(|output| match output {
                 dust_exec::QueryOutput::Rows { columns, .. } => Some(columns),
@@ -69,7 +69,7 @@ fn export_dustdb(output_path: &Path) -> Result<()> {
             .map_err(DustError::Io)?;
         writer.write_all(schema_bytes).map_err(DustError::Io)?;
 
-        let rows_output = engine.query(&format!("SELECT * FROM [{table_name}]"))?;
+        let rows_output = engine.query(&format!("SELECT * FROM \"{table_name}\""))?;
         let row_count = match &rows_output {
             dust_exec::QueryOutput::Rows { rows, .. } => rows.len(),
             _ => 0,
@@ -118,7 +118,7 @@ fn export_dustpack(output_path: &Path) -> Result<()> {
 
     for table_name in &tables {
         let columns = engine
-            .query(&format!("SELECT * FROM [{table_name}] LIMIT 0"))
+            .query(&format!("SELECT * FROM \"{table_name}\" LIMIT 0"))
             .ok()
             .and_then(|output| match output {
                 dust_exec::QueryOutput::Rows { columns, .. } => Some(columns),
@@ -132,10 +132,10 @@ fn export_dustpack(output_path: &Path) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ");
         schema_ddl.push_str(&format!(
-            "CREATE TABLE IF NOT EXISTS [{table_name}] ({col_defs});\n"
+            "CREATE TABLE IF NOT EXISTS \"{table_name}\" ({col_defs});\n"
         ));
 
-        let rows_output = engine.query(&format!("SELECT * FROM [{table_name}]"))?;
+        let rows_output = engine.query(&format!("SELECT * FROM \"{table_name}\""))?;
         if let dust_exec::QueryOutput::Rows { rows, .. } = &rows_output {
             total_rows += rows.len();
         }
@@ -202,7 +202,7 @@ fn export_dustdb_to_path(
 
     for table_name in tables {
         let columns = engine
-            .query(&format!("SELECT * FROM [{table_name}] LIMIT 0"))
+            .query(&format!("SELECT * FROM \"{table_name}\" LIMIT 0"))
             .ok()
             .and_then(|output| match output {
                 dust_exec::QueryOutput::Rows { columns, .. } => Some(columns),
@@ -217,7 +217,7 @@ fn export_dustdb_to_path(
             .map_err(DustError::Io)?;
         writer.write_all(schema_bytes).map_err(DustError::Io)?;
 
-        let rows_output = engine.query(&format!("SELECT * FROM [{table_name}]"))?;
+        let rows_output = engine.query(&format!("SELECT * FROM \"{table_name}\""))?;
         let row_count = match &rows_output {
             dust_exec::QueryOutput::Rows { rows, .. } => rows.len(),
             _ => 0,

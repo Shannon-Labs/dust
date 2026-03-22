@@ -68,7 +68,7 @@ pub fn run(file_path: &Path) -> Result<()> {
         let col_names: Vec<&str> = col_info.iter().map(|c| c.0.as_str()).collect();
         let col_types: Vec<&str> = col_info.iter().map(|c| c.1.as_str()).collect();
 
-        let select_sql = format!("SELECT {} FROM [{table_name}]", col_names.join(", "));
+        let select_sql = format!("SELECT {} FROM [{}]", col_names.join(", "), table_name);
         let mut sel_stmt = conn.prepare(&select_sql).map_err(|e| {
             DustError::InvalidInput(format!("failed to prepare SELECT for `{table_name}`: {e}"))
         })?;
@@ -151,8 +151,9 @@ fn flush_inserts(
         return Ok(0);
     }
     let col_list = col_names.join(", ");
+    let escaped_table = table_name.replace('"', "\"\"");
     let sql = format!(
-        "INSERT INTO [{table_name}] ({col_list}) VALUES {}",
+        "INSERT INTO \"{escaped_table}\" ({col_list}) VALUES {}",
         value_parts.join(", ")
     );
     engine.query(&sql)?;
@@ -160,12 +161,15 @@ fn flush_inserts(
 }
 
 fn get_column_info(conn: &rusqlite::Connection, table_name: &str) -> Result<Vec<(String, String)>> {
+    // PRAGMA does not support parameter binding — format the table name inline.
+    let escaped = table_name.replace('"', "\"\"");
+    let pragma_sql = format!("PRAGMA table_info(\"{escaped}\")");
     let mut stmt = conn
-        .prepare("PRAGMA table_info(?)")
+        .prepare(&pragma_sql)
         .map_err(|e| DustError::InvalidInput(format!("PRAGMA table_info failed: {e}")))?;
 
     let cols: Vec<(String, String)> = stmt
-        .query_map([table_name], |row| {
+        .query_map([], |row| {
             let name: String = row.get(1)?;
             let type_str: String = row.get(2).unwrap_or_else(|_| "TEXT".to_string());
             Ok((name, type_str.to_uppercase()))
@@ -199,13 +203,15 @@ fn convert_sqlite_create(sql: &str, table_name: &str) -> String {
     out = out.split_whitespace().collect::<Vec<_>>().join(" ");
 
     if !out.to_uppercase().starts_with("CREATE TABLE") {
-        out = format!("CREATE TABLE IF NOT EXISTS {table_name} (id INTEGER)")
+        let escaped = table_name.replace('"', "\"\"");
+        out = format!("CREATE TABLE IF NOT EXISTS \"{escaped}\" (id INTEGER)")
     }
 
     out
 }
 
 fn simplified_create_table(table_name: &str, conn: &rusqlite::Connection) -> String {
+    let escaped = table_name.replace('"', "\"\"");
     match get_column_info(conn, table_name) {
         Ok(cols) if !cols.is_empty() => {
             let col_defs: Vec<String> = cols
@@ -221,11 +227,11 @@ fn simplified_create_table(table_name: &str, conn: &rusqlite::Connection) -> Str
                 })
                 .collect();
             format!(
-                "CREATE TABLE IF NOT EXISTS [{table_name}] ({})",
+                "CREATE TABLE IF NOT EXISTS \"{escaped}\" ({})",
                 col_defs.join(", ")
             )
         }
-        _ => format!("CREATE TABLE IF NOT EXISTS [{table_name}] (id INTEGER)"),
+        _ => format!("CREATE TABLE IF NOT EXISTS \"{escaped}\" (id INTEGER)"),
     }
 }
 
@@ -262,5 +268,106 @@ mod tests {
     fn test_hex_encode() {
         assert_eq!(hex_encode(&[0xDE, 0xAD, 0xBE, 0xEF]), "DEADBEEF");
         assert_eq!(hex_encode(&[]), "");
+    }
+
+    #[test]
+    fn test_get_column_info_from_sqlite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sqlite_path = tmp.path().join("test.sqlite");
+
+        // Create a SQLite database with a table
+        let conn = rusqlite::Connection::open(&sqlite_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price REAL);
+             INSERT INTO items VALUES (1, 'Widget', 9.99);
+             INSERT INTO items VALUES (2, 'Gadget', 19.99);",
+        )
+        .unwrap();
+
+        let cols = get_column_info(&conn, "items").unwrap();
+        assert_eq!(cols.len(), 3);
+        assert_eq!(cols[0].0, "id");
+        assert_eq!(cols[0].1, "INTEGER");
+        assert_eq!(cols[1].0, "name");
+        assert_eq!(cols[1].1, "TEXT");
+        assert_eq!(cols[2].0, "price");
+        assert_eq!(cols[2].1, "REAL");
+    }
+
+    #[test]
+    fn test_read_sqlite_value_types() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sqlite_path = tmp.path().join("test.sqlite");
+
+        let conn = rusqlite::Connection::open(&sqlite_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE vals (i INTEGER, r REAL, t TEXT, b BLOB);
+             INSERT INTO vals VALUES (42, 3.14, 'hello', X'DEADBEEF');",
+        )
+        .unwrap();
+
+        let mut stmt = conn.prepare("SELECT i, r, t, b FROM vals").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+
+        match read_sqlite_value(row, 0, "INTEGER") {
+            SqlValue::Integer(v) => assert_eq!(v, 42),
+            other => panic!("expected Integer, got {:?}", std::mem::discriminant(&other)),
+        }
+        match read_sqlite_value(row, 1, "REAL") {
+            SqlValue::Real(v) => assert!((v - 3.14).abs() < 1e-10),
+            other => panic!("expected Real, got {:?}", std::mem::discriminant(&other)),
+        }
+        match read_sqlite_value(row, 2, "TEXT") {
+            SqlValue::Text(v) => assert_eq!(v, "hello"),
+            other => panic!("expected Text, got {:?}", std::mem::discriminant(&other)),
+        }
+        match read_sqlite_value(row, 3, "BLOB") {
+            SqlValue::Blob(v) => assert_eq!(v, vec![0xDE, 0xAD, 0xBE, 0xEF]),
+            other => panic!("expected Blob, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_import_sqlite_full_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sqlite_path = tmp.path().join("source.sqlite");
+
+        // Create a source SQLite database
+        let conn = rusqlite::Connection::open(&sqlite_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users (id INTEGER, name TEXT, active INTEGER);
+             INSERT INTO users VALUES (1, 'Alice', 1);
+             INSERT INTO users VALUES (2, 'Bob', 0);
+             CREATE TABLE orders (order_id INTEGER, user_id INTEGER, amount REAL);
+             INSERT INTO orders VALUES (100, 1, 49.99);",
+        )
+        .unwrap();
+        drop(conn);
+
+        // Set up a dust project directory so find_db_path works.
+        // We need to set cwd because import_sqlite::run uses find_db_path(cwd).
+        let project_dir = tmp.path().join("dust_project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let project = dust_core::ProjectPaths::new(&project_dir);
+        project.init(false).unwrap();
+
+        // Run the import from within the project directory
+        let original_dir = env::current_dir().unwrap();
+        env::set_current_dir(&project_dir).unwrap();
+        let result = run(&sqlite_path);
+        env::set_current_dir(&original_dir).unwrap();
+
+        assert!(result.is_ok(), "import_sqlite::run failed: {:?}", result.err());
+
+        // Verify data was imported by opening the dust engine
+        let db_path = dust_core::ProjectPaths::new(&project_dir).active_data_db_path();
+        let engine = PersistentEngine::open(&db_path).unwrap();
+
+        let tables = engine.table_names();
+        assert!(tables.contains(&"users".to_string()),
+            "expected 'users' table, got: {:?}", tables);
+        assert!(tables.contains(&"orders".to_string()),
+            "expected 'orders' table, got: {:?}", tables);
     }
 }

@@ -19,9 +19,14 @@ dust-mcp = { path = "../dust-mcp" }
 dust-sql = { path = "../dust-sql" }
 dust-store = { path = "../dust-store" }
 dust-types = { path = "../dust-types" }
+flate2 = "1"
 miette.workspace = true
 parquet.workspace = true
+rusqlite = { version = "0.35", features = ["bundled"] }
 rustyline.workspace = true
 serde_json.workspace = true
+tar = "0.4"
+tempfile.workspace = true
 tokio.workspace = true
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
 toml.workspace = true

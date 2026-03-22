@@ -1,0 +1,22 @@
+secondary_indexes = []
+
+[tables.orders]
+unique_constraints = []
+
+[[tables.orders.columns]]
+name = "order_id"
+nullable = true
+autoincrement = false
+type_name = "INTEGER"
+
+[[tables.orders.columns]]
+name = "user_id"
+nullable = true
+autoincrement = false
+type_name = "INTEGER"
+
+[[tables.orders.columns]]
+name = "amount"
+nullable = true
+autoincrement = false
+type_name = "REAL"

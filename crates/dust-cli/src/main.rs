@@ -1,5 +1,7 @@
 mod commands;
 mod format;
+mod import_postgres;
+mod import_sqlite;
 pub(crate) mod project;
 
 use clap::{Parser, Subcommand};
@@ -22,6 +24,7 @@ enum Commands {
     Doctor(commands::doctor::DoctorArgs),
     Branch(commands::branch::BranchArgs),
     Import(commands::import::ImportArgs),
+    Export(commands::export::ExportArgs),
     Status(commands::status::StatusArgs),
     /// Start the MCP (Model Context Protocol) server for AI agent integration
     Mcp,
@@ -40,6 +43,7 @@ fn main() -> miette::Result<()> {
         Commands::Doctor(args) => commands::doctor::run(args).into_diagnostic()?,
         Commands::Branch(args) => commands::branch::run(args).into_diagnostic()?,
         Commands::Import(args) => commands::import::run(args).into_diagnostic()?,
+        Commands::Export(args) => commands::export::run(args).into_diagnostic()?,
         Commands::Status(args) => commands::status::run(args).into_diagnostic()?,
         Commands::Mcp => dust_mcp::run(),
         Commands::Version => println!("dust {}", env!("CARGO_PKG_VERSION")),

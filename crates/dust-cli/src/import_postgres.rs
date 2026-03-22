@@ -73,7 +73,7 @@ async fn run_async(uri: &str) -> Result<()> {
         let col_names: Vec<String> = col_rows.iter().map(|r| r.get::<_, String>(0)).collect();
         let col_types: Vec<String> = col_rows.iter().map(|r| r.get::<_, String>(1)).collect();
 
-        let quoted_table_local = format!("[{}]", table_name.replace(']', "]]"));
+        let quoted_table_local = format!("\"{}\"", table_name.replace('"', "\"\""));
         let create_sql = format!(
             "CREATE TABLE IF NOT EXISTS {quoted_table_local} ({})",
             col_defs.join(", ")
@@ -130,8 +130,8 @@ fn flush_inserts(
     if value_parts.is_empty() {
         return Ok(0);
     }
-    let quoted_table = format!("[{}]", table_name.replace(']', "]]"));
-    let col_list = col_names.iter().map(|c| format!("[{}]", c.replace(']', "]]"))).collect::<Vec<_>>().join(", ");
+    let quoted_table = format!("\"{}\"", table_name.replace('"', "\"\""));
+    let col_list = col_names.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect::<Vec<_>>().join(", ");
     let sql = format!(
         "INSERT INTO {quoted_table} ({col_list}) VALUES {}",
         value_parts.join(", ")
@@ -249,9 +249,9 @@ mod tests {
 
     #[test]
     fn test_flush_inserts_quotes_identifiers() {
-        // Verify identifier quoting in flush_inserts SQL generation
-        let table = "test]table";
-        let quoted = format!("[{}]", table.replace(']', "]]"));
-        assert_eq!(quoted, "[test]]table]");
+        // Verify identifier quoting in flush_inserts SQL generation (double-quote style)
+        let table = "test\"table";
+        let quoted = format!("\"{}\"", table.replace('"', "\"\""));
+        assert_eq!(quoted, "\"test\"\"table\"");
     }
 }
