@@ -113,6 +113,22 @@ impl CatalogBuilder {
                 spec.name
             )));
         }
+        if spec.columns.is_empty() {
+            return Err(DustError::InvalidInput(format!(
+                "index `{}` must include at least one column",
+                spec.name
+            )));
+        }
+        if let Some(missing) = spec
+            .columns
+            .iter()
+            .find(|column| !table.columns.iter().any(|table_column| table_column.name == **column))
+        {
+            return Err(DustError::InvalidInput(format!(
+                "index `{}` references unknown column `{missing}` on table `{}`",
+                spec.name, table.name
+            )));
+        }
 
         let index = IndexDesc {
             id: IndexId::new(format!("idx_{:04}", self.indexes.len() + 1)),
@@ -475,5 +491,20 @@ mod tests {
             .register_table("users", vec![ColumnSpec::new("id", "UUID")])
             .expect_err("duplicate table should fail");
         assert!(error.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn rejects_indexes_for_unknown_columns() {
+        let mut builder = Catalog::builder();
+        builder
+            .register_table("users", vec![ColumnSpec::new("id", "UUID")])
+            .expect("table should register");
+
+        let mut spec = IndexSpec::new("users_missing_idx", "users");
+        spec.columns.push("missing".to_string());
+        let error = builder
+            .register_index(spec)
+            .expect_err("unknown column should fail");
+        assert!(error.to_string().contains("unknown column"));
     }
 }

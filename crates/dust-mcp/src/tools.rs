@@ -77,13 +77,11 @@ fn read_current_branch(refs_dir: &Path) -> String {
         .to_string()
 }
 
-fn branch_ref_path(root: &Path, branch: &str) -> PathBuf {
-    let branch = BranchName::new(branch).unwrap_or_else(|_| BranchName::main());
+fn branch_ref_path(root: &Path, branch: &BranchName) -> PathBuf {
     refs_dir(root).join(branch.as_path()).with_extension("ref")
 }
 
-fn branch_db_path(root: &Path, branch: &str) -> PathBuf {
-    let branch = BranchName::new(branch).unwrap_or_else(|_| BranchName::main());
+fn branch_db_path(root: &Path, branch: &BranchName) -> PathBuf {
     if branch.as_str() == BranchName::MAIN {
         workspace_dir(root).join("data.db")
     } else {
@@ -91,6 +89,19 @@ fn branch_db_path(root: &Path, branch: &str) -> PathBuf {
             .join("branches")
             .join(branch.as_path())
             .join("data.db")
+    }
+}
+
+fn quote_ident(name: &str) -> String {
+    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name
+            .chars()
+            .next()
+            .is_none_or(|c| c.is_ascii_digit())
+    {
+        name.to_string()
+    } else {
+        format!("\"{}\"", name.replace('"', "\"\""))
     }
 }
 
@@ -205,8 +216,7 @@ pub fn get_status(project_path: &Path) -> Result<ProjectStatus> {
     for name in &table_names {
         schema_desc.push_str(name);
         schema_desc.push(':');
-        if let Ok(output) =
-            engine.query(&format!("SELECT * FROM {name} WHERE 1=0"))
+        if let Ok(output) = engine.query(&format!("SELECT * FROM {} WHERE 1=0", quote_ident(name)))
         {
             let (columns, _) = output.into_string_rows();
             schema_desc.push_str(&columns.join(","));
@@ -268,13 +278,16 @@ pub fn get_schema(engine: &mut PersistentEngine, table: Option<&str>) -> Result<
     let mut ddl_parts = Vec::new();
     for name in &names {
         // Get columns by querying with WHERE 1=0
-        if let Ok(output) =
-            engine.query(&format!("SELECT * FROM {name} WHERE 1=0"))
+        if let Ok(output) = engine.query(&format!("SELECT * FROM {} WHERE 1=0", quote_ident(name)))
         {
             let (columns, _) = output.into_string_rows();
-            let col_defs: Vec<String> = columns.iter().map(|c| format!("  {c} TEXT")).collect();
+            let col_defs: Vec<String> = columns
+                .iter()
+                .map(|c| format!("  {} TEXT", quote_ident(c)))
+                .collect();
             ddl_parts.push(format!(
-                "CREATE TABLE {name} (\n{}\n);",
+                "CREATE TABLE {} (\n{}\n);",
+                quote_ident(name),
                 col_defs.join(",\n")
             ));
         }
@@ -329,9 +342,11 @@ fn collect_refs(
         } else if path.extension().is_some_and(|ext| ext == "ref") {
             let rel = path.strip_prefix(base).unwrap_or(&path);
             let name = rel.to_string_lossy().trim_end_matches(".ref").to_string();
+            let branch = BranchName::new(&name)
+                .map_err(|e| DustError::InvalidInput(format!("invalid branch ref `{name}`: {e}")))?;
             out.push(BranchListEntry {
-                name: name.clone(),
-                current: name == current,
+                name: branch.as_str().to_string(),
+                current: branch.as_str() == current,
             });
         }
     }
@@ -342,7 +357,7 @@ pub fn create_branch(project_path: &Path, name: &str) -> Result<()> {
     let root = find_project_root(project_path)
         .ok_or_else(|| DustError::Message("no dust project found — run `dust init` first".to_string()))?;
     let branch = BranchName::new(name)?;
-    let ref_path = branch_ref_path(&root, branch.as_str());
+    let ref_path = branch_ref_path(&root, &branch);
 
     if ref_path.exists() {
         return Err(DustError::InvalidInput(format!(
@@ -354,10 +369,10 @@ pub fn create_branch(project_path: &Path, name: &str) -> Result<()> {
     }
 
     let refs = refs_dir(&root);
-    let current_branch = read_current_branch(&refs);
+    let current_branch = BranchName::new(read_current_branch(&refs))?;
     let current_ref_path = branch_ref_path(&root, &current_branch);
     let current_db_path = ProjectPaths::new(&root).active_data_db_path();
-    let new_db_path = branch_db_path(&root, branch.as_str());
+    let new_db_path = branch_db_path(&root, &branch);
 
     if let Some(parent) = new_db_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -395,7 +410,7 @@ pub fn switch_branch(project_path: &Path, name: &str) -> Result<()> {
     let root = find_project_root(project_path)
         .ok_or_else(|| DustError::Message("no dust project found".to_string()))?;
     let branch = BranchName::new(name)?;
-    let ref_path = branch_ref_path(&root, branch.as_str());
+    let ref_path = branch_ref_path(&root, &branch);
 
     if !ref_path.exists() {
         return Err(DustError::InvalidInput(format!(

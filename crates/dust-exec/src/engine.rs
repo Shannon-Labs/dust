@@ -189,12 +189,12 @@ impl ExecutionEngine {
         let mut last_output = None;
         for statement in &program.statements {
             // Deterministic mode check
-            if self.deterministic_mode {
-                if let Err(fn_name) = check_statement_deterministic(statement) {
-                    return Err(DustError::InvalidInput(format!(
-                        "non-deterministic function `{fn_name}` is not allowed in deterministic mode"
-                    )));
-                }
+            if self.deterministic_mode
+                && let Err(fn_name) = check_statement_deterministic(statement)
+            {
+                return Err(DustError::InvalidInput(format!(
+                    "non-deterministic function `{fn_name}` is not allowed in deterministic mode"
+                )));
             }
             let binding = bind_statement(&self.storage, statement);
             if let Some(error) = binding.errors.first() {
@@ -243,8 +243,13 @@ impl ExecutionEngine {
             AstStatement::CreateIndex(index) => self.execute_create_index(index),
             AstStatement::DropTable(drop) => {
                 let name = &drop.name.value;
-                if drop.if_exists && !self.storage.has_table(name) {
-                    return Ok(QueryOutput::Message("DROP TABLE".to_string()));
+                if !self.storage.has_table(name) {
+                    if drop.if_exists {
+                        return Ok(QueryOutput::Message("DROP TABLE".to_string()));
+                    }
+                    return Err(DustError::InvalidInput(format!(
+                        "table `{name}` does not exist"
+                    )));
                 }
                 self.storage.drop_table(name);
                 Ok(QueryOutput::Message("DROP TABLE".to_string()))
@@ -685,66 +690,65 @@ impl ExecutionEngine {
         self.catalog.register_index_from_ast(index)?;
 
         // If USING HNSW, create an in-memory HNSW index
-        if let Some(ref using) = index.using {
-            if using.value.eq_ignore_ascii_case("hnsw") {
-                let table_name = &index.table.value;
-                let index_name = &index.name.value;
-                // Require exactly one column for HNSW
-                if index.columns.len() != 1 {
-                    return Err(DustError::InvalidInput(
-                        "HNSW index requires exactly one vector column".to_string(),
-                    ));
-                }
-                let col_expr = &index.columns[0].expression;
-                let col_name = col_expr
-                    .first()
-                    .map(|f| f.text.clone())
-                    .unwrap_or_default();
+        if let Some(ref using) = index.using
+            && using.value.eq_ignore_ascii_case("hnsw")
+        {
+            let table_name = &index.table.value;
+            let index_name = &index.name.value;
+            // Require exactly one column for HNSW
+            if index.columns.len() != 1 {
+                return Err(DustError::InvalidInput(
+                    "HNSW index requires exactly one vector column".to_string(),
+                ));
+            }
+            let col_expr = &index.columns[0].expression;
+            let col_name = col_expr
+                .first()
+                .map(|f| f.text.clone())
+                .unwrap_or_default();
 
-                // Try to infer dimensions from existing data
-                let dimensions = if let Some(store) = self.storage.table(table_name) {
-                    if let Some(col_idx) = store.column_index(&col_name) {
-                        store
-                            .rows
-                            .first()
-                            .and_then(|row| {
-                                let val = &row[col_idx];
-                                vector::parse_vector(&val.to_string())
-                                    .map(|v| v.len())
-                            })
-                            .unwrap_or(0)
-                    } else {
-                        0
-                    }
+            // Try to infer dimensions from existing data
+            let dimensions = if let Some(store) = self.storage.table(table_name) {
+                if let Some(col_idx) = store.column_index(&col_name) {
+                    store
+                        .rows
+                        .first()
+                        .and_then(|row| {
+                            let val = &row[col_idx];
+                            vector::parse_vector(&val.to_string()).map(|v| v.len())
+                        })
+                        .unwrap_or(0)
                 } else {
                     0
-                };
+                }
+            } else {
+                0
+            };
 
-                let hnsw = self.hnsw_registry.create_index(
-                    index_name,
-                    table_name,
-                    &col_name,
-                    dimensions,
-                    DistanceMetric::Euclidean,
-                );
+            let hnsw = self.hnsw_registry.create_index(
+                index_name,
+                table_name,
+                &col_name,
+                dimensions,
+                DistanceMetric::Euclidean,
+            );
 
-                // Index existing rows
-                if let Some(store) = self.storage.table(table_name) {
-                    if let Some(col_idx) = store.column_index(&col_name) {
-                        for row in &store.rows {
-                            let val_str = row[col_idx].to_string();
-                            if let Some(v) = vector::parse_vector(&val_str) {
-                                hnsw.insert(v);
-                            }
-                        }
+            // Index existing rows
+            if let Some(store) = self.storage.table(table_name)
+                && let Some(col_idx) = store.column_index(&col_name)
+            {
+                for row in &store.rows {
+                    let val_str = row[col_idx].to_string();
+                    if let Some(v) = vector::parse_vector(&val_str) {
+                        hnsw.insert(v);
                     }
                 }
-
-                return Ok(QueryOutput::Message(format!(
-                    "CREATE INDEX (HNSW on {table_name}.{col_name}, {} vectors indexed)",
-                    hnsw.len()
-                )));
             }
+
+            return Ok(QueryOutput::Message(format!(
+                "CREATE INDEX (HNSW on {table_name}.{col_name}, {} vectors indexed)",
+                hnsw.len()
+            )));
         }
 
         Ok(QueryOutput::Message("CREATE INDEX".to_string()))
@@ -1775,23 +1779,38 @@ fn eval_binary_op(op: BinOp, left: &Value, right: &Value) -> Value {
             _ => Value::Null,
         },
         BinOp::Add => match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => Value::Integer(a + b),
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_add(*b)
+                .map(Value::Integer)
+                .unwrap_or(Value::Null),
             _ => Value::Null,
         },
         BinOp::Sub => match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => Value::Integer(a - b),
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_sub(*b)
+                .map(Value::Integer)
+                .unwrap_or(Value::Null),
             _ => Value::Null,
         },
         BinOp::Mul => match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => Value::Integer(a * b),
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_mul(*b)
+                .map(Value::Integer)
+                .unwrap_or(Value::Null),
             _ => Value::Null,
         },
         BinOp::Div => match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) if *b != 0 => Value::Integer(a / b),
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_div(*b)
+                .map(Value::Integer)
+                .unwrap_or(Value::Null),
             _ => Value::Null,
         },
         BinOp::Mod => match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) if *b != 0 => Value::Integer(a % b),
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_rem(*b)
+                .map(Value::Integer)
+                .unwrap_or(Value::Null),
             _ => Value::Null,
         },
         BinOp::Concat => match (left, right) {
@@ -1819,7 +1838,10 @@ fn like_match(s: &str, pattern: &str) -> bool {
                     // Try matching rest of pattern at every position
                     let remaining_pattern: String = p.collect();
                     let remaining_str: String = s.collect();
-                    for i in 0..=remaining_str.len() {
+                    let mut split_points =
+                        remaining_str.char_indices().map(|(index, _)| index).collect::<Vec<_>>();
+                    split_points.push(remaining_str.len());
+                    for i in split_points {
                         if like_match(&remaining_str[i..], &remaining_pattern) {
                             return true;
                         }
@@ -3469,5 +3491,37 @@ mod tests {
             err.contains("unsupported function language"),
             "Expected language error, got: {err}"
         );
+    }
+
+    #[test]
+    fn drop_table_without_if_exists_errors_when_missing() {
+        let mut engine = new_engine();
+        let err = engine.query("DROP TABLE missing").unwrap_err().to_string();
+        assert!(err.contains("does not exist"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn like_match_handles_unicode_without_panicking() {
+        let mut engine = new_engine();
+        let output = engine.query("SELECT 'été' LIKE '%té'").unwrap();
+        match output {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows.len(), 1);
+                assert!(rows[0][0].eq_ignore_ascii_case("true"));
+            }
+            other => panic!("expected Rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn integer_overflow_returns_null_instead_of_panicking() {
+        let mut engine = new_engine();
+        let output = engine.query("SELECT 9223372036854775807 + 1").unwrap();
+        match output {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows[0][0], "NULL");
+            }
+            other => panic!("expected Rows, got {other:?}"),
+        }
     }
 }

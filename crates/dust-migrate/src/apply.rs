@@ -62,8 +62,9 @@ pub fn collect_migration_files(migrations_dir: &Path) -> Result<Vec<(String, std
     for entry in fs::read_dir(migrations_dir)? {
         let entry = entry?;
         let path = entry.path();
+        let file_type = entry.file_type()?;
 
-        if path.is_file() {
+        if file_type.is_file() {
             if let Some(name) = path.file_name() {
                 let name_str = name.to_string_lossy();
                 if let Some(id) = parse_migration_id(&name_str) {
@@ -208,5 +209,19 @@ mod tests {
 
         let applied = apply_migrations(&migrations_dir, &mut lock, &mut executor).unwrap();
         assert!(applied.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_migration_files_ignores_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside.up.sql");
+        fs::write(&outside, "CREATE TABLE injected (id INT);\n").unwrap();
+        symlink(&outside, dir.path().join("0001_symlink.up.sql")).unwrap();
+
+        let files = collect_migration_files(dir.path()).unwrap();
+        assert!(files.is_empty(), "symlinked migration should be ignored");
     }
 }

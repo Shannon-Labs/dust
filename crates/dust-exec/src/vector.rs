@@ -285,10 +285,10 @@ impl HnswIndex {
 
         while let Some(Reverse((OrderedFloat(c_dist), c_id))) = candidates.pop() {
             // If closest candidate is farther than farthest result, stop
-            if let Some(&(OrderedFloat(f_dist), _)) = results.peek() {
-                if c_dist > f_dist && results.len() >= ef {
-                    break;
-                }
+            if let Some(&(OrderedFloat(f_dist), _)) = results.peek()
+                && c_dist > f_dist && results.len() >= ef
+            {
+                break;
             }
 
             if layer < self.nodes[c_id].connections.len() {

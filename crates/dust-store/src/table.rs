@@ -610,36 +610,83 @@ fn read_meta_descriptors(pager: &mut Pager) -> Result<Vec<TableDescriptor>> {
         return Ok(Vec::new());
     }
 
+    fn take_bytes<'a>(
+        data: &'a [u8],
+        offset: &mut usize,
+        len: usize,
+        field: &str,
+    ) -> Result<&'a [u8]> {
+        if data.len().saturating_sub(*offset) < len {
+            return Err(DustError::InvalidInput(format!(
+                "corrupt table metadata: missing {field}"
+            )));
+        }
+        let bytes = &data[*offset..*offset + len];
+        *offset += len;
+        Ok(bytes)
+    }
+
     let mut offset = 0;
-    let table_count = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-    offset += 4;
+    let table_count = u32::from_le_bytes(
+        take_bytes(data, &mut offset, 4, "table count")?
+            .try_into()
+            .expect("fixed-length slice"),
+    ) as usize;
+    let max_tables = data.len() / 20 + 1;
+    if table_count > max_tables {
+        return Err(DustError::InvalidInput(format!(
+            "corrupt table metadata: unreasonable table count {table_count}"
+        )));
+    }
 
     let mut descriptors = Vec::with_capacity(table_count);
 
     for _ in 0..table_count {
-        if offset + 2 > data.len() {
-            break;
-        }
-        let name_len = u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap()) as usize;
-        offset += 2;
-        let name = String::from_utf8_lossy(&data[offset..offset + name_len]).to_string();
-        offset += name_len;
+        let name_len = u16::from_le_bytes(
+            take_bytes(data, &mut offset, 2, "table name length")?
+                .try_into()
+                .expect("fixed-length slice"),
+        ) as usize;
+        let name = String::from_utf8_lossy(take_bytes(
+            data,
+            &mut offset,
+            name_len,
+            "table name",
+        )?)
+        .to_string();
 
-        let root_page_id = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-        offset += 8;
+        let root_page_id = u64::from_le_bytes(
+            take_bytes(data, &mut offset, 8, "root page id")?
+                .try_into()
+                .expect("fixed-length slice"),
+        );
 
-        let next_rowid = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-        offset += 8;
+        let next_rowid = u64::from_le_bytes(
+            take_bytes(data, &mut offset, 8, "next rowid")?
+                .try_into()
+                .expect("fixed-length slice"),
+        );
 
-        let col_count = u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap()) as usize;
-        offset += 2;
+        let col_count = u16::from_le_bytes(
+            take_bytes(data, &mut offset, 2, "column count")?
+                .try_into()
+                .expect("fixed-length slice"),
+        ) as usize;
 
         let mut columns = Vec::with_capacity(col_count);
         for _ in 0..col_count {
-            let col_len = u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap()) as usize;
-            offset += 2;
-            let col = String::from_utf8_lossy(&data[offset..offset + col_len]).to_string();
-            offset += col_len;
+            let col_len = u16::from_le_bytes(
+                take_bytes(data, &mut offset, 2, "column name length")?
+                    .try_into()
+                    .expect("fixed-length slice"),
+            ) as usize;
+            let col = String::from_utf8_lossy(take_bytes(
+                data,
+                &mut offset,
+                col_len,
+                "column name",
+            )?)
+            .to_string();
             columns.push(col);
         }
 

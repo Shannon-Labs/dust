@@ -331,18 +331,33 @@ pub fn pull_branch(
             if local_known_hashes.contains(entry_hash) {
                 // Even if we already have it locally, we still need the page
                 // data for data.db reconstruction if it is a Page entry.
-                let entry = reader.get(entry_hash).unwrap();
+                let entry = reader.get(entry_hash).ok_or_else(|| {
+                    dust_types::DustError::InvalidInput(
+                        "remote pack index referenced a missing entry".to_string(),
+                    )
+                })?;
                 if entry.kind == PackEntryKind::Page {
-                    if let Some(data) = reader.read_entry(&entry) {
-                        if data.len() == PAGE_SIZE {
-                            page_entries.push(data);
-                        }
+                    let data = reader.read_entry(&entry).ok_or_else(|| {
+                        dust_types::DustError::InvalidInput(
+                            "remote pack page entry could not be read".to_string(),
+                        )
+                    })?;
+                    if data.len() == PAGE_SIZE {
+                        page_entries.push(data);
                     }
                 }
                 continue;
             }
-            let entry = reader.get(entry_hash).unwrap();
-            let data = reader.read_entry(&entry).unwrap();
+            let entry = reader.get(entry_hash).ok_or_else(|| {
+                dust_types::DustError::InvalidInput(
+                    "remote pack index referenced a missing entry".to_string(),
+                )
+            })?;
+            let data = reader.read_entry(&entry).ok_or_else(|| {
+                dust_types::DustError::InvalidInput(
+                    "remote pack entry could not be read".to_string(),
+                )
+            })?;
 
             match entry.kind {
                 PackEntryKind::Page => {

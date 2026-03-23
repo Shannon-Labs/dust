@@ -1,6 +1,7 @@
 use dust_types::SchemaFingerprint;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 
 use crate::metadata::{ArtifactFingerprintRecord, MigrationHeadRecord, SchemaObjectRecord};
@@ -51,7 +52,30 @@ impl DustLock {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, self.to_toml().map_err(std::io::Error::other)?)
+        if path.exists() && fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("refusing to write lockfile through symlink: {}", path.display()),
+            ));
+        }
+
+        let contents = self.to_toml().map_err(std::io::Error::other)?;
+        let temp_path = path.with_extension(format!("{}.tmp", std::process::id()));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp_path, path)?;
+        if let Some(parent) = path.parent()
+            && let Ok(parent_dir) = fs::File::open(parent)
+        {
+            let _ = parent_dir.sync_all();
+        }
+        Ok(())
     }
 
     pub fn read_from_path(path: impl AsRef<Path>) -> Result<Self, ReadLockError> {
@@ -112,5 +136,21 @@ mod tests {
 
         assert_eq!(decoded.schema_fingerprint, lock.schema_fingerprint);
         assert!(decoded.schema_objects.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lockfile_write_rejects_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let target = dir.path().join("real.lock");
+        let link = dir.path().join("dust.lock");
+        std::fs::write(&target, "seed").expect("seed target");
+        symlink(&target, &link).expect("symlink");
+
+        let lock = DustLock::from_schema("create table users (id uuid primary key);");
+        let err = lock.write_to_path(&link).expect_err("symlink write should fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

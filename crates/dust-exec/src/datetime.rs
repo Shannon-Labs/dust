@@ -87,7 +87,7 @@ impl DateTime {
         }
     }
 
-    fn to_unix(&self) -> i64 {
+    fn to_unix(self) -> i64 {
         // Convert date-time components to unix timestamp (UTC).
         let y = if self.month <= 2 {
             self.year as i64 - 1
@@ -111,7 +111,7 @@ impl DateTime {
         days * 86400 + self.hour as i64 * 3600 + self.minute as i64 * 60 + self.second as i64
     }
 
-    fn to_julian_day(&self) -> f64 {
+    fn to_julian_day(self) -> f64 {
         // Julian day number: days since -4713-11-24 12:00:00 UTC.
         let unix = self.to_unix() as f64;
         // Unix epoch (1970-01-01 00:00:00) = Julian day 2440587.5

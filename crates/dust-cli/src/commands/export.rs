@@ -41,7 +41,7 @@ fn export_dustdb(output_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let file = File::create(output_path).map_err(|e| DustError::Io(e))?;
+    let file = File::create(output_path).map_err(DustError::Io)?;
     let mut writer = BufWriter::new(file);
 
     writer.write_all(b"DUSTDB").map_err(DustError::Io)?;
@@ -58,6 +58,7 @@ fn export_dustdb(output_path: &Path) -> Result<()> {
             .ok()
             .and_then(|output| match output {
                 dust_exec::QueryOutput::Rows { columns, .. } => Some(columns),
+                dust_exec::QueryOutput::RowsTyped { columns, .. } => Some(columns),
                 _ => None,
             })
             .unwrap_or_default();
@@ -111,7 +112,7 @@ fn export_dustpack(output_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let tmp_dir = tempfile::tempdir().map_err(|e| DustError::Io(e))?;
+    let tmp_dir = tempfile::tempdir().map_err(DustError::Io)?;
 
     let mut total_rows = 0usize;
     let mut schema_ddl = String::new();
@@ -122,6 +123,7 @@ fn export_dustpack(output_path: &Path) -> Result<()> {
             .ok()
             .and_then(|output| match output {
                 dust_exec::QueryOutput::Rows { columns, .. } => Some(columns),
+                dust_exec::QueryOutput::RowsTyped { columns, .. } => Some(columns),
                 _ => None,
             })
             .unwrap_or_default();
@@ -297,10 +299,10 @@ fn parse_output_value(val_str: &str, _columns: &[String], _col_idx: usize) -> Da
         return Datum::Boolean(false);
     }
     // Blob in hex format: x'deadbeef'
-    if let Some(hex_body) = val_str.strip_prefix("x'").and_then(|s| s.strip_suffix('\'')) {
-        if let Some(bytes) = hex_decode(hex_body) {
-            return Datum::Blob(bytes);
-        }
+    if let Some(hex_body) = val_str.strip_prefix("x'").and_then(|s| s.strip_suffix('\''))
+        && let Some(bytes) = hex_decode(hex_body)
+    {
+        return Datum::Blob(bytes);
     }
     if let Ok(i) = val_str.parse::<i64>() {
         return Datum::Integer(i);
@@ -312,7 +314,7 @@ fn parse_output_value(val_str: &str, _columns: &[String], _col_idx: usize) -> Da
 }
 
 fn hex_decode(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     let mut bytes = Vec::with_capacity(hex.len() / 2);

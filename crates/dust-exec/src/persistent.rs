@@ -502,11 +502,23 @@ impl PersistentEngine {
                 })
             }
             Expr::Subquery { query, span } => {
-                // Execute as scalar subquery — return first column of first row
+                // Execute as scalar subquery — it must yield at most one row and one column.
                 let result = self.execute_select(query)?;
-                let (_, string_rows) = result.into_string_rows();
-                if let Some(row) = string_rows.into_iter().next()
-                    && let Some(v) = row.into_iter().next() {
+                let (columns, string_rows) = result.into_string_rows();
+                if columns.len() > 1 {
+                    return Err(DustError::InvalidInput(
+                        "scalar subquery must return exactly one column".to_string(),
+                    ));
+                }
+
+                let mut rows = string_rows.into_iter();
+                if let Some(row) = rows.next() {
+                    if rows.next().is_some() {
+                        return Err(DustError::InvalidInput(
+                            "scalar subquery returned more than one row".to_string(),
+                        ));
+                    }
+                    if let Some(v) = row.into_iter().next() {
                         if v == "NULL" {
                             return Ok(Expr::Null(*span));
                         } else if let Ok(i) = v.parse::<i64>() {
@@ -521,6 +533,7 @@ impl PersistentEngine {
                             });
                         }
                     }
+                }
                 Ok(Expr::Null(*span))
             }
             Expr::BinaryOp {
@@ -2618,15 +2631,13 @@ fn resolve_column_index(columns: &[ColumnBinding], cref: &ColumnRef) -> Result<u
 fn resolve_column_index_runtime(columns: &[ColumnBinding], cref: &ColumnRef) -> Option<usize> {
     // Fast path: unqualified column name — linear scan but with early exit
     let col_name = &cref.column.value;
-    if cref.table.is_none() {
-        // Unqualified: find first matching column name
-        columns.iter().position(|c| c.column_name == *col_name)
-    } else {
-        // Qualified: match both table and column
-        let table_name = cref.table.as_ref().unwrap();
+    if let Some(table_name) = &cref.table {
         columns
             .iter()
             .position(|c| c.column_name == *col_name && c.matches_qualifier(&table_name.value))
+    } else {
+        // Unqualified: find first matching column name
+        columns.iter().position(|c| c.column_name == *col_name)
     }
 }
 
@@ -3837,6 +3848,21 @@ mod tests {
             }
             other => panic!("expected Rows, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn scalar_subquery_in_projection_errors_on_multiple_rows() {
+        let (mut engine, _dir) = temp_engine();
+        engine.query("CREATE TABLE t (x INTEGER)").unwrap();
+        engine.query("INSERT INTO t VALUES (1), (2)").unwrap();
+        let err = engine
+            .query("SELECT (SELECT x FROM t)")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("more than one row"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

@@ -58,6 +58,12 @@ pub fn plan_migration(schema_before: &str, schema_after: &str) -> Result<Option<
                         quote(&after.name)
                     ));
                 }
+                SchemaObjectKind::Index => {
+                    if let Some(index) = catalog_after.index(&after.name) {
+                        statements.push(format!("DROP INDEX IF EXISTS {};", quote(&before.name)));
+                        statements.push(generate_create_index(index));
+                    }
+                }
                 _ => {}
             },
             ObjectChange::Modified { before: _, after } => match after.kind {
@@ -67,6 +73,18 @@ pub fn plan_migration(schema_before: &str, schema_after: &str) -> Result<Option<
                         catalog_after.table(&after.name),
                     ) {
                         statements.push(generate_alter_table(table_before, table_after));
+                    }
+                }
+                SchemaObjectKind::Index => {
+                    if let (Some(index_before), Some(index_after)) = (
+                        catalog_before.index_by_id_str(&after.object_id),
+                        catalog_after.index(&after.name),
+                    ) {
+                        statements.push(format!(
+                            "DROP INDEX IF EXISTS {};",
+                            quote(&index_before.name)
+                        ));
+                        statements.push(generate_create_index(index_after));
                     }
                 }
                 _ => {}
@@ -89,11 +107,16 @@ pub fn plan_migration(schema_before: &str, schema_after: &str) -> Result<Option<
 
 trait CatalogByIdExt {
     fn table_by_id_str(&self, id: &str) -> Option<&TableDesc>;
+    fn index_by_id_str(&self, id: &str) -> Option<&IndexDesc>;
 }
 
 impl CatalogByIdExt for Catalog {
     fn table_by_id_str(&self, id: &str) -> Option<&TableDesc> {
         self.tables().iter().find(|t| t.id.to_string() == id)
+    }
+
+    fn index_by_id_str(&self, id: &str) -> Option<&IndexDesc> {
+        self.indexes().iter().find(|index| index.id.to_string() == id)
     }
 }
 
@@ -282,10 +305,43 @@ fn generate_alter_table(before: &TableDesc, after: &TableDesc) -> String {
                     )),
                 }
             }
+            if col_before.unique != col_after.unique {
+                let unique_group = vec![col_after.name.clone()];
+                if col_after.unique {
+                    parts.push(generate_add_unique_index(&before.name, &unique_group));
+                } else {
+                    parts.push(generate_drop_unique_index(&before.name, &unique_group));
+                }
+            }
             for stmt in parts {
                 statements.push(format!("{stmt};"));
             }
         }
+    }
+
+    let before_unique_constraints = before
+        .unique_constraints
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let after_unique_constraints = after
+        .unique_constraints
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+
+    for unique in after_unique_constraints.difference(&before_unique_constraints) {
+        statements.push(format!(
+            "{};",
+            generate_add_unique_index(&before.name, unique)
+        ));
+    }
+
+    for unique in before_unique_constraints.difference(&after_unique_constraints) {
+        statements.push(format!(
+            "{};",
+            generate_drop_unique_index(&before.name, unique)
+        ));
     }
 
     statements.join("\n")
@@ -297,8 +353,37 @@ fn quote(name: &str) -> String {
     {
         name.to_string()
     } else {
-        format!("\"{name}\"")
+        format!("\"{}\"", name.replace('"', "\"\""))
     }
+}
+
+fn generated_unique_index_name(table: &str, columns: &[String]) -> String {
+    let raw = format!("{table}_{}_unique", columns.join("_"));
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn generate_add_unique_index(table: &str, columns: &[String]) -> String {
+    format!(
+        "CREATE UNIQUE INDEX {} ON {} ({})",
+        quote(&generated_unique_index_name(table, columns)),
+        quote(table),
+        columns.iter().map(|column| quote(column)).collect::<Vec<_>>().join(", ")
+    )
+}
+
+fn generate_drop_unique_index(table: &str, columns: &[String]) -> String {
+    format!(
+        "DROP INDEX IF EXISTS {}",
+        quote(&generated_unique_index_name(table, columns))
+    )
 }
 
 #[cfg(test)]
@@ -399,5 +484,26 @@ mod tests {
         assert_ne!(result.old_fingerprint, result.new_fingerprint);
         assert!(!result.old_fingerprint.as_str().is_empty());
         assert!(!result.new_fingerprint.as_str().is_empty());
+    }
+
+    #[test]
+    fn modified_index_change_generates_rebuild() {
+        let before =
+            "CREATE TABLE users (id UUID PRIMARY KEY);\nCREATE INDEX users_idx ON users (id);";
+        let after = "CREATE TABLE users (id UUID PRIMARY KEY);\nCREATE INDEX users_idx ON users USING HNSW (id);";
+
+        let result = plan_migration(before, after).unwrap().unwrap();
+        assert!(result.migration_sql.contains("DROP INDEX IF EXISTS users_idx"));
+        assert!(result.migration_sql.contains("CREATE INDEX users_idx ON users USING HNSW"));
+    }
+
+    #[test]
+    fn unique_constraint_change_generates_unique_index() {
+        let before = "CREATE TABLE users (id UUID PRIMARY KEY, email TEXT);";
+        let after = "CREATE TABLE users (id UUID PRIMARY KEY, email TEXT UNIQUE);";
+
+        let result = plan_migration(before, after).unwrap().unwrap();
+        assert!(result.migration_sql.contains("CREATE UNIQUE INDEX"));
+        assert!(result.migration_sql.contains("email"));
     }
 }

@@ -56,14 +56,42 @@ pub fn run(args: ServeArgs) -> Result<()> {
     })
 }
 
+fn frame_body_len(len: i32, context: &str) -> std::io::Result<usize> {
+    if len < 4 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{context} frame length {len} is invalid"),
+        ));
+    }
+    Ok(len as usize - 4)
+}
+
+fn command_tag(sql_lower: &str, row_count: usize) -> String {
+    if sql_lower.starts_with("insert") {
+        format!("INSERT 0 {row_count}")
+    } else if sql_lower.starts_with("update") {
+        format!("UPDATE {row_count}")
+    } else if sql_lower.starts_with("delete") {
+        format!("DELETE {row_count}")
+    } else {
+        format!("SELECT {row_count}")
+    }
+}
+
 async fn handle_connection(
     mut stream: tokio::net::TcpStream,
     engine: Arc<Mutex<PersistentEngine>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Phase 1: Startup
-    let startup_len = stream.read_i32().await? as usize;
-    let mut startup_buf = vec![0u8; startup_len - 4];
+    let startup_len = frame_body_len(stream.read_i32().await?, "startup")?;
+    let mut startup_buf = vec![0u8; startup_len];
     stream.read_exact(&mut startup_buf).await?;
+    if startup_buf.len() < 4 {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "startup frame is missing protocol version bytes",
+        )));
+    }
 
     let protocol_version = i32::from_be_bytes(startup_buf[0..4].try_into()?);
 
@@ -72,9 +100,15 @@ async fn handle_connection(
         // Reject SSL with 'N'
         stream.write_all(b"N").await?;
         // Read the real startup message
-        let startup_len = stream.read_i32().await? as usize;
-        let mut startup_buf = vec![0u8; startup_len - 4];
+        let startup_len = frame_body_len(stream.read_i32().await?, "startup")?;
+        let mut startup_buf = vec![0u8; startup_len];
         stream.read_exact(&mut startup_buf).await?;
+        if startup_buf.len() < 4 {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "startup frame is missing protocol version bytes",
+            )));
+        }
     }
 
     // Send AuthenticationOk
@@ -97,8 +131,8 @@ async fn handle_connection(
         match msg_type {
             b'Q' => {
                 // Simple Query
-                let len = stream.read_i32().await? as usize;
-                let mut buf = vec![0u8; len - 4];
+                let len = frame_body_len(stream.read_i32().await?, "query")?;
+                let mut buf = vec![0u8; len];
                 stream.read_exact(&mut buf).await?;
                 // Remove trailing null byte
                 if buf.last() == Some(&0) {
@@ -148,11 +182,7 @@ async fn handle_connection(
                         for row in &rows {
                             send_data_row(&mut stream, row).await?;
                         }
-                        let tag = if lower.starts_with("select") {
-                            format!("SELECT {}", rows.len())
-                        } else {
-                            "SELECT".to_string()
-                        };
+                        let tag = command_tag(&lower, rows.len());
                         send_command_complete(&mut stream, &tag).await?;
                     }
                     Ok(QueryOutput::RowsTyped { columns, rows }) => {
@@ -162,11 +192,7 @@ async fn handle_connection(
                                 row.iter().map(|d| d.to_string()).collect();
                             send_data_row(&mut stream, &string_row).await?;
                         }
-                        let tag = if lower.starts_with("select") {
-                            format!("SELECT {}", rows.len())
-                        } else {
-                            "SELECT".to_string()
-                        };
+                        let tag = command_tag(&lower, rows.len());
                         send_command_complete(&mut stream, &tag).await?;
                     }
                     Ok(QueryOutput::Message(msg)) => {
@@ -185,8 +211,8 @@ async fn handle_connection(
             }
             _ => {
                 // Unknown message type — skip it
-                let len = stream.read_i32().await? as usize;
-                let mut buf = vec![0u8; len - 4];
+                let len = frame_body_len(stream.read_i32().await?, "message")?;
+                let mut buf = vec![0u8; len];
                 stream.read_exact(&mut buf).await?;
             }
         }
@@ -344,4 +370,24 @@ async fn send_error(
     msg.extend_from_slice(&body);
     stream.write_all(&msg).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command_tag, frame_body_len};
+
+    #[test]
+    fn rejects_short_frames() {
+        assert!(frame_body_len(0, "query").is_err());
+        assert!(frame_body_len(3, "query").is_err());
+        assert_eq!(frame_body_len(4, "query").unwrap(), 0);
+    }
+
+    #[test]
+    fn command_tag_matches_returning_statements() {
+        assert_eq!(command_tag("select * from t", 2), "SELECT 2");
+        assert_eq!(command_tag("insert into t returning *", 1), "INSERT 0 1");
+        assert_eq!(command_tag("update t set x = 1 returning *", 3), "UPDATE 3");
+        assert_eq!(command_tag("delete from t returning *", 4), "DELETE 4");
+    }
 }

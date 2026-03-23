@@ -146,9 +146,9 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
     let mut index = 0;
 
     while index < bytes.len() {
-        let ch = bytes[index] as char;
-        if ch.is_ascii_whitespace() {
-            index += 1;
+        let ch = input[index..].chars().next().expect("valid utf-8");
+        if ch.is_whitespace() {
+            index += ch.len_utf8();
             continue;
         }
 
@@ -366,9 +366,13 @@ pub fn lex(input: &str) -> Result<Vec<Token>> {
                 make(TokenKind::Number, input, start, index)
             }
             _ if is_ident_start(ch) => {
-                index += 1;
-                while index < bytes.len() && is_ident_continue(bytes[index] as char) {
-                    index += 1;
+                index += ch.len_utf8();
+                while index < bytes.len() {
+                    let next = input[index..].chars().next().expect("valid utf-8");
+                    if !is_ident_continue(next) {
+                        break;
+                    }
+                    index += next.len_utf8();
                 }
                 let text = &input[start..index];
                 let kind = keyword(text)
@@ -401,11 +405,11 @@ fn make(kind: TokenKind, input: &str, start: usize, end: usize) -> Token {
 }
 
 fn is_ident_start(ch: char) -> bool {
-    ch.is_ascii_alphabetic() || ch == '_'
+    ch == '_' || ch.is_alphabetic()
 }
 
 fn is_ident_continue(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+    ch == '_' || ch == '$' || ch.is_alphanumeric()
 }
 
 fn keyword(text: &str) -> Option<Keyword> {

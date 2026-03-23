@@ -703,7 +703,7 @@ fn run_parquet_import(path: &Path, table: Option<&str>) -> Result<()> {
         let fields: Vec<String> = (0..columns.len())
             .map(|i| {
                 row.get_string(i)
-                    .map(|s| s.clone())
+                    .cloned()
                     .or_else(|_| row.get_int(i).map(|n| n.to_string()))
                     .or_else(|_| row.get_long(i).map(|n| n.to_string()))
                     .or_else(|_| row.get_bool(i).map(|b| b.to_string()))
@@ -1043,6 +1043,15 @@ fn import_dustdb_from_reader_into(
             format!("CREATE TABLE IF NOT EXISTS \"{escaped_tbl}\" ({col_defs})");
         engine.query(&create_sql)?;
 
+        if col_count == 0 {
+            for _ in 0..row_count {
+                engine.query(&format!("INSERT INTO \"{escaped_tbl}\" DEFAULT VALUES"))?;
+                total_rows += 1;
+            }
+            table_names.push(tbl_name);
+            continue;
+        }
+
         // Read and insert rows in batches
         let batch_size = 100;
         let mut insert_parts = Vec::with_capacity(batch_size);
@@ -1161,8 +1170,7 @@ fn run_dustpack_import(path: &Path) -> Result<()> {
     let gz = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(gz);
 
-    let tmp_dir = tempfile::tempdir()
-        .map_err(|e| DustError::Io(e))?;
+    let tmp_dir = tempfile::tempdir().map_err(DustError::Io)?;
 
     // Extract the archive to a temp directory
     archive
@@ -1185,10 +1193,10 @@ fn run_dustpack_import(path: &Path) -> Result<()> {
 
     // Print manifest info if available
     let manifest_path = tmp_dir.path().join("manifest.toml");
-    if manifest_path.exists() {
-        if let Ok(manifest) = std::fs::read_to_string(&manifest_path) {
-            eprintln!("Pack manifest:\n{manifest}");
-        }
+    if manifest_path.exists()
+        && let Ok(manifest) = std::fs::read_to_string(&manifest_path)
+    {
+        eprintln!("Pack manifest:\n{manifest}");
     }
 
     println!(
@@ -1479,6 +1487,7 @@ mod tests {
                     .ok()
                     .and_then(|o| match o {
                         dust_exec::QueryOutput::Rows { columns, .. } => Some(columns),
+                        dust_exec::QueryOutput::RowsTyped { columns, .. } => Some(columns),
                         _ => None,
                     })
                     .unwrap_or_default();

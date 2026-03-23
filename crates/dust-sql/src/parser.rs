@@ -587,11 +587,13 @@ impl<'a> Parser<'a> {
 
     fn parse_value_row(&mut self) -> Result<Vec<Expr>> {
         self.expect_kind(TokenKind::LParen)?;
+        if self.eat_kind(TokenKind::RParen)? {
+            return Err(DustError::SchemaParse(
+                "VALUES row cannot be empty".to_string(),
+            ));
+        }
         let mut values = Vec::new();
         loop {
-            if self.eat_kind(TokenKind::RParen)? {
-                break;
-            }
             let expr = self.parse_expr()?;
             values.push(expr);
             if self.eat_kind(TokenKind::Comma)? {
@@ -2863,5 +2865,44 @@ mod tests {
             id_col.constraints[0],
             ColumnConstraint::Autoincrement { .. }
         ));
+    }
+
+    #[test]
+    fn rejects_empty_insert_value_row() {
+        let err = parse_program("INSERT INTO t VALUES ()")
+            .expect_err("empty VALUES row should fail")
+            .to_string();
+        assert!(err.contains("cannot be empty"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parses_unicode_identifier_names() {
+        let program = parse_program("SELECT * FROM 测试表").unwrap();
+        let select = match &program.statements[0] {
+            AstStatement::Select(select) => select,
+            other => panic!("unexpected statement: {other:?}"),
+        };
+        assert_eq!(select.from.as_ref().unwrap().table.value, "测试表");
+    }
+
+    #[test]
+    fn parser_fuzz_random_inputs_do_not_panic() {
+        const ALPHABET: &[u8] =
+            b" \t\n(),;*+-/%=<>!|'\"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_\xe6\xb5\x8b\xe8\xaf\x95";
+        let mut seed = 0x5eed_cafe_d00d_f00d_u64;
+
+        for _ in 0..1000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let len = ((seed >> 16) % 64) as usize;
+            let mut sql = String::new();
+            for _ in 0..len {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let index = ((seed >> 24) as usize) % ALPHABET.len();
+                sql.push(ALPHABET[index] as char);
+            }
+
+            let result = std::panic::catch_unwind(|| parse_program(&sql));
+            assert!(result.is_ok(), "parser panicked on input {sql:?}");
+        }
     }
 }
