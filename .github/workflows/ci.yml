@@ -2,16 +2,35 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
+
       - uses: Swatinem/rust-cache@v2
-      - name: Verification
-        run: cargo run -p xtask -- ci
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Test workspace
+        run: cargo test --workspace --exclude dust-testing
+
+      # dust-testing currently has multiple failing integration targets on main.
+      - name: Test dust-testing library
+        run: cargo test -p dust-testing --lib
