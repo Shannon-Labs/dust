@@ -124,4 +124,5 @@ jobs:
           body_path: CHANGELOG.md
           files: dist/*.tar.gz
           name: ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           tag_name: ${{ github.ref_name }}

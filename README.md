@@ -1,10 +1,30 @@
-# dust
+<p align="center">
+  <img src="site/logo.png" alt="Dust logo" width="420">
+</p>
 
-**The database toolchain in one binary.**
+<h1 align="center">dust</h1>
+
+<p align="center"><strong>The database toolchain in one binary.</strong></p>
+
+<p align="center">Branchable local-first SQL for development, testing, and schema experiments.</p>
+
+<p align="center">
+  <a href="https://github.com/Shannon-Labs/dust/releases">Releases</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick start</a>
+</p>
 
 An extremely fast branchable SQL runtime and database toolchain, written in Rust.
 
 > *Dust* — the fundamental particle that connects everything (His Dark Materials), and also **d**(atabase) + (r)**ust**.
+
+> `v0.1.0-alpha.1` is the public alpha release. Dust is aimed at local development, testing, and schema experimentation first.
+
+## Demo
+
+<p align="center">
+  <img src="assets/readme/demo.gif" alt="Dust CLI demo showing project init, querying, and branch switching" width="900">
+</p>
 
 Dust replaces Docker + Postgres + your migration tool + your ORM + your test fixture setup with a single fast Rust binary.
 
@@ -74,7 +94,7 @@ dust doctor
 
 ## Features
 
-**SQL engine** — Full DDL + DML: SELECT with WHERE, JOIN, GROUP BY, ORDER BY, LIMIT. INSERT, UPDATE, DELETE. CREATE/ALTER/DROP TABLE. Expressions with AND, OR, IS NULL, IN, BETWEEN, LIKE, CAST, function calls.
+**SQL engine** — Full DDL + DML: SELECT with WHERE, JOIN, GROUP BY, ORDER BY, LIMIT, window functions (ROW_NUMBER, RANK, LEAD/LAG), CTEs, subqueries, CASE expressions, transactions. INSERT, UPDATE, DELETE. CREATE/ALTER/DROP TABLE. Constraints: PRIMARY KEY, NOT NULL, UNIQUE, DEFAULT, AUTOINCREMENT.
 
 **Database branching** — `dust branch create/switch/list/delete`. Branches are metadata-only references — creating one doesn't copy your data. Experiment with schema changes without touching production.
 
@@ -112,9 +132,15 @@ Dust is in active development. The v0 core prototype is functional:
 - [x] Schema fingerprinting and lockfile
 - [x] Semantic schema diff with rename detection
 - [x] Binder with column validation and type inference
-- [x] 136 tests passing
+- [x] 329 tests passing
 - [x] Persistent storage (B+tree backed, survives across commands)
-- [ ] Snapshot isolation and transactions
+- [x] Window functions (ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD)
+- [x] CTEs, subqueries, UNION/INTERSECT/EXCEPT
+- [x] HNSW vector search indexes
+- [x] MCP server for AI agent integration
+- [x] Multi-format import (CSV, JSON, Parquet, SQLite, Postgres, Excel)
+- [x] WASM UDF sandbox with fuel metering
+- [x] Transactions (BEGIN/COMMIT/ROLLBACK)
 - [x] Postgres wire protocol (`dust serve`)
 - [ ] Migration generation and replay
 - [ ] Typed query codegen (Rust + TypeScript)
