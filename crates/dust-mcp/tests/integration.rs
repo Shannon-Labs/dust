@@ -10,6 +10,9 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 fn mcp_binary() -> PathBuf {
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_dust-mcp") {
+        return PathBuf::from(path);
+    }
     let mut path = std::env::current_exe()
         .expect("current exe")
         .parent()
@@ -309,6 +312,13 @@ fn test_error_handling() {
     })));
     let is_error = resp["result"]["isError"].as_bool().unwrap_or(false);
     assert!(is_error, "duplicate branch should error: {resp}");
+
+    let resp = session.request("tools/call", Some(json!({
+        "name": "dust_branch_switch",
+        "arguments": {"name": "../bad"}
+    })));
+    let is_error = resp["result"]["isError"].as_bool().unwrap_or(false);
+    assert!(is_error, "invalid branch should error: {resp}");
 
     // Unknown tool
     let resp = session.request("tools/call", Some(json!({
