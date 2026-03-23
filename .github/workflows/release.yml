@@ -11,78 +11,117 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            platform: linux-x86_64
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            platform: linux-aarch64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            platform: darwin-x86_64
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            platform: darwin-aarch64
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            platform: windows-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: dust-x86_64-linux.tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive: dust-aarch64-linux.tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: dust-x86_64-macos.tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: dust-aarch64-macos.tar.gz
 
     runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux cross toolchain
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p dust-cli
+      - name: Build release binary
+        run: cargo build --release -p dust-cli --target "${{ matrix.target }}"
         env:
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
+      - name: Package archive
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/dust dist/
-          cd dist
-          tar czf ../dust-${{ github.ref_name }}-${{ matrix.platform }}.tar.gz dust
 
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          mkdir dist
-          cp target/${{ matrix.target }}/release/dust.exe dist/
-          Compress-Archive -Path dist/dust.exe -DestinationPath dust-${{ github.ref_name }}-${{ matrix.platform }}.zip
+          binary=""
+          for candidate in \
+            "target/${{ matrix.target }}/release/dust" \
+            "target/${{ matrix.target }}/release/dust-cli"; do
+            if [ -f "$candidate" ]; then
+              binary="$candidate"
+              break
+            fi
+          done
 
-      - name: Upload artifact
+          if [ -z "$binary" ]; then
+            echo "release binary not found for ${{ matrix.target }}" >&2
+            exit 1
+          fi
+
+          cp "$binary" dist/dust
+          chmod +x dist/dust
+          tar -C dist -czf "${{ matrix.archive }}" dust
+
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dust-${{ matrix.platform }}
-          path: |
-            dust-*.tar.gz
-            dust-*.zip
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
 
   release:
     needs: build
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+          path: dist
 
-      - name: Create release
+      - name: Generate changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          previous_tag="$(git tag --merged "$GITHUB_SHA" --sort=-v:refname | grep -Fxv "$GITHUB_REF_NAME" | head -n 1 || true)"
+
+          {
+            echo "## Changelog"
+            echo
+            if [ -n "$previous_tag" ]; then
+              echo "Changes since \`$previous_tag\`:"
+              echo
+              git log --no-merges --pretty='- %s (%h)' "${previous_tag}..${GITHUB_SHA}"
+            else
+              echo "- Initial release"
+            fi
+          } > CHANGELOG.md
+
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dust-*.tar.gz
-            dust-*.zip
-          generate_release_notes: true
+          body_path: CHANGELOG.md
+          files: dist/*.tar.gz
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
