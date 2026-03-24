@@ -135,12 +135,6 @@ fn format_rows(columns: &[String], rows: &[Vec<String>], format: &str) -> String
                         let val = row.get(i).map(|s| s.as_str()).unwrap_or("NULL");
                         let json_val = if val == "NULL" {
                             serde_json::Value::Null
-                        } else if let Ok(n) = val.parse::<i64>() {
-                            serde_json::Value::Number(n.into())
-                        } else if let Ok(f) = val.parse::<f64>() {
-                            serde_json::Number::from_f64(f)
-                                .map(serde_json::Value::Number)
-                                .unwrap_or_else(|| serde_json::Value::String(val.to_string()))
                         } else {
                             serde_json::Value::String(val.to_string())
                         };
@@ -602,4 +596,31 @@ pub fn current_branch(project_path: &Path) -> Result<String> {
         .unwrap_or_else(|| project_path.to_path_buf());
     let project = ProjectPaths::new(&root);
     Ok(project.read_current_branch_name())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_format_preserves_string_type() {
+        let columns = vec!["id".to_string(), "phone".to_string()];
+        let rows = vec![
+            vec!["1".to_string(), "555-0100".to_string()],
+        ];
+        let output = format_rows(&columns, &rows, "json");
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+        // Both values should be strings — "1" should NOT be coerced to a number
+        assert_eq!(parsed[0]["id"], serde_json::Value::String("1".to_string()));
+        assert_eq!(parsed[0]["phone"], serde_json::Value::String("555-0100".to_string()));
+    }
+
+    #[test]
+    fn json_format_preserves_null() {
+        let columns = vec!["val".to_string()];
+        let rows = vec![vec!["NULL".to_string()]];
+        let output = format_rows(&columns, &rows, "json");
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed[0]["val"], serde_json::Value::Null);
+    }
 }

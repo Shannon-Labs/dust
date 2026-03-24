@@ -1,0 +1,365 @@
+/// Embedded demo dataset and example queries for `dust demo`.
+
+/// Schema DDL for the demo dataset.
+pub const DEMO_SCHEMA: &str = "\
+CREATE TABLE artists (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    genre TEXT NOT NULL,
+    country TEXT NOT NULL
+);
+
+CREATE TABLE albums (
+    id INTEGER PRIMARY KEY,
+    artist_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    release_year INTEGER NOT NULL
+);
+
+CREATE TABLE tracks (
+    id INTEGER PRIMARY KEY,
+    album_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    duration_seconds INTEGER NOT NULL,
+    streams INTEGER NOT NULL
+);
+
+CREATE TABLE listeners (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL,
+    country TEXT NOT NULL,
+    signup_date TEXT NOT NULL
+);
+";
+
+/// Seed data INSERT statements.
+pub const DEMO_SEED: &str = "\
+INSERT INTO artists VALUES
+  (1,  'Aurora',         'Electronic', 'Norway'),
+  (2,  'Khruangbin',     'Funk',       'United States'),
+  (3,  'Mdou Moctar',    'Rock',       'Niger'),
+  (4,  'Nubya Garcia',   'Jazz',       'United Kingdom'),
+  (5,  'Adrianne Lenker','Folk',       'United States'),
+  (6,  'Floating Points','Electronic', 'United Kingdom'),
+  (7,  'Vulfpeck',       'Funk',       'United States'),
+  (8,  'King Gizzard',   'Rock',       'Australia'),
+  (9,  'Shabaka',        'Jazz',       'United Kingdom'),
+  (10, 'Big Thief',      'Folk',       'United States'),
+  (11, 'Bonobo',         'Electronic', 'United Kingdom'),
+  (12, 'Hiatus Kaiyote', 'Funk',       'Australia'),
+  (13, 'Kikagaku Moyo',  'Rock',       'Japan'),
+  (14, 'Sons of Kemet',  'Jazz',       'United Kingdom'),
+  (15, 'Bon Iver',       'Folk',       'United States');
+
+INSERT INTO albums VALUES
+  (1,  1,  'Infections of a Different Kind',  2018),
+  (2,  1,  'The Gods We Can Touch',            2022),
+  (3,  2,  'Mordechai',                        2020),
+  (4,  2,  'A La Sala',                        2024),
+  (5,  3,  'Afrique Victime',                  2021),
+  (6,  3,  'Funeral for Justice',              2024),
+  (7,  4,  'Source',                            2020),
+  (8,  4,  'Odyssey',                           2023),
+  (9,  5,  'songs',                             2020),
+  (10, 5,  'Bright Future',                     2024),
+  (11, 6,  'Crush',                             2019),
+  (12, 6,  'Cascade',                           2024),
+  (13, 7,  'The Joy of Music',                  2021),
+  (14, 7,  'Live at Madison Square Garden',     2019),
+  (15, 8,  'Omnium Gatherum',                   2022),
+  (16, 8,  'PetroDragonic Apocalypse',          2023),
+  (17, 9,  'Afrikan Culture',                   2021),
+  (18, 9,  'Perceive Its Beauty',               2024),
+  (19, 10, 'Dragon New Warm Mountain',          2022),
+  (20, 10, 'Two Hands',                         2019),
+  (21, 11, 'Fragments',                         2022),
+  (22, 11, 'Migration',                         2017),
+  (23, 12, 'Mood Valiant',                      2021),
+  (24, 12, 'Love Heart Cheat Code',             2024),
+  (25, 13, 'Kumoyo Island',                     2022),
+  (26, 13, 'Masana Temples',                    2018),
+  (27, 14, 'Black to the Future',               2021),
+  (28, 14, 'Your Queen Is a Reptile',           2018),
+  (29, 15, 'i,i',                               2019),
+  (30, 15, 'SABLE',                             2024);
+
+INSERT INTO tracks VALUES
+  (1,  1,  'Queendom',              218, 8200000),
+  (2,  1,  'Infections',            195, 3100000),
+  (3,  1,  'Soft Universe',         241, 2400000),
+  (4,  1,  'All Is Soft Inside',    276, 5600000),
+  (5,  1,  'It Happened Quiet',     202, 1800000),
+  (6,  2,  'Cure for Me',           190, 12500000),
+  (7,  2,  'Giving In to the Love', 258, 7300000),
+  (8,  2,  'Heathens',              215, 4100000),
+  (9,  2,  'Everything Matters',    233, 3200000),
+  (10, 2,  'A Temporary High',      199, 1900000),
+  (11, 3,  'Time (You and I)',      310, 9800000),
+  (12, 3,  'So We Won''t Forget',   224, 6200000),
+  (13, 3,  'Pelota',                197, 3700000),
+  (14, 3,  'If There Is No Question',246, 2100000),
+  (15, 3,  'Father Bird Mother Bird',288, 1500000),
+  (16, 4,  'A Love International',  267, 820000),
+  (17, 4,  'Aimless',               198, 540000),
+  (18, 4,  'May Ninth',             215, 670000),
+  (19, 4,  'Todavia Viva',          243, 480000),
+  (20, 4,  'Caja de Musica',        189, 350000),
+  (21, 5,  'Chismiten',             327, 4800000),
+  (22, 5,  'Afrique Victime',       388, 7100000),
+  (23, 5,  'Tala Tannam',           261, 2900000),
+  (24, 5,  'Ya Habibti',            294, 1600000),
+  (25, 5,  'Layla',                 218, 980000),
+  (26, 6,  'Funeral for Justice',   352, 3200000),
+  (27, 6,  'Imouhar',               285, 5400000),
+  (28, 6,  'Takoba',                241, 2100000),
+  (29, 6,  'Oh France',             197, 1700000),
+  (30, 6,  'Modern Slavery',        263, 890000),
+  (31, 7,  'Source',                379, 2800000),
+  (32, 7,  'When We Are',           265, 1900000),
+  (33, 7,  'The Message Continues',  298, 1200000),
+  (34, 7,  'Pace',                  187, 850000),
+  (35, 7,  'Together Is a Beautiful Place', 242, 620000),
+  (36, 8,  'Odyssey',               341, 1500000),
+  (37, 8,  'The Siren',             227, 980000),
+  (38, 8,  'Retrospect',            256, 720000),
+  (39, 8,  'Set Sail',              198, 540000),
+  (40, 8,  'Dawn',                  283, 410000),
+  (41, 9,  'anything',              186, 6800000),
+  (42, 9,  'zombie girl',           201, 4500000),
+  (43, 9,  'come',                  165, 3100000),
+  (44, 9,  'dragon eyes',           225, 2200000),
+  (45, 9,  'half return',           192, 1400000),
+  (46, 10, 'Ruined',                234, 3800000),
+  (47, 10, 'Sadness As a Gift',     219, 2500000),
+  (48, 10, 'Real House',            189, 1700000),
+  (49, 10, 'Candyfloss',            248, 1200000),
+  (50, 10, 'Already Lost',          177, 950000),
+  (51, 11, 'Falaise',               365, 3400000),
+  (52, 11, 'Last Bloom',            301, 5800000),
+  (53, 11, 'LesAlpx',               247, 2700000),
+  (54, 11, 'Anasickmodular',        289, 1600000),
+  (55, 11, 'Bias',                  220, 980000),
+  (56, 12, 'Cascades',              335, 1800000),
+  (57, 12, 'Birth',                 278, 1200000),
+  (58, 12, 'Fast Forward',          195, 870000),
+  (59, 12, 'Del Oro',               252, 640000),
+  (60, 12, 'Afflecks Palace',       210, 520000),
+  (61, 13, 'Dean Town',             197, 11200000),
+  (62, 13, 'Back Pocket',           186, 8900000),
+  (63, 13, '1612',                  208, 6400000),
+  (64, 13, 'Animal Spirits',        225, 4200000),
+  (65, 13, 'Cory Wong',             199, 3100000),
+  (66, 14, 'Birds of a Feather',    342, 2400000),
+  (67, 14, 'Christmas in L.A.',     280, 5700000),
+  (68, 14, 'Hero Town',             195, 1800000),
+  (69, 14, 'Conscious Club',        221, 1200000),
+  (70, 14, 'It Gets Funkier IV',    248, 890000),
+  (71, 15, 'The Dripping Tap',      1092,4300000),
+  (72, 15, 'Magenta Mountain',      275, 3600000),
+  (73, 15, 'Kepler-22b',            389, 2100000),
+  (74, 15, 'Gaia',                  247, 1500000),
+  (75, 15, 'Predator X',            342, 980000),
+  (76, 16, 'Motor Spirit',          415, 2800000),
+  (77, 16, 'Dragon Slayer',         367, 3900000),
+  (78, 16, 'Flamethrower',          298, 1700000),
+  (79, 16, 'Converge',              245, 1200000),
+  (80, 16, 'Witchcraft',            318, 850000),
+  (81, 17, 'Black Gold',            287, 1100000),
+  (82, 17, 'Afrikan Culture',       305, 780000),
+  (83, 17, 'Joyous',                198, 520000),
+  (84, 17, 'Run',                   232, 340000),
+  (85, 17, 'Collective Wisdom',     256, 280000),
+  (86, 18, 'Body to Flame',         289, 620000),
+  (87, 18, 'As the Planets',        341, 480000),
+  (88, 18, 'End of Innocence',      218, 350000),
+  (89, 18, 'Perception',            267, 290000),
+  (90, 18, 'The Nomad',             195, 210000),
+  (91, 19, 'Simulation Swarm',      292, 2400000),
+  (92, 19, 'Change',                211, 1800000),
+  (93, 19, 'Spud Infinity',         247, 1300000),
+  (94, 19, 'Certainty',             189, 980000),
+  (95, 19, 'Dried Roses',           218, 720000),
+  (96, 20, 'Not',                   342, 4100000),
+  (97, 20, 'Forgotten Eyes',        287, 2700000),
+  (98, 20, 'Shoulders',             225, 1800000),
+  (99, 20, 'Two Hands',             198, 1200000),
+  (100,20, 'Cut My Hair',           265, 890000),
+  (101,21, 'Shadows',               298, 3200000),
+  (102,21, 'Closer',                267, 2100000),
+  (103,21, 'Fragments',             315, 1600000),
+  (104,21, 'Otomo',                 242, 1100000),
+  (105,21, 'Tides',                 289, 780000),
+  (106,22, 'Migration',             312, 6500000),
+  (107,22, 'Kerala',                298, 4800000),
+  (108,22, 'Bambro Koyo Ganda',     267, 3200000),
+  (109,22, 'Break Apart',           245, 2100000),
+  (110,22, 'Surface',               220, 1400000),
+  (111,23, 'Get Sun',               256, 2900000),
+  (112,23, 'Chivalry Is Not Dead',  224, 1800000),
+  (113,23, 'Rose Water',            198, 1200000),
+  (114,23, 'Red Room',              275, 850000),
+  (115,23, 'Sparkle Tape Break Up', 210, 620000),
+  (116,24, 'Dimitri',               234, 1500000),
+  (117,24, 'Everything''s Beautiful',287, 980000),
+  (118,24, 'Make Friends',          195, 720000),
+  (119,24, 'Telescope',             252, 540000),
+  (120,24, 'Love Heart Cheat Code', 218, 410000),
+  (121,25, 'Cardboard Pile',        285, 890000),
+  (122,25, 'Meu Mar',               312, 620000),
+  (123,25, 'Dancing Blue',          198, 480000),
+  (124,25, 'Cloud Forest',          265, 350000),
+  (125,25, 'Daydream Soda',         220, 270000),
+  (126,26, 'Dripping Sun',          524, 1200000),
+  (127,26, 'Smoke and Mirrors',     345, 780000),
+  (128,26, 'Gatherings',            267, 540000),
+  (129,26, 'Nazo Nazo',             198, 420000),
+  (130,26, 'Masana Temples',        289, 310000),
+  (131,27, 'Hustle',                297, 1800000),
+  (132,27, 'Pick Up Your Burning Cross',345, 1200000),
+  (133,27, 'For the Culture',       218, 850000),
+  (134,27, 'Envision',              267, 620000),
+  (135,27, 'Throughout',            242, 410000),
+  (136,28, 'My Queen Is Ada Eastman',315, 980000),
+  (137,28, 'My Queen Is Nanny',     287, 720000),
+  (138,28, 'My Queen Is Mamie Phipps Clark',265, 540000),
+  (139,28, 'Interlude',             198, 350000),
+  (140,28, 'The Itis',              234, 280000),
+  (141,29, 'Hey Ma',                258, 5200000),
+  (142,29, 'Naeem',                 298, 3100000),
+  (143,29, 'Faith',                 225, 2400000),
+  (144,29, 'iMi',                   218, 1700000),
+  (145,29, 'Jelmore',               189, 1100000),
+  (146,30, 'THINGS BEHIND THINGS',  312, 1800000),
+  (147,30, 'SPEYSIDE',              245, 2900000),
+  (148,30, 'AWARDS SEASON',         198, 1200000),
+  (149,30, 'S P E Y S I D E',      267, 980000),
+  (150,30, 'YAuAS',                 220, 640000);
+
+INSERT INTO listeners VALUES
+  (1,  'kai_waves',       'Norway',         '2020-03-15'),
+  (2,  'rhythm_fox',      'United States',  '2020-07-22'),
+  (3,  'sahel_sounds',    'Niger',          '2021-01-10'),
+  (4,  'brass_atlas',     'United Kingdom', '2020-11-05'),
+  (5,  'porch_songs',     'United States',  '2021-04-18'),
+  (6,  'synth_pilgrim',   'Germany',        '2020-09-30'),
+  (7,  'groove_theory',   'Japan',          '2021-08-12'),
+  (8,  'outback_ears',    'Australia',      '2022-02-28'),
+  (9,  'night_bus',       'United Kingdom', '2022-06-14'),
+  (10, 'tape_loop',       'Canada',         '2021-12-01'),
+  (11, 'desert_freq',     'Mali',           '2022-09-20'),
+  (12, 'fjord_listener',  'Norway',         '2023-01-07'),
+  (13, 'vinyl_ghost',     'United States',  '2023-05-15'),
+  (14, 'monsoon_bass',    'India',          '2023-08-22'),
+  (15, 'alto_nimbus',     'Brazil',         '2023-11-30'),
+  (16, 'static_garden',   'Japan',          '2024-01-18'),
+  (17, 'fern_frequency',  'New Zealand',    '2024-03-25'),
+  (18, 'echo_chamber',    'Germany',        '2024-06-10'),
+  (19, 'low_hum',         'Canada',         '2024-08-05'),
+  (20, 'solstice_ear',    'Sweden',         '2024-10-12');
+";
+
+/// Example queries organized by feature.
+pub const DEMO_QUERIES: &[(&str, &str)] = &[
+    // --- Basics ---
+    (
+        "All artists and their genres",
+        "SELECT name, genre, country FROM artists ORDER BY genre, name;",
+    ),
+    (
+        "Top 10 most-streamed tracks",
+        "SELECT ar.name AS artist, t.title AS track, t.streams
+FROM tracks t
+JOIN albums al ON al.id = t.album_id
+JOIN artists ar ON ar.id = al.artist_id
+ORDER BY t.streams DESC
+LIMIT 10;",
+    ),
+    // --- Aggregation ---
+    (
+        "Total streams per genre",
+        "SELECT ar.genre, SUM(t.streams) AS total_streams, COUNT(*) AS tracks
+FROM tracks t
+JOIN albums al ON al.id = t.album_id
+JOIN artists ar ON ar.id = al.artist_id
+GROUP BY ar.genre
+ORDER BY total_streams DESC;",
+    ),
+    // --- Window function ---
+    (
+        "Top 3 tracks per genre (window function + CTE)",
+        "WITH ranked AS (
+  SELECT ar.genre AS genre, ar.name AS artist, t.title AS title, t.streams AS streams,
+    RANK() OVER (PARTITION BY ar.genre ORDER BY t.streams DESC) AS n
+  FROM tracks t
+  JOIN albums al ON al.id = t.album_id
+  JOIN artists ar ON ar.id = al.artist_id
+)
+SELECT genre, artist, title, streams, n FROM ranked
+WHERE n <= 3
+ORDER BY genre, n;",
+    ),
+    // --- CTE ---
+    (
+        "Top artist per genre (CTE)",
+        "WITH totals AS (
+  SELECT ar.genre AS genre, ar.name AS name, SUM(t.streams) AS total
+  FROM artists ar
+  JOIN albums al ON al.artist_id = ar.id
+  JOIN tracks t ON t.album_id = al.id
+  GROUP BY ar.genre, ar.name
+)
+SELECT genre, name, total FROM totals
+ORDER BY genre, total DESC;",
+    ),
+    // --- Subquery ---
+    (
+        "Artists with above-average streams (subquery)",
+        "SELECT DISTINCT ar.name
+FROM artists ar
+JOIN albums al ON al.artist_id = ar.id
+JOIN tracks t ON t.album_id = al.id
+WHERE t.streams > (SELECT AVG(streams) FROM tracks)
+ORDER BY ar.name;",
+    ),
+    // --- CASE ---
+    (
+        "Categorize tracks by popularity",
+        "SELECT title, streams,
+  CASE
+    WHEN streams > 5000000 THEN 'viral'
+    WHEN streams > 1000000 THEN 'hit'
+    WHEN streams > 100000 THEN 'popular'
+    ELSE 'niche'
+  END AS tier
+FROM tracks
+ORDER BY streams DESC
+LIMIT 15;",
+    ),
+];
+
+/// Branching workflow guide printed with --branching.
+pub const BRANCH_GUIDE: &str = "\
+=== Branching Demo ===
+
+Like git branches, but for your database:
+
+  # See what you have
+  dust status
+
+  # Create a branch
+  dust branch create experiment
+
+  # Switch to it
+  dust branch switch experiment
+
+  # Add an unreleased album
+  dust query \"INSERT INTO albums VALUES (31, 3, 'Desert Sessions', 2025)\"
+  dust query \"INSERT INTO tracks VALUES (151, 31, 'Sahel Wind', 280, 0)\"
+
+  # See what changed
+  dust branch diff --from main --to experiment
+
+  # Switch back — main data is untouched
+  dust branch switch main
+  dust query \"SELECT count(*) FROM tracks\"
+";

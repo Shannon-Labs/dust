@@ -423,7 +423,7 @@ impl ExecutionEngine {
 
                 Ok(QueryOutput::Rows {
                     columns: store.columns.clone(),
-                    rows: result_rows,
+                    rows: Self::apply_limit_offset(result_rows, select),
                 })
             }
             SelectProjection::Columns(cols) => {
@@ -477,10 +477,35 @@ impl ExecutionEngine {
 
                 Ok(QueryOutput::Rows {
                     columns: output_columns,
-                    rows: output_rows,
+                    rows: Self::apply_limit_offset(output_rows, select),
                 })
             }
         }
+    }
+
+    /// Apply LIMIT and OFFSET from the SELECT statement to the result rows.
+    fn apply_limit_offset(
+        mut rows: Vec<Vec<String>>,
+        select: &dust_sql::SelectStatement,
+    ) -> Vec<Vec<String>> {
+        if let Some(offset_expr) = &select.offset {
+            let offset = match eval_expr_to_value(offset_expr, &[], &[]) {
+                Value::Integer(n) if n > 0 => n as usize,
+                _ => 0,
+            };
+            if offset >= rows.len() {
+                return Vec::new();
+            }
+            rows = rows.into_iter().skip(offset).collect();
+        }
+        if let Some(limit_expr) = &select.limit {
+            let limit = match eval_expr_to_value(limit_expr, &[], &[]) {
+                Value::Integer(n) if n >= 0 => n as usize,
+                _ => usize::MAX,
+            };
+            rows.truncate(limit);
+        }
+        rows
     }
 
     fn execute_set_op(
@@ -853,12 +878,7 @@ impl ExecutionEngine {
         if !select.order_by.is_empty() {
             output_rows.sort_by(|a, b| {
                 for item in &select.order_by {
-                    let col_idx = match &item.expr {
-                        Expr::ColumnRef(cref) => {
-                            output_columns.iter().position(|c| c == &cref.column.value)
-                        }
-                        _ => None,
-                    };
+                    let col_idx = resolve_order_by_column(&item.expr, &output_columns);
                     if let Some(idx) = col_idx {
                         let aval = a.get(idx).map(|s| s.as_str()).unwrap_or("");
                         let bval = b.get(idx).map(|s| s.as_str()).unwrap_or("");
@@ -922,12 +942,7 @@ impl ExecutionEngine {
         if !select.order_by.is_empty() {
             final_rows.sort_by(|a, b| {
                 for item in &select.order_by {
-                    let col_idx = match &item.expr {
-                        Expr::ColumnRef(cref) => {
-                            output_columns.iter().position(|c| c == &cref.column.value)
-                        }
-                        _ => None,
-                    };
+                    let col_idx = resolve_order_by_column(&item.expr, &output_columns);
                     if let Some(idx) = col_idx {
                         let aval = a.get(idx).map(|s| s.as_str()).unwrap_or("");
                         let bval = b.get(idx).map(|s| s.as_str()).unwrap_or("");
@@ -992,6 +1007,18 @@ fn expr_display_name(expr: &Expr) -> String {
         Expr::StringLit { value, .. } => format!("'{value}'"),
         Expr::Parenthesized { expr: inner, .. } => expr_display_name(inner),
         _ => "?column?".to_string(),
+    }
+}
+
+/// Resolve an ORDER BY expression to a column index in the output.
+/// Tries: (1) column ref name, (2) expression display name (e.g. `sum(...)`).
+fn resolve_order_by_column(expr: &Expr, output_columns: &[String]) -> Option<usize> {
+    match expr {
+        Expr::ColumnRef(cref) => output_columns.iter().position(|c| c == &cref.column.value),
+        other => {
+            let display = expr_display_name(other);
+            output_columns.iter().position(|c| c == &display)
+        }
     }
 }
 
@@ -3522,6 +3549,42 @@ mod tests {
                 assert_eq!(rows[0][0], "NULL");
             }
             other => panic!("expected Rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_limit_enforced() {
+        let mut engine = new_engine();
+        engine.query("CREATE TABLE nums (x INTEGER)").unwrap();
+        engine
+            .query("INSERT INTO nums VALUES (1), (2), (3), (4), (5)")
+            .unwrap();
+
+        let output = engine.query("SELECT * FROM nums LIMIT 3").unwrap();
+        match &output {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows.len(), 3, "LIMIT 3 should return exactly 3 rows");
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn select_limit_offset_enforced() {
+        let mut engine = new_engine();
+        engine.query("CREATE TABLE nums (x INTEGER)").unwrap();
+        engine
+            .query("INSERT INTO nums VALUES (1), (2), (3), (4), (5)")
+            .unwrap();
+
+        let output = engine.query("SELECT * FROM nums LIMIT 2 OFFSET 2").unwrap();
+        match &output {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows.len(), 2, "LIMIT 2 OFFSET 2 should return 2 rows");
+                assert_eq!(rows[0][0], "3", "first row after offset should be 3");
+                assert_eq!(rows[1][0], "4", "second row should be 4");
+            }
+            other => panic!("expected Rows, got {:?}", other),
         }
     }
 }

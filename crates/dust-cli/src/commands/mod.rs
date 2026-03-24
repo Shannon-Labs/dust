@@ -1,4 +1,5 @@
 pub mod branch;
+pub mod demo;
 pub mod doctor;
 pub mod explain;
 pub mod export;

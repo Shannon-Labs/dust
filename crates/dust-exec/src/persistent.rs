@@ -526,6 +526,11 @@ impl PersistentEngine {
                                 value: i,
                                 span: *span,
                             }));
+                        } else if v.parse::<f64>().is_ok() {
+                            return Ok(Expr::Float(dust_sql::FloatLiteral {
+                                value: v,
+                                span: *span,
+                            }));
                         } else {
                             return Ok(Expr::StringLit {
                                 value: v,
@@ -1333,6 +1338,45 @@ impl PersistentEngine {
             }
         }
 
+        // Apply ORDER BY on output (alias-based)
+        if !select.order_by.is_empty() {
+            output_rows.sort_by(|a, b| {
+                for item in &select.order_by {
+                    let col_idx = resolve_order_by_string_column(&item.expr, &output_columns);
+                    if let Some(idx) = col_idx {
+                        let aval = a.get(idx).map(|s| s.as_str()).unwrap_or("");
+                        let bval = b.get(idx).map(|s| s.as_str()).unwrap_or("");
+                        let cmp = cmp_string_values(aval, bval);
+                        let cmp = if item.ordering == Some(dust_sql::IndexOrdering::Desc) {
+                            cmp.reverse()
+                        } else {
+                            cmp
+                        };
+                        if cmp != std::cmp::Ordering::Equal {
+                            return cmp;
+                        }
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+
+        // Apply LIMIT / OFFSET
+        if let Some(offset_expr) = &select.offset {
+            let offset = match eval_datum_expr(offset_expr, &[], &[]) {
+                Datum::Integer(n) if n >= 0 => n as usize,
+                _ => 0,
+            };
+            output_rows = output_rows.into_iter().skip(offset).collect();
+        }
+        if let Some(limit_expr) = &select.limit {
+            let limit = match eval_datum_expr(limit_expr, &[], &[]) {
+                Datum::Integer(n) if n >= 0 => n as usize,
+                _ => usize::MAX,
+            };
+            output_rows.truncate(limit);
+        }
+
         Ok(QueryOutput::Rows {
             columns: output_columns,
             rows: output_rows,
@@ -1437,6 +1481,45 @@ impl PersistentEngine {
             }
 
             output_rows.push(row_vals);
+        }
+
+        // Apply ORDER BY on output (alias-based)
+        if !select.order_by.is_empty() {
+            output_rows.sort_by(|a, b| {
+                for item in &select.order_by {
+                    let col_idx = resolve_order_by_string_column(&item.expr, &out_cols);
+                    if let Some(idx) = col_idx {
+                        let aval = a.get(idx).map(|s| s.as_str()).unwrap_or("");
+                        let bval = b.get(idx).map(|s| s.as_str()).unwrap_or("");
+                        let cmp = cmp_string_values(aval, bval);
+                        let cmp = if item.ordering == Some(dust_sql::IndexOrdering::Desc) {
+                            cmp.reverse()
+                        } else {
+                            cmp
+                        };
+                        if cmp != std::cmp::Ordering::Equal {
+                            return cmp;
+                        }
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+
+        // Apply LIMIT / OFFSET
+        if let Some(offset_expr) = &select.offset {
+            let offset = match eval_datum_expr(offset_expr, &[], &[]) {
+                Datum::Integer(n) if n >= 0 => n as usize,
+                _ => 0,
+            };
+            output_rows = output_rows.into_iter().skip(offset).collect();
+        }
+        if let Some(limit_expr) = &select.limit {
+            let limit = match eval_datum_expr(limit_expr, &[], &[]) {
+                Datum::Integer(n) if n >= 0 => n as usize,
+                _ => usize::MAX,
+            };
+            output_rows.truncate(limit);
         }
 
         Ok(QueryOutput::Rows {
@@ -2062,6 +2145,23 @@ fn eval_scalar_fn(name: &str, args: &[Expr], columns: &[ColumnBinding], row: &[D
     }
 }
 
+/// Try to coerce a pair of Datums to f64 for numeric comparison.
+fn coerce_numeric(a: &Datum, b: &Datum) -> Option<(f64, f64)> {
+    let af = match a {
+        Datum::Integer(n) => *n as f64,
+        Datum::Real(f) => *f,
+        Datum::Text(s) => s.parse::<f64>().ok()?,
+        _ => return None,
+    };
+    let bf = match b {
+        Datum::Integer(n) => *n as f64,
+        Datum::Real(f) => *f,
+        Datum::Text(s) => s.parse::<f64>().ok()?,
+        _ => return None,
+    };
+    Some((af, bf))
+}
+
 fn eval_datum_binop(op: BinOp, left: &Datum, right: &Datum) -> Datum {
     match op {
         BinOp::Eq => match (left, right) {
@@ -2069,7 +2169,14 @@ fn eval_datum_binop(op: BinOp, left: &Datum, right: &Datum) -> Datum {
             (Datum::Integer(a), Datum::Integer(b)) => Datum::Boolean(a == b),
             (Datum::Text(a), Datum::Text(b)) => Datum::Boolean(a == b),
             (Datum::Boolean(a), Datum::Boolean(b)) => Datum::Boolean(a == b),
-            _ => Datum::Boolean(false),
+            (Datum::Real(a), Datum::Real(b)) => Datum::Boolean(a == b),
+            _ => {
+                if let Some((a, b)) = coerce_numeric(left, right) {
+                    Datum::Boolean(a == b)
+                } else {
+                    Datum::Boolean(false)
+                }
+            }
         },
         BinOp::NotEq => match eval_datum_binop(BinOp::Eq, left, right) {
             Datum::Boolean(b) => Datum::Boolean(!b),
@@ -2078,22 +2185,30 @@ fn eval_datum_binop(op: BinOp, left: &Datum, right: &Datum) -> Datum {
         BinOp::Lt => match (left, right) {
             (Datum::Integer(a), Datum::Integer(b)) => Datum::Boolean(a < b),
             (Datum::Text(a), Datum::Text(b)) => Datum::Boolean(a < b),
-            _ => Datum::Null,
+            _ => coerce_numeric(left, right)
+                .map(|(a, b)| Datum::Boolean(a < b))
+                .unwrap_or(Datum::Null),
         },
         BinOp::LtEq => match (left, right) {
             (Datum::Integer(a), Datum::Integer(b)) => Datum::Boolean(a <= b),
             (Datum::Text(a), Datum::Text(b)) => Datum::Boolean(a <= b),
-            _ => Datum::Null,
+            _ => coerce_numeric(left, right)
+                .map(|(a, b)| Datum::Boolean(a <= b))
+                .unwrap_or(Datum::Null),
         },
         BinOp::Gt => match (left, right) {
             (Datum::Integer(a), Datum::Integer(b)) => Datum::Boolean(a > b),
             (Datum::Text(a), Datum::Text(b)) => Datum::Boolean(a > b),
-            _ => Datum::Null,
+            _ => coerce_numeric(left, right)
+                .map(|(a, b)| Datum::Boolean(a > b))
+                .unwrap_or(Datum::Null),
         },
         BinOp::GtEq => match (left, right) {
             (Datum::Integer(a), Datum::Integer(b)) => Datum::Boolean(a >= b),
             (Datum::Text(a), Datum::Text(b)) => Datum::Boolean(a >= b),
-            _ => Datum::Null,
+            _ => coerce_numeric(left, right)
+                .map(|(a, b)| Datum::Boolean(a >= b))
+                .unwrap_or(Datum::Null),
         },
         BinOp::And => {
             let lb = match left {
@@ -2345,6 +2460,27 @@ fn cmp_datums(a: &Datum, b: &Datum) -> std::cmp::Ordering {
     a.cmp_fast(b)
 }
 
+/// Compare two string values, trying numeric comparison first.
+fn cmp_string_values(a: &str, b: &str) -> std::cmp::Ordering {
+    if let (Ok(a), Ok(b)) = (a.parse::<f64>(), b.parse::<f64>()) {
+        a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+    } else {
+        a.cmp(b)
+    }
+}
+
+/// Resolve an ORDER BY expression to a column index in output string columns.
+/// Tries: (1) column ref name, (2) expression display name.
+fn resolve_order_by_string_column(expr: &Expr, output_columns: &[String]) -> Option<usize> {
+    match expr {
+        Expr::ColumnRef(cref) => output_columns.iter().position(|c| c == &cref.column.value),
+        other => {
+            let display = expr_display_name(other);
+            output_columns.iter().position(|c| c == &display)
+        }
+    }
+}
+
 fn expr_display_name(expr: &Expr) -> String {
     match expr {
         Expr::ColumnRef(cref) => {
@@ -2530,7 +2666,27 @@ fn validate_select_columns(
         }
     }
 
+    // Collect SELECT aliases so ORDER BY can reference them
+    let select_aliases: Vec<String> = select
+        .projection
+        .iter()
+        .filter_map(|item| {
+            if let SelectItem::Expr {
+                alias: Some(alias), ..
+            } = item
+            {
+                Some(alias.value.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
     for item in &select.order_by {
+        if let Expr::ColumnRef(cref) = &item.expr {
+            if select_aliases.contains(&cref.column.value) {
+                continue; // alias reference, skip table-column validation
+            }
+        }
         validate_expr_columns(columns, &item.expr)?;
     }
 

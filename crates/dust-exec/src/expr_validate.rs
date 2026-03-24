@@ -204,7 +204,7 @@ fn validate_select(select: &dust_sql::SelectStatement) -> Result<()> {
         validate_expr(h, proj_allow)?;
     }
     for ob in &select.order_by {
-        validate_expr(&ob.expr, AggAllow::Never)?;
+        validate_expr(&ob.expr, proj_allow)?;
     }
     if let Some(lim) = &select.limit {
         validate_expr(lim, AggAllow::Never)?;

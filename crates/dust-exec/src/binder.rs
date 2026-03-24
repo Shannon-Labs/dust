@@ -98,8 +98,27 @@ fn bind_select(storage: &Storage, select: &SelectStatement, result: &mut BindRes
             validate_expr_columns(table_name, &store.columns, where_expr, result);
         }
 
-        // Validate ORDER BY
+        // Validate ORDER BY — allow column refs that match a SELECT alias
+        let select_aliases: Vec<String> = select
+            .projection
+            .iter()
+            .filter_map(|item| {
+                if let SelectItem::Expr {
+                    alias: Some(alias), ..
+                } = item
+                {
+                    Some(alias.value.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
         for item in &select.order_by {
+            if let Expr::ColumnRef(cref) = &item.expr {
+                if select_aliases.contains(&cref.column.value) {
+                    continue; // alias reference, skip table-column validation
+                }
+            }
             validate_expr_columns(table_name, &store.columns, &item.expr, result);
         }
 

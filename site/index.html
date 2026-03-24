@@ -279,7 +279,7 @@ footer .rust-note svg{opacity:0.5}
     <span>&middot;</span>
     <span>Written in Rust</span>
     <span>&middot;</span>
-    <span>136 tests</span>
+    <span>329 tests</span>
   </div>
   <div class="ctas">
     <a href="#install" class="btn btn-primary">Install dust</a>
@@ -335,8 +335,24 @@ footer .rust-note svg{opacity:0.5}
   <h2>What normal databases can't do</h2>
   <div class="feature-grid">
     <div class="feature-card">
+      <h3>Full SQL engine</h3>
+      <p>JOINs, window functions, CTEs, subqueries, GROUP BY, transactions, CASE expressions. Constraints, UNIQUE indexes, DEFAULT values. Not a toy.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Vector search built in</h3>
+      <p>HNSW indexes with cosine and euclidean distance. <code>CREATE INDEX ... USING hnsw</code> &mdash; no external service, no sidecar.</p>
+    </div>
+    <div class="feature-card">
+      <h3>AI-native: MCP server</h3>
+      <p>Expose your database to AI agents via Model Context Protocol. <code>dust mcp</code> gives Claude, Cursor, and Copilot direct SQL access with sandboxing.</p>
+    </div>
+    <div class="feature-card">
       <h3>Database branching</h3>
       <p>Create branches like git. Experiment with schema changes without touching production. <code>dust branch create dev</code></p>
+    </div>
+    <div class="feature-card">
+      <h3>Import everything</h3>
+      <p>CSV, JSON, JSONL, Parquet, SQLite, Postgres, Excel &mdash; one command. <code>dust import data.parquet</code></p>
     </div>
     <div class="feature-card">
       <h3>Postgres wire protocol</h3>
@@ -347,16 +363,12 @@ footer .rust-note svg{opacity:0.5}
       <p>Every schema state gets a BLAKE3 fingerprint in <code>dust.lock</code>. Detect drift, validate migrations, never deploy stale.</p>
     </div>
     <div class="feature-card">
-      <h3>Full SQL engine</h3>
-      <p>SELECT with WHERE, JOINs, GROUP BY, ORDER BY, LIMIT. Aggregates: COUNT, SUM, AVG, MIN, MAX. INSERT, UPDATE, DELETE.</p>
-    </div>
-    <div class="feature-card">
-      <h3>Built-in health checks</h3>
-      <p><code>dust doctor</code> validates your schema, lockfile, fingerprints, and workspace integrity in one command.</p>
+      <h3>WASM UDF sandbox</h3>
+      <p>Extend your database with custom functions in any language that compiles to WASM. Fuel-metered and memory-limited by default.</p>
     </div>
     <div class="feature-card">
       <h3>Zero dependencies</h3>
-      <p>One 8MB binary. No Docker. No JVM. No runtime. Works offline. <code>curl | sh</code> and you're done.</p>
+      <p>One binary. No Docker. No JVM. No runtime. Works offline. 329 tests. <code>curl | sh</code> and you're done.</p>
     </div>
   </div>
 </div>
@@ -385,12 +397,12 @@ footer .rust-note svg{opacity:0.5}
       <div class="price">$0</div>
       <div class="period">forever</div>
       <ul>
-        <li>Full CLI and SQL engine</li>
+        <li>Full SQL engine + vector search</li>
+        <li>MCP server for AI agents</li>
         <li>Postgres wire protocol</li>
         <li>Local branches and snapshots</li>
-        <li>Schema fingerprinting + lockfile</li>
-        <li>CSV import, interactive shell</li>
-        <li>Unlimited local databases</li>
+        <li>Import CSV, JSON, Parquet, SQLite, Excel</li>
+        <li>WASM UDF sandbox</li>
       </ul>
     </div>
     <div class="price-card hl">

@@ -68,7 +68,12 @@ pub fn run(file_path: &Path) -> Result<()> {
         let col_names: Vec<&str> = col_info.iter().map(|c| c.0.as_str()).collect();
         let col_types: Vec<&str> = col_info.iter().map(|c| c.1.as_str()).collect();
 
-        let select_sql = format!("SELECT {} FROM [{}]", col_names.join(", "), table_name);
+        let quoted_col_names: Vec<String> = col_names.iter().map(|c| format!("[{c}]")).collect();
+        let select_sql = format!(
+            "SELECT {} FROM [{}]",
+            quoted_col_names.join(", "),
+            table_name
+        );
         let mut sel_stmt = conn.prepare(&select_sql).map_err(|e| {
             DustError::InvalidInput(format!("failed to prepare SELECT for `{table_name}`: {e}"))
         })?;
@@ -150,7 +155,11 @@ fn flush_inserts(
     if value_parts.is_empty() {
         return Ok(0);
     }
-    let col_list = col_names.join(", ");
+    let col_list = col_names
+        .iter()
+        .map(|c| quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
     let escaped_table = table_name.replace('"', "\"\"");
     let sql = format!(
         "INSERT INTO \"{escaped_table}\" ({col_list}) VALUES {}",
@@ -239,6 +248,17 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
+fn quote_ident(name: &str) -> String {
+    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && !name.is_empty()
+    {
+        name.to_string()
+    } else {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +288,15 @@ mod tests {
     fn test_hex_encode() {
         assert_eq!(hex_encode(&[0xDE, 0xAD, 0xBE, 0xEF]), "DEADBEEF");
         assert_eq!(hex_encode(&[]), "");
+    }
+
+    #[test]
+    fn test_quote_ident() {
+        assert_eq!(quote_ident("simple"), "simple");
+        assert_eq!(quote_ident("with space"), "\"with space\"");
+        assert_eq!(quote_ident("select"), "select");
+        assert_eq!(quote_ident("has\"quote"), "\"has\"\"quote\"");
+        assert_eq!(quote_ident("123start"), "\"123start\"");
     }
 
     #[test]
@@ -358,16 +387,63 @@ mod tests {
         let result = run(&sqlite_path);
         env::set_current_dir(&original_dir).unwrap();
 
-        assert!(result.is_ok(), "import_sqlite::run failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "import_sqlite::run failed: {:?}",
+            result.err()
+        );
 
         // Verify data was imported by opening the dust engine
         let db_path = dust_core::ProjectPaths::new(&project_dir).active_data_db_path();
         let engine = PersistentEngine::open(&db_path).unwrap();
 
         let tables = engine.table_names();
-        assert!(tables.contains(&"users".to_string()),
-            "expected 'users' table, got: {:?}", tables);
-        assert!(tables.contains(&"orders".to_string()),
-            "expected 'orders' table, got: {:?}", tables);
+        assert!(
+            tables.contains(&"users".to_string()),
+            "expected 'users' table, got: {:?}",
+            tables
+        );
+        assert!(
+            tables.contains(&"orders".to_string()),
+            "expected 'orders' table, got: {:?}",
+            tables
+        );
+    }
+
+    #[test]
+    fn test_import_sqlite_quoted_column_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sqlite_path = tmp.path().join("source.sqlite");
+
+        // Create a SQLite database with column names that need quoting
+        let conn = rusqlite::Connection::open(&sqlite_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE items (\"item id\" INTEGER, \"order by\" TEXT, value REAL);
+             INSERT INTO items VALUES (1, 'alpha', 10.5);
+             INSERT INTO items VALUES (2, 'beta', 20.0);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let project_dir = tmp.path().join("dust_project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        dust_core::ProjectPaths::new(&project_dir)
+            .init(false)
+            .unwrap();
+
+        let original_dir = env::current_dir().unwrap();
+        env::set_current_dir(&project_dir).unwrap();
+        let result = run(&sqlite_path);
+        env::set_current_dir(&original_dir).unwrap();
+
+        assert!(
+            result.is_ok(),
+            "import_sqlite::run failed with quoted columns: {:?}",
+            result.err()
+        );
+
+        let db_path = dust_core::ProjectPaths::new(&project_dir).active_data_db_path();
+        let engine = PersistentEngine::open(&db_path).unwrap();
+        assert!(engine.table_names().contains(&"items".to_string()));
     }
 }

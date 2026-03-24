@@ -358,6 +358,75 @@ impl TableEngine {
             .collect()
     }
 
+    /// Check all unique secondary-index constraints for the given row values.
+    /// Returns Err if any unique constraint would be violated.
+    /// This performs NO mutations — safe to call before destructive operations.
+    fn check_secondary_unique_constraints(
+        &mut self,
+        table: &str,
+        rowid: u64,
+        values: &[Datum],
+    ) -> Result<()> {
+        let names = self.secondary_index_names_for_table(table);
+        for name in names {
+            let (needs_check, col_index) = {
+                let meta = match self.secondary_indexes.get(&name) {
+                    Some(m) => m,
+                    None => continue,
+                };
+                let d = values
+                    .get(meta.column_index)
+                    .cloned()
+                    .unwrap_or(Datum::Null);
+                (meta.unique && !matches!(d, Datum::Null), meta.column_index)
+            };
+            if needs_check {
+                let d = values.get(col_index).cloned().unwrap_or(Datum::Null);
+                let prefix = secondary_index_value_prefix(&d);
+                let root = self.secondary_indexes[&name].btree.root_page_id();
+                let existing = BTree::open(root).scan_key_prefix(&mut self.pager, &prefix)?;
+                // Filter out our own rowid — an existing entry for the same rowid is OK
+                // (it's the old value we're about to replace).
+                let has_other = existing.iter().any(|k| match rowid_from_secondary_key(k) {
+                    Ok(id) => id != rowid,
+                    Err(_) => true,
+                });
+                if has_other {
+                    return Err(DustError::InvalidInput(format!(
+                        "duplicate key violates unique index `{name}`"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Insert into secondary indexes WITHOUT unique checking.
+    /// Only call after `check_secondary_unique_constraints` has passed.
+    fn maintain_secondary_insert_unchecked(
+        &mut self,
+        table: &str,
+        rowid: u64,
+        values: &[Datum],
+    ) -> Result<()> {
+        let names = self.secondary_index_names_for_table(table);
+        for name in names {
+            let key = {
+                let meta = self.secondary_indexes.get(&name).ok_or_else(|| {
+                    DustError::Message("secondary index disappeared during insert".to_string())
+                })?;
+                let d = values
+                    .get(meta.column_index)
+                    .cloned()
+                    .unwrap_or(Datum::Null);
+                secondary_index_key(&d, rowid)
+            };
+            let meta = self.secondary_indexes.get_mut(&name).unwrap();
+            meta.btree.insert(&mut self.pager, &key, b"")?;
+        }
+        Ok(())
+    }
+
     fn maintain_secondary_insert(
         &mut self,
         table: &str,
@@ -554,6 +623,11 @@ impl TableEngine {
             DustError::InvalidInput(format!("row {rowid} not found in `{table}`"))
         })?;
 
+        // Check unique constraints BEFORE any destructive operations to ensure
+        // atomicity: if the unique check fails, nothing has been modified yet.
+        self.check_secondary_unique_constraints(table, rowid, &values)?;
+
+        // Safe to mutate: all unique checks passed.
         self.maintain_secondary_delete(table, rowid, &old_row)?;
 
         let meta = self
@@ -564,7 +638,7 @@ impl TableEngine {
         let key = encode_key_u64(rowid);
         let encoded = encode_row(&values);
         meta.btree.insert(&mut self.pager, &key, &encoded)?;
-        self.maintain_secondary_insert(table, rowid, &values)?;
+        self.maintain_secondary_insert_unchecked(table, rowid, &values)?;
         Ok(())
     }
 
@@ -647,13 +721,8 @@ fn read_meta_descriptors(pager: &mut Pager) -> Result<Vec<TableDescriptor>> {
                 .try_into()
                 .expect("fixed-length slice"),
         ) as usize;
-        let name = String::from_utf8_lossy(take_bytes(
-            data,
-            &mut offset,
-            name_len,
-            "table name",
-        )?)
-        .to_string();
+        let name = String::from_utf8_lossy(take_bytes(data, &mut offset, name_len, "table name")?)
+            .to_string();
 
         let root_page_id = u64::from_le_bytes(
             take_bytes(data, &mut offset, 8, "root page id")?
@@ -680,13 +749,9 @@ fn read_meta_descriptors(pager: &mut Pager) -> Result<Vec<TableDescriptor>> {
                     .try_into()
                     .expect("fixed-length slice"),
             ) as usize;
-            let col = String::from_utf8_lossy(take_bytes(
-                data,
-                &mut offset,
-                col_len,
-                "column name",
-            )?)
-            .to_string();
+            let col =
+                String::from_utf8_lossy(take_bytes(data, &mut offset, col_len, "column name")?)
+                    .to_string();
             columns.push(col);
         }
 
@@ -1039,6 +1104,55 @@ mod tests {
         assert!(
             format!("{err}").contains("unique index"),
             "expected unique violation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn update_row_unique_violation_leaves_secondary_index_consistent() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .create_table("t", vec!["id".to_string(), "email".to_string()])
+            .unwrap();
+        let _r1 = engine
+            .insert_row("t", vec![Datum::Integer(1), Datum::Text("a@x".to_string())])
+            .unwrap();
+        let r2 = engine
+            .insert_row("t", vec![Datum::Integer(2), Datum::Text("b@x".to_string())])
+            .unwrap();
+
+        let root = engine.create_secondary_index("t", 1, true).unwrap();
+        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), 1, root, true);
+
+        // Attempt to update r2 to the same email as r1 — should fail with unique violation
+        let err = engine
+            .update_row(
+                "t",
+                r2,
+                vec![Datum::Integer(2), Datum::Text("a@x".to_string())],
+            )
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("unique index"),
+            "expected unique violation, got: {err}"
+        );
+
+        // After the failed update, r2's secondary index entry should still be "b@x"
+        let rowids = engine
+            .secondary_lookup_rowids("idx_email", &Datum::Text("b@x".to_string()))
+            .unwrap();
+        assert_eq!(
+            rowids.len(),
+            1,
+            "r2's secondary index entry for 'b@x' should still exist after failed update"
+        );
+        assert_eq!(rowids[0], r2);
+
+        // r2's B-tree row should still be the original values
+        let row = engine.get_row("t", r2).unwrap().unwrap();
+        assert_eq!(
+            row,
+            vec![Datum::Integer(2), Datum::Text("b@x".to_string())],
+            "B-tree row should be unchanged after failed update"
         );
     }
 

@@ -8,9 +8,9 @@
 //!
 //! Leaf nodes: right_ptr holds the next-leaf pointer for range scans.
 
-use crate::page::{Page, PageType};
+use crate::page::{Page, PageType, PAGE_HEADER_SIZE, PAGE_SIZE};
 use crate::pager::Pager;
-use dust_types::Result;
+use dust_types::{DustError, Result};
 
 /// Encode a leaf cell: key_len(u16) + key + value_len(u32) + value
 fn encode_leaf_cell(key: &[u8], value: &[u8]) -> Vec<u8> {
@@ -23,13 +23,28 @@ fn encode_leaf_cell(key: &[u8], value: &[u8]) -> Vec<u8> {
 }
 
 /// Decode a leaf cell into (key, value).
-fn decode_leaf_cell(cell: &[u8]) -> (&[u8], &[u8]) {
+fn decode_leaf_cell(cell: &[u8]) -> Result<(&[u8], &[u8])> {
+    if cell.len() < 2 {
+        return Err(DustError::InvalidInput(
+            "corrupt B-tree cell: too short for key length".to_string(),
+        ));
+    }
     let key_len = u16::from_le_bytes(cell[0..2].try_into().unwrap()) as usize;
-    let key = &cell[2..2 + key_len];
     let val_offset = 2 + key_len;
+    if cell.len() < val_offset + 4 {
+        return Err(DustError::InvalidInput(
+            "corrupt B-tree cell: too short for value length".to_string(),
+        ));
+    }
+    let key = &cell[2..val_offset];
     let val_len = u32::from_le_bytes(cell[val_offset..val_offset + 4].try_into().unwrap()) as usize;
+    if cell.len() < val_offset + 4 + val_len {
+        return Err(DustError::InvalidInput(
+            "corrupt B-tree cell: too short for value data".to_string(),
+        ));
+    }
     let value = &cell[val_offset + 4..val_offset + 4 + val_len];
-    (key, value)
+    Ok((key, value))
 }
 
 /// Encode an internal cell: key_len(u16) + key + child_page_id(u64)
@@ -42,17 +57,38 @@ fn encode_internal_cell(key: &[u8], child: u64) -> Vec<u8> {
 }
 
 /// Decode an internal cell into (key, left_child_page_id).
-fn decode_internal_cell(cell: &[u8]) -> (&[u8], u64) {
+fn decode_internal_cell(cell: &[u8]) -> Result<(&[u8], u64)> {
+    if cell.len() < 2 {
+        return Err(DustError::InvalidInput(
+            "corrupt internal cell: too short for key length".to_string(),
+        ));
+    }
     let key_len = u16::from_le_bytes(cell[0..2].try_into().unwrap()) as usize;
-    let key = &cell[2..2 + key_len];
-    let child = u64::from_le_bytes(cell[2 + key_len..2 + key_len + 8].try_into().unwrap());
-    (key, child)
+    let child_offset = 2 + key_len;
+    if cell.len() < child_offset + 8 {
+        return Err(DustError::InvalidInput(
+            "corrupt internal cell: too short for child page id".to_string(),
+        ));
+    }
+    let key = &cell[2..child_offset];
+    let child = u64::from_le_bytes(cell[child_offset..child_offset + 8].try_into().unwrap());
+    Ok((key, child))
 }
 
 /// Extract just the key from a cell (works for both leaf and internal cells).
-fn cell_key(cell: &[u8]) -> &[u8] {
+fn cell_key(cell: &[u8]) -> Result<&[u8]> {
+    if cell.len() < 2 {
+        return Err(DustError::InvalidInput(
+            "corrupt B-tree cell: too short for key length".to_string(),
+        ));
+    }
     let key_len = u16::from_le_bytes(cell[0..2].try_into().unwrap()) as usize;
-    &cell[2..2 + key_len]
+    if cell.len() < 2 + key_len {
+        return Err(DustError::InvalidInput(
+            "corrupt B-tree cell: too short for key data".to_string(),
+        ));
+    }
+    Ok(&cell[2..2 + key_len])
 }
 
 #[derive(Debug)]
@@ -89,10 +125,13 @@ impl BTree {
     fn update_last_leaf_cache(&mut self, pager: &mut Pager, leaf_id: u64) {
         if let Ok(page) = pager.read_page(leaf_id) {
             let count = page.cell_count();
-            if count > 0 {
-                let min_key = cell_key(page.cell_data(0)).to_vec();
-                let max_key = cell_key(page.cell_data(count - 1)).to_vec();
-                self.last_leaf = Some((leaf_id, min_key, max_key));
+            if count > 0
+                && let (Ok(min), Ok(max)) = (
+                    cell_key(page.cell_data(0)),
+                    cell_key(page.cell_data(count - 1)),
+                )
+            {
+                self.last_leaf = Some((leaf_id, min.to_vec(), max.to_vec()));
                 return;
             }
         }
@@ -115,11 +154,11 @@ impl BTree {
         // Find insert position via binary search
         let page = pager.read_page(leaf_id)?;
         let count = page.cell_count();
-        let pos = self.find_cell_position(page, key);
+        let pos = self.find_cell_position(page, key)?;
 
         // Check for duplicate key
         if pos < count {
-            let existing_key = cell_key(page.cell_data(pos));
+            let existing_key = cell_key(page.cell_data(pos))?;
             if existing_key == key {
                 // Update in place: remove old, insert new
                 let page = pager.write_page(leaf_id)?;
@@ -160,11 +199,11 @@ impl BTree {
         };
         let page = pager.read_page(leaf_id)?;
         let count = page.cell_count();
-        let pos = self.find_cell_position(page, key);
+        let pos = self.find_cell_position(page, key)?;
 
         if pos < count {
             let cell = page.cell_data(pos);
-            let (k, v) = decode_leaf_cell(cell);
+            let (k, v) = decode_leaf_cell(cell)?;
             if k == key {
                 return Ok(Some(v.to_vec()));
             }
@@ -177,15 +216,16 @@ impl BTree {
         let leaf_id = self.search_leaf(pager, key)?;
         let page = pager.read_page(leaf_id)?;
         let count = page.cell_count();
-        let pos = self.find_cell_position(page, key);
+        let pos = self.find_cell_position(page, key)?;
 
         if pos < count {
             let cell = page.cell_data(pos);
-            let (k, _) = decode_leaf_cell(cell);
+            let (k, _) = decode_leaf_cell(cell)?;
             if k == key {
                 let page = pager.write_page(leaf_id)?;
                 page.remove_cell(pos);
-                self.last_leaf = None; // Invalidate cache after delete
+                self.last_leaf = None;
+                self.rebalance_leaf(pager, leaf_id)?;
                 return Ok(true);
             }
         }
@@ -214,7 +254,7 @@ impl BTree {
             let count = page.cell_count();
             for i in 0..count {
                 let cell = page.cell_data(i);
-                let (k, v) = decode_leaf_cell(cell);
+                let (k, v) = decode_leaf_cell(cell)?;
                 result.push((k.to_vec(), v.to_vec()));
             }
             let next = page.right_ptr();
@@ -241,7 +281,7 @@ impl BTree {
                 page_id = page.right_ptr();
             } else {
                 let cell = page.cell_data(0);
-                let (_, child) = decode_internal_cell(cell);
+                let (_, child) = decode_internal_cell(cell)?;
                 page_id = child;
             }
         }
@@ -256,42 +296,47 @@ impl BTree {
                 return Ok(page_id);
             }
 
-            // Internal node: binary search for the right child
+            // Internal node: find the first separator strictly greater than
+            // the search key.  In B+tree convention separator keys live in the
+            // right subtree, so key == separator must route right.
             let count = page.cell_count();
-            let pos = self.find_cell_position(page, key);
-
-            let child = if pos < count {
-                let cell = page.cell_data(pos);
-                let (k, c) = decode_internal_cell(cell);
-                if key <= k {
-                    c
+            let mut lo = 0u16;
+            let mut hi = count;
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                let k = cell_key(page.cell_data(mid))?;
+                if k <= key {
+                    lo = mid + 1;
                 } else {
-                    page.right_ptr()
+                    hi = mid;
                 }
+            }
+            // lo = index of first separator > key
+            page_id = if lo < count {
+                let (_, c) = decode_internal_cell(page.cell_data(lo))?;
+                c // left child of first separator > key
             } else {
                 page.right_ptr()
             };
-
-            page_id = child;
         }
     }
 
     /// Binary search within a page to find the insertion position for a key.
-    fn find_cell_position(&self, page: &Page, key: &[u8]) -> u16 {
+    fn find_cell_position(&self, page: &Page, key: &[u8]) -> Result<u16> {
         let count = page.cell_count();
         let mut lo = 0u16;
         let mut hi = count;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let cell = page.cell_data(mid);
-            let k = cell_key(cell);
+            let k = cell_key(cell)?;
             if k < key {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
-        lo
+        Ok(lo)
     }
 
     /// Split a full leaf and insert the new cell.
@@ -344,7 +389,7 @@ impl BTree {
         }
 
         // The split key is the first key in the right leaf
-        let split_key = cell_key(&all_cells[mid]).to_vec();
+        let split_key = cell_key(&all_cells[mid])?.to_vec();
 
         // Insert split key into parent
         if parent == 0 && leaf_id == self.root_page_id {
@@ -379,7 +424,7 @@ impl BTree {
     ) -> Result<()> {
         let pos = {
             let page = pager.read_page(internal_id)?;
-            self.find_cell_position(page, key)
+            self.find_cell_position(page, key)?
         };
 
         let cell = encode_internal_cell(key, left_child);
@@ -390,7 +435,7 @@ impl BTree {
                 let count = page.cell_count();
                 if pos + 1 < count {
                     let next_cell = page.cell_data(pos + 1).to_vec();
-                    let (next_key, _) = decode_internal_cell(&next_cell);
+                    let (next_key, _) = decode_internal_cell(&next_cell)?;
                     let new_next_cell = encode_internal_cell(next_key, right_child);
                     page.remove_cell(pos + 1);
                     page.insert_cell(pos + 1, &new_next_cell);
@@ -409,6 +454,248 @@ impl BTree {
         }
 
         self.split_internal(pager, internal_id, key, left_child, right_child)?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Delete rebalancing
+    // ------------------------------------------------------------------
+
+    /// Find the position of `child_id` in an internal parent page.
+    /// Returns the cell index whose left_child == child_id, or
+    /// cell_count() if child_id == right_ptr.
+    fn find_child_in_parent(parent: &Page, child_id: u64) -> Result<u16> {
+        let count = parent.cell_count();
+        for i in 0..count {
+            let (_, c) = decode_internal_cell(parent.cell_data(i))?;
+            if c == child_id {
+                return Ok(i);
+            }
+        }
+        if parent.right_ptr() == child_id {
+            return Ok(count);
+        }
+        Err(DustError::InvalidInput(format!(
+            "child page {child_id} not found in parent"
+        )))
+    }
+
+    /// Rebalance a leaf after deletion if it is underoccupied.
+    fn rebalance_leaf(&mut self, pager: &mut Pager, leaf_id: u64) -> Result<()> {
+        if leaf_id == self.root_page_id {
+            return Ok(());
+        }
+
+        let (parent_id, under) = {
+            let page = pager.read_page(leaf_id)?;
+            let total = PAGE_SIZE - PAGE_HEADER_SIZE;
+            (page.parent_ptr(), page.usable_space() > total / 2)
+        };
+        if !under || parent_id == 0 {
+            return Ok(());
+        }
+
+        // Gather sibling info from the parent.
+        let (child_pos, _parent_count, left_id, right_id) = {
+            let p = pager.read_page(parent_id)?;
+            let cpos = Self::find_child_in_parent(p, leaf_id)?;
+            let pcnt = p.cell_count();
+            let lid = if cpos > 0 {
+                Some(decode_internal_cell(p.cell_data(cpos - 1))?.1)
+            } else {
+                None
+            };
+            let rid = if cpos < pcnt {
+                if cpos + 1 < pcnt {
+                    Some(decode_internal_cell(p.cell_data(cpos + 1))?.1)
+                } else {
+                    Some(p.right_ptr())
+                }
+            } else {
+                None
+            };
+            (cpos, pcnt, lid, rid)
+        };
+
+        let total = PAGE_SIZE - PAGE_HEADER_SIZE;
+
+        // Try redistribution from left sibling.
+        if let Some(lid) = left_id {
+            let ok = {
+                let l = pager.read_page(lid)?;
+                l.usable_space() <= total / 2 && l.cell_count() > 1
+            };
+            if ok {
+                return self.redistribute_left_leaf(pager, parent_id, child_pos, leaf_id, lid);
+            }
+        }
+
+        // Try redistribution from right sibling.
+        if let Some(rid) = right_id {
+            let ok = {
+                let r = pager.read_page(rid)?;
+                r.usable_space() <= total / 2 && r.cell_count() > 1
+            };
+            if ok {
+                return self.redistribute_right_leaf(pager, parent_id, child_pos, leaf_id, rid);
+            }
+        }
+
+        // Merge with a sibling (prefer left).
+        if let Some(lid) = left_id {
+            return self.merge_leaves(pager, parent_id, lid, leaf_id, child_pos - 1);
+        }
+        if let Some(rid) = right_id {
+            return self.merge_leaves(pager, parent_id, leaf_id, rid, child_pos);
+        }
+
+        Ok(())
+    }
+
+    /// Move the last cell of the left sibling into the current leaf.
+    fn redistribute_left_leaf(
+        &mut self,
+        pager: &mut Pager,
+        parent_id: u64,
+        child_pos: u16,
+        leaf_id: u64,
+        left_id: u64,
+    ) -> Result<()> {
+        let (moved, left_cnt) = {
+            let l = pager.read_page(left_id)?;
+            let lc = l.cell_count();
+            (l.cell_data(lc - 1).to_vec(), lc)
+        };
+        pager.write_page(left_id)?.remove_cell(left_cnt - 1);
+        pager.write_page(leaf_id)?.insert_cell(0, &moved);
+
+        let sep_idx = child_pos - 1;
+        let moved_key = cell_key(&moved)?.to_vec();
+        let sep_child = decode_internal_cell(pager.read_page(parent_id)?.cell_data(sep_idx))?.1;
+        let new_sep = encode_internal_cell(&moved_key, sep_child);
+        let pp = pager.write_page(parent_id)?;
+        pp.remove_cell(sep_idx);
+        pp.insert_cell(sep_idx, &new_sep);
+        Ok(())
+    }
+
+    /// Move the first cell of the right sibling into the current leaf.
+    fn redistribute_right_leaf(
+        &mut self,
+        pager: &mut Pager,
+        parent_id: u64,
+        child_pos: u16,
+        leaf_id: u64,
+        right_id: u64,
+    ) -> Result<()> {
+        let moved = pager.read_page(right_id)?.cell_data(0).to_vec();
+        {
+            let rp = pager.write_page(right_id)?;
+            rp.remove_cell(0);
+        }
+        let new_first = {
+            let rp = pager.read_page(right_id)?;
+            if rp.cell_count() > 0 {
+                cell_key(rp.cell_data(0))?.to_vec()
+            } else {
+                cell_key(&moved)?.to_vec()
+            }
+        };
+
+        let cnt = pager.read_page(leaf_id)?.cell_count();
+        pager.write_page(leaf_id)?.insert_cell(cnt, &moved);
+
+        let sep_idx = child_pos;
+        let sep_child = decode_internal_cell(pager.read_page(parent_id)?.cell_data(sep_idx))?.1;
+        let new_sep = encode_internal_cell(&new_first, sep_child);
+        let pp = pager.write_page(parent_id)?;
+        pp.remove_cell(sep_idx);
+        pp.insert_cell(sep_idx, &new_sep);
+        Ok(())
+    }
+
+    /// Merge right_leaf into left_leaf and remove the separator from the
+    /// parent.  `sep_idx` is the cell index of the separator between them.
+    fn merge_leaves(
+        &mut self,
+        pager: &mut Pager,
+        parent_id: u64,
+        left_id: u64,
+        right_id: u64,
+        sep_idx: u16,
+    ) -> Result<()> {
+        // Collect both leaves' cells.
+        let (left_cells, left_parent, left_rptr) = {
+            let l = pager.read_page(left_id)?;
+            let mut v = Vec::with_capacity(l.cell_count() as usize);
+            for i in 0..l.cell_count() {
+                v.push(l.cell_data(i).to_vec());
+            }
+            (v, l.parent_ptr(), l.right_ptr())
+        };
+        let (right_cells, right_rptr) = {
+            let r = pager.read_page(right_id)?;
+            let mut v = Vec::with_capacity(r.cell_count() as usize);
+            for i in 0..r.cell_count() {
+                v.push(r.cell_data(i).to_vec());
+            }
+            (v, r.right_ptr())
+        };
+
+        // Rebuild left leaf with combined cells (avoids lazy-compaction waste).
+        {
+            let lp = pager.write_page(left_id)?;
+            *lp = Page::new(left_id, PageType::Leaf);
+            lp.set_parent_ptr(left_parent);
+            lp.set_right_ptr(right_rptr); // skip the right leaf in chain
+
+            for cell in left_cells.iter().chain(right_cells.iter()) {
+                if !lp.insert_cell(lp.cell_count(), cell) {
+                    // Combined data doesn't fit — abort merge, restore left.
+                    *lp = Page::new(left_id, PageType::Leaf);
+                    lp.set_parent_ptr(left_parent);
+                    lp.set_right_ptr(left_rptr);
+                    for c in &left_cells {
+                        lp.insert_cell(lp.cell_count(), c);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        // Remove separator from parent and fix the child pointer.
+        {
+            let pp = pager.write_page(parent_id)?;
+            pp.remove_cell(sep_idx);
+            let new_cnt = pp.cell_count();
+            if sep_idx < new_cnt {
+                // The cell that shifted into sep_idx still references
+                // the now-dead right leaf.  Rewrite it to point to left.
+                let cell = pp.cell_data(sep_idx).to_vec();
+                let (k, _) = decode_internal_cell(&cell)?;
+                let fixed = encode_internal_cell(k, left_id);
+                pp.remove_cell(sep_idx);
+                pp.insert_cell(sep_idx, &fixed);
+            } else {
+                // Right leaf was via right_ptr.
+                pp.set_right_ptr(left_id);
+            }
+        }
+
+        self.rebalance_internal(pager, parent_id)
+    }
+
+    /// Handle an internal node that lost a child.  Currently handles root
+    /// collapse (root with 0 separators promotes its sole child).
+    fn rebalance_internal(&mut self, pager: &mut Pager, internal_id: u64) -> Result<()> {
+        let (count, right_ptr) = {
+            let p = pager.read_page(internal_id)?;
+            (p.cell_count(), p.right_ptr())
+        };
+        if internal_id == self.root_page_id && count == 0 && right_ptr != 0 {
+            self.root_page_id = right_ptr;
+            pager.write_page(right_ptr)?.set_parent_ptr(0);
+        }
         Ok(())
     }
 
@@ -431,7 +718,7 @@ impl BTree {
         let mut pos = count;
         for i in 0..count {
             let cell = page.cell_data(i);
-            let k = cell_key(cell);
+            let k = cell_key(cell)?;
             if pos == count && insert_key < k {
                 pos = i;
             }
@@ -441,10 +728,10 @@ impl BTree {
         all_cells.insert(pos as usize, new_cell);
 
         let mid = all_cells.len() / 2;
-        let split_key = cell_key(&all_cells[mid]).to_vec();
+        let split_key = cell_key(&all_cells[mid])?.to_vec();
 
         // The left child of the split key's cell becomes the right_ptr of the left node
-        let (_, split_left_child) = decode_internal_cell(&all_cells[mid]);
+        let (_, split_left_child) = decode_internal_cell(&all_cells[mid])?;
 
         // Create new right internal node
         let new_internal_id = pager.allocate_page(PageType::Internal)?;
@@ -496,7 +783,7 @@ impl BTree {
             let mut child_ids = Vec::new();
             for i in 0..rcount {
                 let cell = right_page.cell_data(i);
-                let (_, c) = decode_internal_cell(cell);
+                let (_, c) = decode_internal_cell(cell)?;
                 child_ids.push(c);
             }
             child_ids.push(right_page.right_ptr());
@@ -663,6 +950,68 @@ mod tests {
                 Some(b"world".to_vec())
             );
             assert_eq!(tree.get(&mut pager, b"foo").unwrap(), Some(b"bar".to_vec()));
+        }
+    }
+
+    #[test]
+    fn decode_leaf_cell_too_short_returns_error() {
+        // Empty cell
+        assert!(decode_leaf_cell(&[]).is_err());
+        // Only key length, no key data
+        assert!(decode_leaf_cell(&[5, 0]).is_err());
+        // Key length says 2 bytes, but only 1 byte of key data
+        assert!(decode_leaf_cell(&[2, 0, 0xA]).is_err());
+        // Key ok but missing value length
+        assert!(decode_leaf_cell(&[2, 0, 0xA, 0xB]).is_err());
+    }
+
+    #[test]
+    fn decode_internal_cell_too_short_returns_error() {
+        assert!(decode_internal_cell(&[]).is_err());
+        assert!(decode_internal_cell(&[3, 0]).is_err());
+        // Key length says 2, only 1 byte key, then 8 bytes child
+        assert!(decode_internal_cell(&[2, 0, 0xA, 0, 0, 0, 0, 0, 0, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn cell_key_too_short_returns_error() {
+        assert!(cell_key(&[]).is_err());
+        assert!(cell_key(&[5, 0]).is_err());
+    }
+
+    #[test]
+    fn delete_at_scale_no_corruption() {
+        use crate::row::{decode_key_u64, encode_key_u64, encode_row, Datum};
+
+        let (mut pager, _dir) = temp_pager();
+        let mut tree = BTree::create(&mut pager).unwrap();
+
+        for i in 1..=10_000u64 {
+            let key = encode_key_u64(i);
+            let val = encode_row(&[Datum::Integer(i as i64)]);
+            tree.insert(&mut pager, &key, &val).unwrap();
+        }
+
+        let mut failures = Vec::new();
+        for i in (1..=10_000u64).step_by(2) {
+            let key = encode_key_u64(i);
+            let ok = tree.delete(&mut pager, &key).unwrap();
+            if !ok {
+                failures.push(i);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "failed to delete {} keys: {:?}",
+            failures.len(),
+            &failures[..failures.len().min(10)]
+        );
+
+        let entries = tree.scan(&mut pager).unwrap();
+        assert_eq!(entries.len(), 5000, "expected 5000 remaining entries");
+        for (idx, (key, _)) in entries.iter().enumerate() {
+            let k = decode_key_u64(key);
+            assert_eq!(k, (idx as u64 + 1) * 2, "unexpected key at position {idx}");
         }
     }
 }

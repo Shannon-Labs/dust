@@ -41,8 +41,9 @@ pub fn run() {
             }
         };
 
-        let response = handle_request(&mut state, &request);
-        write_response(&stdout, &response);
+        if let Some(response) = handle_request(&mut state, &request) {
+            write_response(&stdout, &response);
+        }
     }
 }
 
@@ -53,20 +54,20 @@ fn write_response(stdout: &io::Stdout, response: &JsonRpcResponse) {
     let _ = out.flush();
 }
 
-fn handle_request(state: &mut DustState, req: &JsonRpcRequest) -> JsonRpcResponse {
-    let id = req.id.clone().unwrap_or(Value::Null);
+fn handle_request(state: &mut DustState, req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+    // JSON-RPC 2.0: notifications (no id) must not produce a response.
+    let id = match &req.id {
+        Some(id) => id.clone(),
+        None => {
+            // Silently consume known notifications; ignore unknown ones.
+            return None;
+        }
+    };
 
-    match req.method.as_str() {
+    let response = match req.method.as_str() {
         "initialize" => {
             let result = protocol::initialize_result();
             JsonRpcResponse::ok(id, result)
-        }
-        "initialized" => {
-            if req.id.is_some() {
-                JsonRpcResponse::ok(id, Value::Null)
-            } else {
-                JsonRpcResponse::ok(Value::Null, Value::Null)
-            }
         }
         "tools/list" => {
             let result = protocol::tools_list();
@@ -116,14 +117,10 @@ fn handle_request(state: &mut DustState, req: &JsonRpcRequest) -> JsonRpcRespons
             }
         }
         "ping" => JsonRpcResponse::ok(id, serde_json::json!({})),
-        _ => {
-            if req.id.is_none() {
-                JsonRpcResponse::ok(Value::Null, Value::Null)
-            } else {
-                JsonRpcResponse::error(id, -32601, format!("Method not found: {}", req.method))
-            }
-        }
-    }
+        _ => JsonRpcResponse::error(id, -32601, format!("Method not found: {}", req.method)),
+    };
+
+    Some(response)
 }
 
 fn dispatch_tool(state: &mut DustState, name: &str, args: &Value) -> Result<String, String> {
