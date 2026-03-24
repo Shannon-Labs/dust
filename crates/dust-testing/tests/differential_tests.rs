@@ -25,12 +25,14 @@ impl DifferentialTest {
     fn compare_query(&mut self, sql: &str) {
         let dust_result = self.dust.query(sql).expect("dust query failed");
 
-        let mut dust_rows: Vec<Vec<String>> = match &dust_result {
-            QueryOutput::Rows { rows, .. } => rows.clone(),
-            QueryOutput::Message(msg) => {
-                eprintln!("  [SKIP] dust returned message for: {sql} -> {msg}");
-                return;
-            }
+        let mut dust_rows: Vec<Vec<String>> = if dust_result.has_rows() {
+            let (_, rows) = dust_result.into_string_rows();
+            rows
+        } else if let QueryOutput::Message(msg) = &dust_result {
+            eprintln!("  [SKIP] dust returned message for: {sql} -> {msg}");
+            return;
+        } else {
+            return;
         };
 
         let mut sqlite_rows: Vec<Vec<String>> = Vec::new();

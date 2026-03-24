@@ -1,4 +1,4 @@
-mod seeds;
+pub(crate) mod seeds;
 
 use std::collections::HashMap;
 use std::env;
@@ -378,7 +378,9 @@ async fn handle_pg_connection(
                 };
 
                 match result {
-                    Ok(dust_exec::QueryOutput::Rows { columns, rows }) => {
+                    Ok(output @ dust_exec::QueryOutput::Rows { .. })
+                    | Ok(output @ dust_exec::QueryOutput::RowsTyped { .. }) => {
+                        let (columns, rows) = output.into_string_rows();
                         pg_send_row_description(&mut stream, &columns).await?;
                         for row in &rows {
                             pg_send_data_row(&mut stream, row).await?;

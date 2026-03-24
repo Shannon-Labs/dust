@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+dust-catalog = { path = "../dust-catalog" }
 dust-types = { path = "../dust-types" }
 serde.workspace = true
 toml.workspace = true

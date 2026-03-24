@@ -56,6 +56,28 @@ impl WorkspaceLayout {
         self.wal_dir().join(branch.as_path()).with_extension("wal")
     }
 
+    pub fn snapshots_dir(&self) -> PathBuf {
+        self.workspace_dir().join("snapshots")
+    }
+
+    pub fn branches_dir(&self) -> PathBuf {
+        self.workspace_dir().join("branches")
+    }
+
+    /// Return the path to a branch's `data.db` file.
+    ///
+    /// For the `main` branch the file lives directly under the workspace dir.
+    /// For any other branch it lives in `branches/<name>/data.db`.
+    pub fn branch_data_db_path(&self, branch: &BranchName) -> PathBuf {
+        if branch.as_str() == BranchName::MAIN {
+            self.workspace_dir().join("data.db")
+        } else {
+            self.branches_dir()
+                .join(branch.as_path())
+                .join("data.db")
+        }
+    }
+
     pub fn branch_root(&self, branch: &BranchName) -> PathBuf {
         self.refs_dir().join(branch.as_path())
     }

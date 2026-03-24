@@ -1,8 +1,9 @@
 use crate::manifest::Manifest;
-use dust_types::{Result, SchemaFingerprint};
+use crate::WorkspaceLayout;
+use dust_types::{DustError, Result, SchemaFingerprint};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BranchName(String);
@@ -93,6 +94,32 @@ impl BranchRef {
 
     pub fn to_manifest(&self) -> Manifest {
         Manifest::from_branch_ref(self)
+    }
+
+    /// Write this branch ref to a TOML file at the given path.
+    pub fn write(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| DustError::Message(format!("failed to serialize branch ref: {e}")))?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Read a branch ref from a TOML file at the given path.
+    pub fn read(path: &Path) -> Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let branch_ref: BranchRef = toml::from_str(&content)
+            .map_err(|e| DustError::Message(format!("failed to parse branch ref: {e}")))?;
+        Ok(branch_ref)
+    }
+
+    /// Create a new branch from this ref (writes a new ref file only — O(1)).
+    pub fn create_branch(&self, branch: &BranchName, layout: &WorkspaceLayout) -> Result<()> {
+        let new_ref = BranchRef::new(branch.clone(), self.head.clone());
+        let ref_path = layout.branch_ref_path(branch);
+        new_ref.write(&ref_path)
     }
 }
 

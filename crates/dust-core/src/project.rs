@@ -79,6 +79,14 @@ impl ProjectPaths {
         self.root.join("db/schema.sql")
     }
 
+    pub fn queries_dir(&self) -> PathBuf {
+        self.root.join("db/queries")
+    }
+
+    pub fn generated_dir(&self) -> PathBuf {
+        self.root.join("db/generated")
+    }
+
     pub fn workspace_path(&self) -> PathBuf {
         self.root.join(".dust/workspace")
     }

@@ -11,6 +11,8 @@ pub struct DustLock {
     pub version: u32,
     pub schema_fingerprint: String,
     #[serde(default)]
+    pub schema_sql: String,
+    #[serde(default)]
     pub schema_objects: Vec<SchemaObjectRecord>,
     #[serde(default)]
     pub migration_heads: Vec<MigrationHeadRecord>,
@@ -23,6 +25,7 @@ impl DustLock {
         Self {
             version: 1,
             schema_fingerprint: SchemaFingerprint::compute(schema).0,
+            schema_sql: schema.to_string(),
             schema_objects: Vec::new(),
             migration_heads: Vec::new(),
             artifact_fingerprints: Vec::new(),
@@ -41,6 +44,7 @@ impl DustLock {
         Self {
             version: 1,
             schema_fingerprint: SchemaFingerprint::compute(schema).0,
+            schema_sql: schema.to_string(),
             schema_objects,
             migration_heads: Vec::new(),
             artifact_fingerprints: Vec::new(),
