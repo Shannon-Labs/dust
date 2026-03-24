@@ -8,9 +8,12 @@ fn open_engine(path: &Path) -> PersistentEngine {
 }
 
 fn query_rows(engine: &mut PersistentEngine, sql: &str) -> Vec<Vec<String>> {
-    match engine.query(sql).expect("query failed") {
-        QueryOutput::Rows { rows, .. } => rows,
-        other => panic!("expected Rows, got {other:?}"),
+    let output = engine.query(sql).expect("query failed");
+    if output.has_rows() {
+        let (_, rows) = output.into_string_rows();
+        rows
+    } else {
+        panic!("expected rows, got: {output:?}");
     }
 }
 

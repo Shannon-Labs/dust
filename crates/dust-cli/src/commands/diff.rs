@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 use dust_core::ProjectPaths;
-use dust_types::Result;
+use dust_types::{DustError, Result};
 
 use crate::project::{find_project_root, read_current_branch, refs_dir};
 
@@ -18,7 +18,9 @@ pub struct DiffArgs {
 }
 
 pub fn run(args: DiffArgs) -> Result<()> {
-    let project_root = find_project_root(&args.path).unwrap_or_else(|| args.path.clone());
+    let project_root = find_project_root(&args.path).ok_or_else(|| {
+        DustError::ProjectNotFound(args.path.display().to_string())
+    })?;
     let refs = refs_dir(&project_root);
     let current = read_current_branch(&refs);
 
@@ -30,7 +32,11 @@ pub fn run(args: DiffArgs) -> Result<()> {
         (None, None) => (current.clone(), "main".to_string()),
         (Some(branch), None) => (branch, current.clone()),
         (Some(from), Some(to)) => (from, to),
-        (None, Some(_)) => unreachable!(),
+        (None, Some(_)) => {
+            return Err(DustError::InvalidInput(
+                "cannot specify --to without a source branch".to_string(),
+            ));
+        }
     };
 
     // When comparing a branch against itself, there is nothing to show.
