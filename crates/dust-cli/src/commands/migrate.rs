@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 use dust_core::{ProjectPaths, Result};
 use dust_exec::PersistentEngine;
 use dust_migrate::{
-    apply_migrations, migration_status, plan_migration, replay_migrations, DustLock,
-    MigrationExecutor,
+    DustLock, MigrationExecutor, apply_migrations, migration_status, plan_migration,
+    replay_migrations,
 };
 
 use crate::project::find_project_root;
@@ -203,7 +203,7 @@ fn run_replay(path: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn next_migration_number(migrations_dir: &PathBuf) -> Result<u32> {
+fn next_migration_number(migrations_dir: &Path) -> Result<u32> {
     let files = dust_migrate::collect_migration_files(migrations_dir)?;
     let mut max_num = 0u32;
     for (id, _) in &files {
@@ -294,7 +294,9 @@ fn reconstruct_schema_sql(lock: &DustLock) -> Result<String> {
     for index_name in &indexes {
         // Use first table as target, or skip if none
         if let Some(first_table) = tables.first() {
-            sql.push_str(&format!("CREATE INDEX {index_name} ON {first_table} (id);\n"));
+            sql.push_str(&format!(
+                "CREATE INDEX {index_name} ON {first_table} (id);\n"
+            ));
         }
     }
 

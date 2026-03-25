@@ -3,7 +3,10 @@ mod demo_data;
 mod format;
 mod import_postgres;
 mod import_sqlite;
+mod pgwire;
 pub(crate) mod project;
+mod sql_quote;
+mod style;
 
 use clap::{Parser, Subcommand};
 use miette::IntoDiagnostic;
@@ -23,7 +26,7 @@ enum Commands {
     Branch(commands::branch::BranchArgs),
     /// Generate typed query artifacts (Rust, TypeScript)
     Codegen(commands::codegen::CodegenArgs),
-    /// Create a demo project with sample data and example queries
+    /// Create a demo project and run a timed walkthrough
     Demo(commands::demo::DemoArgs),
     /// Package a project for deployment
     Deploy(commands::deploy::DeployArgs),

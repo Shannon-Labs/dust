@@ -1,7 +1,7 @@
 use dust_catalog::{Catalog, ColumnDesc, IndexDesc, IndexMethod, TableDesc};
 use dust_types::{Result, SchemaFingerprint};
 
-use crate::diff::{diff_objects, ObjectChange};
+use crate::diff::{ObjectChange, diff_objects};
 use crate::metadata::{SchemaObjectKind, SchemaObjectRecord};
 
 #[derive(Debug, Clone)]
@@ -116,7 +116,9 @@ impl CatalogByIdExt for Catalog {
     }
 
     fn index_by_id_str(&self, id: &str) -> Option<&IndexDesc> {
-        self.indexes().iter().find(|index| index.id.to_string() == id)
+        self.indexes()
+            .iter()
+            .find(|index| index.id.to_string() == id)
     }
 }
 
@@ -349,7 +351,7 @@ fn generate_alter_table(before: &TableDesc, after: &TableDesc) -> String {
 
 fn quote(name: &str) -> String {
     if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !name.chars().next().map_or(true, |c| c.is_ascii_digit())
+        && !name.chars().next().is_none_or(|c| c.is_ascii_digit())
     {
         name.to_string()
     } else {
@@ -375,7 +377,11 @@ fn generate_add_unique_index(table: &str, columns: &[String]) -> String {
         "CREATE UNIQUE INDEX {} ON {} ({})",
         quote(&generated_unique_index_name(table, columns)),
         quote(table),
-        columns.iter().map(|column| quote(column)).collect::<Vec<_>>().join(", ")
+        columns
+            .iter()
+            .map(|column| quote(column))
+            .collect::<Vec<_>>()
+            .join(", ")
     )
 }
 
@@ -430,9 +436,10 @@ mod tests {
         let result = plan_migration(before, after).unwrap();
         assert!(result.is_some());
         let plan = result.unwrap();
-        assert!(plan
-            .migration_sql
-            .contains("ALTER TABLE users ADD COLUMN email"));
+        assert!(
+            plan.migration_sql
+                .contains("ALTER TABLE users ADD COLUMN email")
+        );
         assert!(plan.migration_sql.contains("NOT NULL"));
         assert!(plan.migration_sql.contains("UNIQUE"));
     }
@@ -445,9 +452,10 @@ mod tests {
         let result = plan_migration(before, after).unwrap();
         assert!(result.is_some());
         let plan = result.unwrap();
-        assert!(plan
-            .migration_sql
-            .contains("ALTER TABLE users DROP COLUMN email"));
+        assert!(
+            plan.migration_sql
+                .contains("ALTER TABLE users DROP COLUMN email")
+        );
     }
 
     #[test]
@@ -470,9 +478,10 @@ mod tests {
         let result = plan_migration(before, after).unwrap();
         assert!(result.is_some());
         let plan = result.unwrap();
-        assert!(plan
-            .migration_sql
-            .contains("DROP INDEX IF EXISTS users_idx"));
+        assert!(
+            plan.migration_sql
+                .contains("DROP INDEX IF EXISTS users_idx")
+        );
     }
 
     #[test]
@@ -490,13 +499,15 @@ mod tests {
     fn modified_index_change_generates_rebuild() {
         // Test index modification by changing the column list.
         // (USING HNSW syntax is not yet supported by the parser.)
-        let before =
-            "CREATE TABLE users (id UUID PRIMARY KEY, name TEXT);\nCREATE INDEX users_idx ON users (id);";
-        let after =
-            "CREATE TABLE users (id UUID PRIMARY KEY, name TEXT);\nCREATE INDEX users_idx ON users (name);";
+        let before = "CREATE TABLE users (id UUID PRIMARY KEY, name TEXT);\nCREATE INDEX users_idx ON users (id);";
+        let after = "CREATE TABLE users (id UUID PRIMARY KEY, name TEXT);\nCREATE INDEX users_idx ON users (name);";
 
         let result = plan_migration(before, after).unwrap().unwrap();
-        assert!(result.migration_sql.contains("DROP INDEX IF EXISTS users_idx"));
+        assert!(
+            result
+                .migration_sql
+                .contains("DROP INDEX IF EXISTS users_idx")
+        );
         assert!(result.migration_sql.contains("CREATE INDEX"));
     }
 

@@ -421,7 +421,10 @@ impl TableEngine {
                     .unwrap_or(Datum::Null);
                 secondary_index_key(&d, rowid)
             };
-            let meta = self.secondary_indexes.get_mut(&name).unwrap();
+            let meta = self
+                .secondary_indexes
+                .get_mut(&name)
+                .expect("index present: name came from secondary_index_names_for_table");
             meta.btree.insert(&mut self.pager, &key, b"")?;
         }
         Ok(())
@@ -461,7 +464,10 @@ impl TableEngine {
                     )));
                 }
             }
-            let meta = self.secondary_indexes.get_mut(&name).unwrap();
+            let meta = self
+                .secondary_indexes
+                .get_mut(&name)
+                .expect("index present: name came from secondary_index_names_for_table");
             meta.btree.insert(&mut self.pager, &key, b"")?;
         }
         Ok(())
@@ -476,14 +482,18 @@ impl TableEngine {
         let names = self.secondary_index_names_for_table(table);
         for name in names {
             let key = {
-                let meta = self.secondary_indexes.get(&name).unwrap();
+                let meta = self.secondary_indexes.get(&name).ok_or_else(|| {
+                    DustError::Message("secondary index disappeared during delete".to_string())
+                })?;
                 let d = values
                     .get(meta.column_index)
                     .cloned()
                     .unwrap_or(Datum::Null);
                 secondary_index_key(&d, rowid)
             };
-            let meta = self.secondary_indexes.get_mut(&name).unwrap();
+            let meta = self.secondary_indexes.get_mut(&name).ok_or_else(|| {
+                DustError::Message("secondary index disappeared during delete".to_string())
+            })?;
             meta.btree.delete(&mut self.pager, &key)?;
         }
         Ok(())
@@ -539,7 +549,10 @@ impl TableEngine {
         }
 
         for values in rows {
-            let meta = self.tables.get_mut(table).unwrap(); // safe: checked above
+            let meta = self
+                .tables
+                .get_mut(table)
+                .expect("table present: existence verified before loop");
             let rowid = meta.next_rowid;
             meta.next_rowid += 1;
 

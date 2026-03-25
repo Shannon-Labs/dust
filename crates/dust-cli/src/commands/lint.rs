@@ -3,9 +3,11 @@ use std::path::{Path, PathBuf};
 use clap::Args;
 use dust_core::{ProjectPaths, Result};
 use dust_sql::{
-    parse_program, AstStatement, CreateTableStatement, SelectItem, TableConstraintKind,
-    TableElement,
+    AstStatement, CreateTableStatement, SelectItem, TableConstraintKind, TableElement,
+    parse_program,
 };
+
+use crate::style;
 
 #[derive(Debug, Args)]
 pub struct LintArgs {
@@ -363,6 +365,7 @@ fn lint_query_files(queries_dir: &Path) -> Vec<LintMessage> {
 }
 
 pub fn run(args: LintArgs) -> Result<()> {
+    let ui = style::stdout();
     let root = match args.path {
         Some(path) => path,
         None => match find_project_root(&std::env::current_dir()?) {
@@ -409,19 +412,24 @@ pub fn run(args: LintArgs) -> Result<()> {
 
     for msg in &all_messages {
         let label = match msg.severity {
-            LintSeverity::Error => "error",
-            LintSeverity::Warning => "warn",
-            LintSeverity::Info => "info",
-            LintSeverity::Style => "style",
+            LintSeverity::Error => ui.error("[error]"),
+            LintSeverity::Warning => ui.warning("[warn]"),
+            LintSeverity::Info => ui.info("[info]"),
+            LintSeverity::Style => ui.dim("[style]"),
         };
-        println!("[{label}] {}: {}", msg.code, msg.message);
+        println!("{label} {}: {}", ui.header(msg.code), msg.message);
     }
 
     println!();
-    println!(
+    let summary = format!(
         "{} error(s), {} warning(s), {} info, {} style",
         errors, warnings, info, style
     );
+    if errors == 0 {
+        println!("{}", ui.success(summary));
+    } else {
+        println!("{}", ui.error(summary));
+    }
 
     if errors > 0 {
         return Err(dust_types::DustError::Message(
@@ -435,7 +443,6 @@ pub fn run(args: LintArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dust_sql::parse_program;
 
     #[test]
     fn lint_detects_missing_primary_key() {
@@ -476,12 +483,16 @@ mod tests {
     fn lint_detects_mixed_case_without_quoting() {
         let sql = "CREATE TABLE myTable (myCol TEXT PRIMARY KEY);";
         let messages = lint_schema(sql);
-        assert!(messages
-            .iter()
-            .any(|m| m.code == "L007" && m.message.contains("table")));
-        assert!(messages
-            .iter()
-            .any(|m| m.code == "L007" && m.message.contains("column")));
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.code == "L007" && m.message.contains("table"))
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.code == "L007" && m.message.contains("column"))
+        );
     }
 
     #[test]

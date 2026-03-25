@@ -293,10 +293,7 @@ fn infer_select_results(
 }
 
 /// Try to resolve the SQL type of an expression using the schema.
-fn resolve_expr_type(
-    expr: &Expr,
-    table_cols: Option<&HashMap<String, String>>,
-) -> Option<String> {
+fn resolve_expr_type(expr: &Expr, table_cols: Option<&HashMap<String, String>>) -> Option<String> {
     match expr {
         Expr::ColumnRef(cref) => {
             table_cols.and_then(|cols| cols.get(cref.column.value.as_str()).cloned())
@@ -405,10 +402,7 @@ fn validate_annotation_vs_inferred(
                 ann.name, inf.name,
             ));
         }
-        if !ann.ty.is_empty()
-            && !inf.ty.is_empty()
-            && ann.ty.to_ascii_uppercase() != inf.ty.to_ascii_uppercase()
-        {
+        if !ann.ty.is_empty() && !inf.ty.is_empty() && !ann.ty.eq_ignore_ascii_case(&inf.ty) {
             warnings.push(format!(
                 "{query_name}: {label} `{}` type mismatch: annotation says `{}`, schema says `{}`",
                 ann.name, ann.ty, inf.ty,
@@ -468,20 +462,26 @@ pub fn parse_query_file_with_schema(
                     &name,
                 ));
                 // Prefer annotation when it exists (it's the user's explicit override)
-                (block.params, block.results, TypeSource::Annotation, warnings)
+                (
+                    block.params,
+                    block.results,
+                    TypeSource::Annotation,
+                    warnings,
+                )
             }
             // Inferred only: use inferred types
             (Some((inf_params, inf_results)), false) => {
                 (inf_params, inf_results, TypeSource::Inferred, Vec::new())
             }
             // Annotation only: use annotations
-            (None, true) => {
-                (block.params, block.results, TypeSource::Annotation, Vec::new())
-            }
+            (None, true) => (
+                block.params,
+                block.results,
+                TypeSource::Annotation,
+                Vec::new(),
+            ),
             // Neither: empty
-            (None, false) => {
-                (Vec::new(), Vec::new(), TypeSource::Annotation, Vec::new())
-            }
+            (None, false) => (Vec::new(), Vec::new(), TypeSource::Annotation, Vec::new()),
         };
 
         if !block.sql.is_empty() || !params.is_empty() || !results.is_empty() {

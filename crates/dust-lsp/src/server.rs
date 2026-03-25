@@ -5,17 +5,23 @@ use std::sync::Mutex;
 
 use dust_catalog::Catalog;
 use dust_sql::parse_program;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::codec::{
-    parse_message, read_message, response_error, response_ok, write_notification, write_response,
-    Message, Request, Response,
+    Message, Request, Response, parse_message, read_message, response_error, response_ok,
+    write_notification, write_response,
 };
 
 pub struct LspServer {
     documents: Mutex<HashMap<String, String>>,
     catalog: Mutex<Option<Catalog>>,
     schema_path: Mutex<Option<PathBuf>>,
+}
+
+impl Default for LspServer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LspServer {
@@ -102,17 +108,16 @@ impl LspServer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        if let Some(uri) = &root_uri {
-            if let Some(path) = uri_to_path(uri) {
-                let schema_path = path.join("db").join("schema.sql");
-                if schema_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&schema_path) {
-                        if let Ok(catalog) = Catalog::from_sql(&content) {
-                            *self.catalog.lock().unwrap() = Some(catalog);
-                            *self.schema_path.lock().unwrap() = Some(schema_path);
-                        }
-                    }
-                }
+        if let Some(uri) = &root_uri
+            && let Some(path) = uri_to_path(uri)
+        {
+            let schema_path = path.join("db").join("schema.sql");
+            if schema_path.exists()
+                && let Ok(content) = std::fs::read_to_string(&schema_path)
+                && let Ok(catalog) = Catalog::from_sql(&content)
+            {
+                *self.catalog.lock().unwrap() = Some(catalog);
+                *self.schema_path.lock().unwrap() = Some(schema_path);
             }
         }
 
@@ -170,15 +175,14 @@ impl LspServer {
             .unwrap_or("");
         let changes = params.get("contentChanges").and_then(|v| v.as_array());
 
-        if let Some(changes) = changes {
-            if let Some(last) = changes.last() {
-                if let Some(text) = last.get("text").and_then(|v| v.as_str()) {
-                    self.documents
-                        .lock()
-                        .unwrap()
-                        .insert(uri.to_string(), text.to_string());
-                }
-            }
+        if let Some(changes) = changes
+            && let Some(last) = changes.last()
+            && let Some(text) = last.get("text").and_then(|v| v.as_str())
+        {
+            self.documents
+                .lock()
+                .unwrap()
+                .insert(uri.to_string(), text.to_string());
         }
     }
 
@@ -258,25 +262,24 @@ impl LspServer {
         let catalog = self.catalog.lock().unwrap();
 
         if is_after_dot(text, byte_offset) {
-            if let Some(table_name) = extract_table_before_dot(text, byte_offset) {
-                if let Some(cat) = catalog.as_ref() {
-                    if let Some(table) = cat.table(&table_name) {
-                        for col in &table.columns {
-                            if prefix.is_empty() || col.name.starts_with(&prefix) {
-                                items.push(json!({
-                                    "label": col.name,
-                                    "kind": 5,
-                                    "detail": format!("{}{}", col.ty, if col.nullable { "" } else { " NOT NULL" }),
-                                    "textEdit": {
-                                        "range": {
-                                            "start": { "line": line, "character": character - prefix.len() },
-                                            "end": { "line": line, "character": character }
-                                        },
-                                        "newText": col.name
-                                    }
-                                }));
+            if let Some(table_name) = extract_table_before_dot(text, byte_offset)
+                && let Some(cat) = catalog.as_ref()
+                && let Some(table) = cat.table(&table_name)
+            {
+                for col in &table.columns {
+                    if prefix.is_empty() || col.name.starts_with(&prefix) {
+                        items.push(json!({
+                            "label": col.name,
+                            "kind": 5,
+                            "detail": format!("{}{}", col.ty, if col.nullable { "" } else { " NOT NULL" }),
+                            "textEdit": {
+                                "range": {
+                                    "start": { "line": line, "character": character - prefix.len() },
+                                    "end": { "line": line, "character": character }
+                                },
+                                "newText": col.name
                             }
-                        }
+                        }));
                     }
                 }
             }
@@ -663,11 +666,7 @@ fn is_ident_byte(b: u8) -> bool {
 }
 
 fn uri_to_path(uri: &str) -> Option<PathBuf> {
-    if uri.starts_with("file://") {
-        Some(PathBuf::from(&uri[7..]))
-    } else {
-        None
-    }
+    uri.strip_prefix("file://").map(PathBuf::from)
 }
 
 fn path_to_uri(path: &Path) -> String {
@@ -780,7 +779,9 @@ mod tests {
             self.0.lock().unwrap().extend_from_slice(buf);
             Ok(buf.len())
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -800,7 +801,10 @@ mod tests {
 
         // Should contain two Content-Length framed responses
         let count = raw.matches("Content-Length:").count();
-        assert_eq!(count, 2, "expected 2 responses, got {count}. Output:\n{raw}");
+        assert_eq!(
+            count, 2,
+            "expected 2 responses, got {count}. Output:\n{raw}"
+        );
 
         // Both response IDs should appear
         assert!(raw.contains("\"id\":1"), "missing response for id 1");

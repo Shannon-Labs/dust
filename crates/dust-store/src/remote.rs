@@ -5,14 +5,17 @@ use crate::workspace::WorkspaceLayout;
 use dust_types::{DustError, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 #[derive(Debug)]
 pub enum RemoteTransport {
     LocalFs(PathBuf),
 }
 
-impl RemoteTransport {
-    pub fn from_str(url: &str) -> Result<Self> {
+impl FromStr for RemoteTransport {
+    type Err = DustError;
+
+    fn from_str(url: &str) -> Result<Self> {
         if url.starts_with("http://") || url.starts_with("https://") {
             return Err(DustError::Message(
                 "HTTP remote transport is not supported; use a local filesystem path instead"
@@ -21,11 +24,13 @@ impl RemoteTransport {
         }
         Ok(RemoteTransport::LocalFs(PathBuf::from(url)))
     }
+}
 
+impl RemoteTransport {
     pub fn push_pack(&self, pack: &PackWriter) -> Result<[u8; 32]> {
         let Self::LocalFs(base) = self;
         let pack_hash = pack.pack_hash();
-        let hex = hex::encode(&pack_hash);
+        let hex = hex::encode(pack_hash);
         let pack_dir = base.join("packs");
         std::fs::create_dir_all(&pack_dir)?;
         let path = pack_dir.join(format!("{hex}.pack"));
@@ -53,8 +58,8 @@ impl RemoteTransport {
         if let Some(parent) = ref_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let contents = toml::to_string_pretty(ref_data)
-            .map_err(|e| DustError::Message(e.to_string()))?;
+        let contents =
+            toml::to_string_pretty(ref_data).map_err(|e| DustError::Message(e.to_string()))?;
         std::fs::write(&ref_path, contents)?;
         Ok(())
     }
@@ -93,22 +98,19 @@ impl RemoteTransport {
         for entry in std::fs::read_dir(&packs_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if let Some(ext) = path.extension() {
-                if ext == "pack" {
-                    if let Some(stem) = path.file_stem() {
-                        if let Ok(hex_str) = stem.to_str().ok_or_else(|| {
-                            DustError::Message("invalid pack filename".to_string())
-                        }) {
-                            let bytes = hex::decode(hex_str).map_err(|_| {
-                                DustError::Message(format!("invalid pack hash: {hex_str}"))
-                            })?;
-                            if bytes.len() == 32 {
-                                let mut hash = [0u8; 32];
-                                hash.copy_from_slice(&bytes);
-                                hashes.push(hash);
-                            }
-                        }
-                    }
+            if let Some(ext) = path.extension()
+                && ext == "pack"
+                && let Some(stem) = path.file_stem()
+                && let Ok(hex_str) = stem
+                    .to_str()
+                    .ok_or_else(|| DustError::Message("invalid pack filename".to_string()))
+            {
+                let bytes = hex::decode(hex_str)
+                    .map_err(|_| DustError::Message(format!("invalid pack hash: {hex_str}")))?;
+                if bytes.len() == 32 {
+                    let mut hash = [0u8; 32];
+                    hash.copy_from_slice(&bytes);
+                    hashes.push(hash);
                 }
             }
         }
@@ -217,7 +219,7 @@ pub fn push_branch(
                 manifests_sent += 1;
             }
         };
-        collect_files_recursive(&segments_dir, &segments_dir, &mut cb)?;
+        collect_files_recursive(&segments_dir, &mut cb)?;
     }
 
     let wal_path = workspace.wal_path(branch);
@@ -225,7 +227,7 @@ pub fn push_branch(
         let wal_bytes = std::fs::read(&wal_path)?;
         let wal_hash = blake3::hash(&wal_bytes);
         if !remote_known_hashes.contains(wal_hash.as_bytes()) {
-            collect_wal_frames(&wal_bytes, &mut pack, &mut remote_known_hashes);
+            collect_wal_frames(&wal_bytes, &mut pack, &remote_known_hashes);
             wal_frames_sent = pack.entry_count() - pages_sent - manifests_sent;
         }
     }
@@ -258,7 +260,9 @@ pub fn push_branch(
         }
         // Also store it as a named file on the remote for easy retrieval.
         let RemoteTransport::LocalFs(base) = remote;
-        let schema_remote_path = base.join("schemas").join(format!("{}.schema.toml", branch.as_str()));
+        let schema_remote_path = base
+            .join("schemas")
+            .join(format!("{}.schema.toml", branch.as_str()));
         if let Some(parent) = schema_remote_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -305,7 +309,7 @@ pub fn pull_branch(
 
     let segments_dir = workspace.segments_dir();
     if segments_dir.exists() {
-        collect_file_hashes(&segments_dir, &segments_dir, &mut local_known_hashes)?;
+        collect_file_hashes(&segments_dir, &mut local_known_hashes)?;
     }
 
     let remote_packs = remote.list_pack_hashes()?;
@@ -434,7 +438,9 @@ pub fn pull_branch(
 
         // Also pull the schema.toml sidecar if the remote has one.
         let RemoteTransport::LocalFs(base) = remote;
-        let schema_remote_path = base.join("schemas").join(format!("{}.schema.toml", branch.as_str()));
+        let schema_remote_path = base
+            .join("schemas")
+            .join(format!("{}.schema.toml", branch.as_str()));
         if schema_remote_path.exists() {
             let schema_local_path = data_db_path.with_extension("schema.toml");
             std::fs::copy(&schema_remote_path, &schema_local_path)?;
@@ -450,11 +456,7 @@ pub fn pull_branch(
     })
 }
 
-fn collect_files_recursive(
-    dir: &Path,
-    base: &Path,
-    callback: &mut dyn FnMut(&[u8], &Path),
-) -> Result<()> {
+fn collect_files_recursive(dir: &Path, callback: &mut dyn FnMut(&[u8], &Path)) -> Result<()> {
     if !dir.is_dir() {
         return Ok(());
     }
@@ -462,22 +464,22 @@ fn collect_files_recursive(
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_files_recursive(&path, base, callback)?;
-        } else if path.is_file() {
-            if let Ok(data) = std::fs::read(&path) {
-                callback(&data, &path);
-            }
+            collect_files_recursive(&path, callback)?;
+        } else if path.is_file()
+            && let Ok(data) = std::fs::read(&path)
+        {
+            callback(&data, &path);
         }
     }
     Ok(())
 }
 
-fn collect_file_hashes(dir: &Path, base: &Path, hashes: &mut HashSet<[u8; 32]>) -> Result<()> {
+fn collect_file_hashes(dir: &Path, hashes: &mut HashSet<[u8; 32]>) -> Result<()> {
     let mut cb = |data: &[u8], _path: &Path| {
         let hash = blake3::hash(data);
         hashes.insert(*hash.as_bytes());
     };
-    collect_files_recursive(dir, base, &mut cb)
+    collect_files_recursive(dir, &mut cb)
 }
 
 const WAL_HEADER_SIZE: usize = 32;
@@ -670,10 +672,13 @@ mod tests {
 
     #[test]
     fn http_transport_returns_error() {
-        let result = RemoteTransport::from_str("https://example.com/api");
+        let result = "https://example.com/api".parse::<RemoteTransport>();
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("HTTP remote transport is not supported"));
+        assert!(
+            err.to_string()
+                .contains("HTTP remote transport is not supported")
+        );
     }
 
     #[test]
@@ -717,10 +722,10 @@ mod tests {
 
     #[test]
     fn transport_from_str_parses_correctly() {
-        let fs = RemoteTransport::from_str("/tmp/remote").unwrap();
+        let fs = "/tmp/remote".parse::<RemoteTransport>().unwrap();
         assert!(matches!(fs, RemoteTransport::LocalFs(_)));
 
-        let http = RemoteTransport::from_str("https://example.com/api");
+        let http = "https://example.com/api".parse::<RemoteTransport>();
         assert!(http.is_err());
     }
 
@@ -755,7 +760,9 @@ mod tests {
         std::fs::create_dir_all(data_db_path.parent().unwrap()).unwrap();
         {
             let mut engine = TableEngine::open_or_create(&data_db_path).unwrap();
-            engine.create_table("items", vec!["id".to_string(), "name".to_string()]).unwrap();
+            engine
+                .create_table("items", vec!["id".to_string(), "name".to_string()])
+                .unwrap();
             engine.flush().unwrap();
             engine.sync().unwrap();
         }
@@ -773,7 +780,10 @@ mod tests {
         let pull_workspace = WorkspaceLayout::new(pull_ws_dir.path());
         let pull_result = pull_branch(&pull_workspace, &branch, &remote).unwrap();
         assert!(pull_result.local_ref_updated);
-        assert!(pull_result.data_db_materialized, "data.db should be materialized");
+        assert!(
+            pull_result.data_db_materialized,
+            "data.db should be materialized"
+        );
         assert!(pull_result.pages_received > 0);
 
         // Verify the pulled data.db is usable.
@@ -817,7 +827,10 @@ mod tests {
 
         let pulled_db_path = pull_workspace.branch_data_db_path(&branch);
         let pulled_size = std::fs::metadata(&pulled_db_path).unwrap().len();
-        assert_eq!(pulled_size, original_size, "pulled DB size should match original");
+        assert_eq!(
+            pulled_size, original_size,
+            "pulled DB size should match original"
+        );
     }
 
     /// Push a non-main branch and verify data.db lands in the correct
@@ -832,7 +845,9 @@ mod tests {
         std::fs::create_dir_all(data_db_path.parent().unwrap()).unwrap();
         {
             let mut engine = TableEngine::open_or_create(&data_db_path).unwrap();
-            engine.create_table("things", vec!["x".to_string()]).unwrap();
+            engine
+                .create_table("things", vec!["x".to_string()])
+                .unwrap();
             engine.flush().unwrap();
             engine.sync().unwrap();
         }

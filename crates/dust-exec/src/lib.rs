@@ -1,7 +1,10 @@
+mod aggregate;
 pub mod binder;
+mod column;
 pub mod datetime;
 pub mod deterministic;
 pub mod engine;
+mod eval;
 mod expr_validate;
 pub mod persistent;
 mod persistent_schema;

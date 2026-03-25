@@ -116,18 +116,18 @@ pub fn run(args: DeployArgs) -> Result<()> {
 fn parse_project_name(config: &str) -> String {
     for line in config.lines() {
         let line = line.trim();
-        if line.starts_with("name") {
-            if let Some(rest) = line.strip_prefix("name") {
-                let rest = rest.trim();
-                if let Some(name) = rest.strip_prefix('=').map(|s| s.trim()) {
-                    if name.starts_with('"') && name.ends_with('"') {
-                        return name[1..name.len() - 1].to_string();
-                    }
-                    if name.starts_with('\'') && name.ends_with('\'') {
-                        return name[1..name.len() - 1].to_string();
-                    }
-                    return name.to_string();
+        if line.starts_with("name")
+            && let Some(rest) = line.strip_prefix("name")
+        {
+            let rest = rest.trim();
+            if let Some(name) = rest.strip_prefix('=').map(|s| s.trim()) {
+                if name.starts_with('"') && name.ends_with('"') {
+                    return name[1..name.len() - 1].to_string();
                 }
+                if name.starts_with('\'') && name.ends_with('\'') {
+                    return name[1..name.len() - 1].to_string();
+                }
+                return name.to_string();
             }
         }
     }

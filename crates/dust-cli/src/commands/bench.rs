@@ -1,9 +1,12 @@
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use clap::Args;
 use dust_core::Result;
 use dust_exec::{PersistentEngine, QueryOutput};
+
+use crate::style;
 
 #[derive(Debug, Args)]
 pub struct BenchArgs {
@@ -16,12 +19,16 @@ pub struct BenchArgs {
     #[arg(long, default_value = "100")]
     pub branch_rows: usize,
 
+    #[arg(long)]
+    pub compare: bool,
+
     pub path: Option<PathBuf>,
 }
 
 struct BenchResult {
     name: String,
-    rows_or_ops: String,
+    scale_count: usize,
+    scale_label: String,
     elapsed: std::time::Duration,
 }
 
@@ -64,21 +71,19 @@ fn bench_insert(temp_dir: &std::path::Path, row_count: usize) -> Result<BenchRes
     let elapsed = start.elapsed();
 
     let result = engine.query("SELECT count(*) FROM bench")?;
-    match &result {
-        QueryOutput::Rows { rows, .. } => {
-            let count: usize = rows
-                .first()
-                .and_then(|r| r.first())
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0);
-            assert_eq!(count, row_count, "insert verification failed");
-        }
-        _ => {}
+    if let QueryOutput::Rows { rows, .. } = &result {
+        let count: usize = rows
+            .first()
+            .and_then(|r| r.first())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        assert_eq!(count, row_count, "insert verification failed");
     }
 
     Ok(BenchResult {
         name: "Insert + Sync".to_string(),
-        rows_or_ops: format!("{row_count} rows"),
+        scale_count: row_count,
+        scale_label: format!("{row_count} rows"),
         elapsed,
     })
 }
@@ -102,16 +107,14 @@ fn bench_scan(temp_dir: &std::path::Path, row_count: usize) -> Result<BenchResul
     let result = engine.query("SELECT * FROM bench")?;
     let elapsed = start.elapsed();
 
-    match &result {
-        QueryOutput::Rows { rows, .. } => {
-            assert_eq!(rows.len(), row_count, "scan returned wrong row count");
-        }
-        _ => {}
+    if let QueryOutput::Rows { rows, .. } = &result {
+        assert_eq!(rows.len(), row_count, "scan returned wrong row count");
     }
 
     Ok(BenchResult {
         name: "Full Table Scan".to_string(),
-        rows_or_ops: format!("{row_count} rows"),
+        scale_count: row_count,
+        scale_label: format!("{row_count} rows"),
         elapsed,
     })
 }
@@ -145,7 +148,8 @@ fn bench_index_lookup(
 
     Ok(BenchResult {
         name: "Index Lookup".to_string(),
-        rows_or_ops: format!("{lookups} lookups"),
+        scale_count: lookups,
+        scale_label: format!("{lookups} lookups"),
         elapsed,
     })
 }
@@ -197,53 +201,173 @@ fn bench_branch_create(temp_dir: &std::path::Path, row_count: usize) -> Result<B
 
     Ok(BenchResult {
         name: "Branch Create (O(1) ref)".to_string(),
-        rows_or_ops: format!("{row_count} rows in main"),
+        scale_count: row_count,
+        scale_label: format!("{row_count} rows in main"),
         elapsed,
     })
 }
 
 pub fn run(args: BenchArgs) -> Result<()> {
+    let ui = style::stdout();
     let temp_dir = tempfile::tempdir()?;
-    println!("Running benchmarks...");
-    println!("  temp dir: {}", temp_dir.path().display());
+    println!("{}", ui.header("Dust Bench"));
+    println!(
+        "{} {}",
+        ui.label("temp dir:"),
+        ui.path(temp_dir.path().display())
+    );
     println!();
 
-    let mut results = Vec::new();
-
-    results.push(bench_insert(temp_dir.path(), args.rows)?);
-    results.push(bench_scan(temp_dir.path(), args.rows)?);
-    results.push(bench_index_lookup(
-        temp_dir.path(),
-        args.rows,
-        args.lookups,
-    )?);
-    results.push(bench_branch_create(temp_dir.path(), args.branch_rows)?);
+    let results = vec![
+        bench_insert(temp_dir.path(), args.rows)?,
+        bench_scan(temp_dir.path(), args.rows)?,
+        bench_index_lookup(temp_dir.path(), args.rows, args.lookups)?,
+        bench_branch_create(temp_dir.path(), args.branch_rows)?,
+    ];
 
     println!(
-        "{:<25} {:>15} {:>12} {:>15}",
-        "Benchmark", "Scale", "Time", "Throughput"
+        "{} {} {} {}",
+        ui.label(format!("{:<25}", "Benchmark")),
+        ui.label(format!("{:>15}", "Scale")),
+        ui.label(format!("{:>12}", "Time")),
+        ui.label(format!("{:>15}", "Throughput"))
     );
-    println!("{}", "-".repeat(70));
+    println!("{}", ui.rule(70));
 
     for r in &results {
-        let ops = r.rows_or_ops.parse::<usize>().unwrap_or(0);
-        let throughput = if ops > 0 {
-            format_ops_per_sec(ops, r.elapsed)
-        } else {
-            format_ops_per_sec(1, r.elapsed)
-        };
+        let throughput = format_ops_per_sec(r.scale_count, r.elapsed);
         println!(
-            "{:<25} {:>15} {:>12} {:>15}",
-            r.name,
-            r.rows_or_ops,
-            format_duration(r.elapsed),
-            throughput
+            "{} {} {} {}",
+            ui.command(format!("{:<25}", r.name)),
+            ui.muted(format!("{:>15}", r.scale_label)),
+            ui.metric(format!("{:>12}", format_duration(r.elapsed))),
+            ui.success(format!("{:>15}", throughput))
         );
+    }
+
+    if let Some(fastest) = results.iter().min_by_key(|result| result.elapsed) {
+        println!();
+        println!(
+            "{} {} {}",
+            ui.label("Fastest:"),
+            if fastest.name.contains("Branch Create") {
+                ui.success(&fastest.name)
+            } else {
+                ui.command(&fastest.name)
+            },
+            ui.metric(format!("at {}", format_duration(fastest.elapsed)))
+        );
+    }
+
+    println!();
+    println!(
+        "{} {}",
+        ui.label("For comparison:"),
+        ui.muted("Docker Postgres cold start typically takes 3-8 seconds.")
+    );
+
+    if args.compare {
+        println!("{}", ui.rule(70));
+        match benchmark_docker_postgres() {
+            DockerCompare::Measured(duration) => {
+                println!(
+                    "{} {} {}",
+                    ui.label("docker run postgres:"),
+                    ui.metric(format_duration(duration)),
+                    ui.muted("(timed from `docker run -d` to readiness log)")
+                );
+            }
+            DockerCompare::Unavailable(reason) => {
+                println!(
+                    "{} {}",
+                    ui.warning("docker compare unavailable:"),
+                    ui.muted(reason)
+                );
+            }
+        }
     }
 
     println!();
 
     Ok(())
+}
+
+enum DockerCompare {
+    Measured(std::time::Duration),
+    Unavailable(String),
+}
+
+fn benchmark_docker_postgres() -> DockerCompare {
+    let docker_ok = Command::new("docker")
+        .arg("info")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let Ok(status) = docker_ok else {
+        return DockerCompare::Unavailable("`docker` is not installed.".to_string());
+    };
+    if !status.success() {
+        return DockerCompare::Unavailable("Docker daemon is not reachable.".to_string());
+    }
+
+    let image = "postgres:16-alpine";
+    let image_check = Command::new("docker")
+        .args(["image", "inspect", image])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let Ok(status) = image_check else {
+        return DockerCompare::Unavailable("failed to inspect Docker image cache.".to_string());
+    };
+    if !status.success() {
+        return DockerCompare::Unavailable(format!(
+            "Docker image `{image}` is not present locally; skipping pull during bench."
+        ));
+    }
+
+    let name = format!("dust-bench-postgres-{}", std::process::id());
+    let _ = Command::new("docker").args(["rm", "-f", &name]).status();
+    let start = Instant::now();
+    let run = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "-d",
+            "--name",
+            &name,
+            "-e",
+            "POSTGRES_PASSWORD=dustbench",
+            image,
+        ])
+        .output();
+    let Ok(run) = run else {
+        return DockerCompare::Unavailable("failed to start Docker container.".to_string());
+    };
+    if !run.status.success() {
+        return DockerCompare::Unavailable(String::from_utf8_lossy(&run.stderr).trim().to_string());
+    }
+
+    let mut ready = false;
+    for _ in 0..60 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let logs = Command::new("docker").args(["logs", &name]).output();
+        let Ok(logs) = logs else {
+            break;
+        };
+        let text = String::from_utf8_lossy(&logs.stdout);
+        if text.contains("database system is ready to accept connections") {
+            ready = true;
+            break;
+        }
+    }
+    let elapsed = start.elapsed();
+    let _ = Command::new("docker").args(["rm", "-f", &name]).status();
+
+    if ready {
+        DockerCompare::Measured(elapsed)
+    } else {
+        DockerCompare::Unavailable(format!("timed out waiting for `{image}` to become ready."))
+    }
 }
 
 #[cfg(test)]
@@ -255,7 +379,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let result = bench_insert(temp_dir.path(), 100).unwrap();
         assert!(!result.elapsed.is_zero());
-        assert_eq!(result.rows_or_ops, "100 rows");
+        assert_eq!(result.scale_count, 100);
+        assert_eq!(result.scale_label, "100 rows");
     }
 
     #[test]
@@ -270,7 +395,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let result = bench_index_lookup(temp_dir.path(), 100, 10).unwrap();
         assert!(!result.elapsed.is_zero());
-        assert_eq!(result.rows_or_ops, "10 lookups");
+        assert_eq!(result.scale_count, 10);
+        assert_eq!(result.scale_label, "10 lookups");
     }
 
     #[test]

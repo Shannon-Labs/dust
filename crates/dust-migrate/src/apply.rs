@@ -64,12 +64,12 @@ pub fn collect_migration_files(migrations_dir: &Path) -> Result<Vec<(String, std
         let path = entry.path();
         let file_type = entry.file_type()?;
 
-        if file_type.is_file() {
-            if let Some(name) = path.file_name() {
-                let name_str = name.to_string_lossy();
-                if let Some(id) = parse_migration_id(&name_str) {
-                    files.push((id, path));
-                }
+        if file_type.is_file()
+            && let Some(name) = path.file_name()
+        {
+            let name_str = name.to_string_lossy();
+            if let Some(id) = parse_migration_id(&name_str) {
+                files.push((id, path));
             }
         }
     }

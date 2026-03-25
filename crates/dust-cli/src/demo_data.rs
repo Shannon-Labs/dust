@@ -1,5 +1,11 @@
 /// Embedded demo dataset and example queries for `dust demo`.
 
+#[derive(Debug, Clone, Copy)]
+pub struct DemoWalkthroughStep {
+    pub command: &'static str,
+    pub sql: &'static str,
+}
+
 /// Schema DDL for the demo dataset.
 pub const DEMO_SCHEMA: &str = "\
 CREATE TABLE artists (
@@ -258,108 +264,13 @@ INSERT INTO listeners VALUES
   (20, 'solstice_ear',    'Sweden',         '2024-10-12');
 ";
 
-/// Example queries organized by feature.
-pub const DEMO_QUERIES: &[(&str, &str)] = &[
-    // --- Basics ---
-    (
-        "All artists and their genres",
-        "SELECT name, genre, country FROM artists ORDER BY genre, name;",
-    ),
-    (
-        "Top 10 most-streamed tracks",
-        "SELECT ar.name AS artist, t.title AS track, t.streams
-FROM tracks t
-JOIN albums al ON al.id = t.album_id
-JOIN artists ar ON ar.id = al.artist_id
-ORDER BY t.streams DESC
-LIMIT 10;",
-    ),
-    // --- Aggregation ---
-    (
-        "Total streams per genre",
-        "SELECT ar.genre, SUM(t.streams) AS total_streams, COUNT(*) AS tracks
-FROM tracks t
-JOIN albums al ON al.id = t.album_id
-JOIN artists ar ON ar.id = al.artist_id
-GROUP BY ar.genre
-ORDER BY total_streams DESC;",
-    ),
-    // --- Window function ---
-    (
-        "Top 3 tracks per genre (window function + CTE)",
-        "WITH ranked AS (
-  SELECT ar.genre AS genre, ar.name AS artist, t.title AS title, t.streams AS streams,
-    RANK() OVER (PARTITION BY ar.genre ORDER BY t.streams DESC) AS n
-  FROM tracks t
-  JOIN albums al ON al.id = t.album_id
-  JOIN artists ar ON ar.id = al.artist_id
-)
-SELECT genre, artist, title, streams, n FROM ranked
-WHERE n <= 3
-ORDER BY genre, n;",
-    ),
-    // --- CTE ---
-    (
-        "Top artist per genre (CTE)",
-        "WITH totals AS (
-  SELECT ar.genre AS genre, ar.name AS name, SUM(t.streams) AS total
-  FROM artists ar
-  JOIN albums al ON al.artist_id = ar.id
-  JOIN tracks t ON t.album_id = al.id
-  GROUP BY ar.genre, ar.name
-)
-SELECT genre, name, total FROM totals
-ORDER BY genre, total DESC;",
-    ),
-    // --- Subquery ---
-    (
-        "Artists with above-average streams (subquery)",
-        "SELECT DISTINCT ar.name
+pub const SHOWCASE_QUERY: DemoWalkthroughStep = DemoWalkthroughStep {
+    command: r#"dust query "SELECT ar.name AS artist, COUNT(t.id) AS tracks, SUM(t.streams) AS total_streams FROM artists ar JOIN albums al ON al.artist_id = ar.id JOIN tracks t ON t.album_id = al.id GROUP BY ar.name ORDER BY total_streams DESC LIMIT 5;""#,
+    sql: "SELECT ar.name AS artist, COUNT(t.id) AS tracks, SUM(t.streams) AS total_streams
 FROM artists ar
 JOIN albums al ON al.artist_id = ar.id
 JOIN tracks t ON t.album_id = al.id
-WHERE t.streams > (SELECT AVG(streams) FROM tracks)
-ORDER BY ar.name;",
-    ),
-    // --- CASE ---
-    (
-        "Categorize tracks by popularity",
-        "SELECT title, streams,
-  CASE
-    WHEN streams > 5000000 THEN 'viral'
-    WHEN streams > 1000000 THEN 'hit'
-    WHEN streams > 100000 THEN 'popular'
-    ELSE 'niche'
-  END AS tier
-FROM tracks
-ORDER BY streams DESC
-LIMIT 15;",
-    ),
-];
-
-/// Branching workflow guide printed with --branching.
-pub const BRANCH_GUIDE: &str = "\
-=== Branching Demo ===
-
-Like git branches, but for your database:
-
-  # See what you have
-  dust status
-
-  # Create a branch
-  dust branch create experiment
-
-  # Switch to it
-  dust branch switch experiment
-
-  # Add an unreleased album
-  dust query \"INSERT INTO albums VALUES (31, 3, 'Desert Sessions', 2025)\"
-  dust query \"INSERT INTO tracks VALUES (151, 31, 'Sahel Wind', 280, 0)\"
-
-  # See what changed
-  dust branch diff --from main --to experiment
-
-  # Switch back — main data is untouched
-  dust branch switch main
-  dust query \"SELECT count(*) FROM tracks\"
-";
+GROUP BY ar.name
+ORDER BY total_streams DESC
+LIMIT 5;",
+};

@@ -5,6 +5,7 @@ use dust_exec::PersistentEngine;
 use dust_types::{Result, SchemaFingerprint};
 
 use crate::project::{find_db_path, find_project_root, read_current_branch, refs_dir};
+use crate::style;
 
 #[derive(Debug, Args)]
 pub struct StatusArgs {
@@ -14,23 +15,28 @@ pub struct StatusArgs {
 }
 
 pub fn run(args: StatusArgs) -> Result<()> {
+    let ui = style::stdout();
     let db_path = find_db_path(&args.path);
 
     if !db_path.exists() {
-        println!("No database found. Run `dust init` first.");
+        println!(
+            "{} {}",
+            ui.warning("status:"),
+            ui.muted("no database found. Run `dust init` first.")
+        );
         return Ok(());
     }
 
     // Show current branch
     if let Some(root) = find_project_root(&args.path) {
         let branch = read_current_branch(&refs_dir(&root));
-        println!("Branch: {branch}");
+        println!("{} {}", ui.label("Branch:"), ui.header(branch));
     } else {
-        println!("Branch: main (default)");
+        println!("{} {}", ui.label("Branch:"), ui.header("main (default)"));
     }
 
     // Show database path
-    println!("Database: {}", db_path.display());
+    println!("{} {}", ui.label("Database:"), ui.path(db_path.display()));
 
     let mut engine = PersistentEngine::open(&db_path)?;
     let tables = engine.table_names();
@@ -54,9 +60,9 @@ pub fn run(args: StatusArgs) -> Result<()> {
         schema_desc.push('\n');
     }
     let fingerprint = SchemaFingerprint::compute(schema_desc.as_bytes());
-    println!("Schema: {}", fingerprint.as_str());
+    println!("{} {}", ui.label("Schema:"), ui.dim(fingerprint.as_str()));
 
-    println!("\nTables:");
+    println!("\n{}", ui.header("Tables"));
     for name in &tables {
         let count = match engine.query(&format!("SELECT count(*) FROM {name}")) {
             Ok(dust_exec::QueryOutput::Rows { rows, .. }) => rows
@@ -66,7 +72,11 @@ pub fn run(args: StatusArgs) -> Result<()> {
                 .unwrap_or_else(|| "0".to_string()),
             _ => "?".to_string(),
         };
-        println!("  {name}: {count} rows");
+        println!(
+            "  {} {}",
+            ui.command(format!("{name:<20}")),
+            ui.metric(format!("{count:>8} rows"))
+        );
     }
 
     let size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
@@ -77,7 +87,7 @@ pub fn run(args: StatusArgs) -> Result<()> {
     } else {
         format!("{:.1} MB", size_bytes as f64 / 1024.0 / 1024.0)
     };
-    println!("\nSize: {size_display}");
+    println!("\n{} {}", ui.label("Size:"), ui.metric(size_display));
 
     Ok(())
 }

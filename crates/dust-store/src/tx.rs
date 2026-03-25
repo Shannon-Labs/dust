@@ -28,7 +28,10 @@ impl TransactionManager {
 
     pub fn begin_read(&self) -> TxId {
         let tx_id = TxId(self.next_tx_id.fetch_add(1, Ordering::SeqCst));
-        self.active_readers.write().unwrap().insert(tx_id);
+        self.active_readers
+            .write()
+            .expect("lock poisoned")
+            .insert(tx_id);
         tx_id
     }
 
@@ -42,10 +45,16 @@ impl TransactionManager {
     pub fn commit_write(&self, tx_id: TxId, written_pages: HashSet<u64>) {
         self.committed_write_sets
             .write()
-            .unwrap()
+            .expect("lock poisoned")
             .insert(tx_id, written_pages);
-        self.committed_txs.write().unwrap().insert(tx_id);
-        self.active_readers.write().unwrap().remove(&tx_id);
+        self.committed_txs
+            .write()
+            .expect("lock poisoned")
+            .insert(tx_id);
+        self.active_readers
+            .write()
+            .expect("lock poisoned")
+            .remove(&tx_id);
         let mut watermark = self.committed_watermark.load(Ordering::SeqCst);
         loop {
             let current = watermark;
@@ -66,20 +75,32 @@ impl TransactionManager {
     }
 
     pub fn end_read(&self, tx_id: TxId) {
-        self.active_readers.write().unwrap().remove(&tx_id);
+        self.active_readers
+            .write()
+            .expect("lock poisoned")
+            .remove(&tx_id);
     }
 
     pub fn abort(&self, tx_id: TxId) {
-        self.active_readers.write().unwrap().remove(&tx_id);
-        self.committed_txs.write().unwrap().remove(&tx_id);
-        self.committed_write_sets.write().unwrap().remove(&tx_id);
+        self.active_readers
+            .write()
+            .expect("lock poisoned")
+            .remove(&tx_id);
+        self.committed_txs
+            .write()
+            .expect("lock poisoned")
+            .remove(&tx_id);
+        self.committed_write_sets
+            .write()
+            .expect("lock poisoned")
+            .remove(&tx_id);
     }
 
     pub fn is_visible(&self, write_tx_id: TxId, reader_tx_id: TxId) -> bool {
         if write_tx_id == reader_tx_id {
             return true;
         }
-        let committed = self.committed_txs.read().unwrap();
+        let committed = self.committed_txs.read().expect("lock poisoned");
         if !committed.contains(&write_tx_id) {
             return false;
         }
@@ -96,7 +117,7 @@ impl TransactionManager {
         if read_pages.is_empty() {
             return false;
         }
-        let write_sets = self.committed_write_sets.read().unwrap();
+        let write_sets = self.committed_write_sets.read().expect("lock poisoned");
         for (tx_id, pages) in write_sets.iter() {
             // Only consider transactions that committed after our snapshot.
             if tx_id.0 > since_tx.0 && !pages.is_disjoint(read_pages) {
@@ -109,12 +130,12 @@ impl TransactionManager {
     /// Prune committed write-set records for transactions older than the
     /// oldest active reader. Called periodically to avoid unbounded growth.
     pub fn gc_write_sets(&self) {
-        let readers = self.active_readers.read().unwrap();
+        let readers = self.active_readers.read().expect("lock poisoned");
         let min_active = readers.iter().map(|t| t.0).min().unwrap_or(u64::MAX);
         drop(readers);
         self.committed_write_sets
             .write()
-            .unwrap()
+            .expect("lock poisoned")
             .retain(|tx_id, _| tx_id.0 >= min_active);
     }
 }

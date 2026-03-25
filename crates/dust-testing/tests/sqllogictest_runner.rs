@@ -30,41 +30,49 @@ impl SltTest {
             .query(sql)
             .unwrap_or_else(|e| panic!("query failed: {e}\nSQL: {sql}"));
 
-        match &result {
-            QueryOutput::Rows { columns, rows } => {
-                assert_eq!(
-                    columns.len(),
-                    expected_col_count,
-                    "column count mismatch: expected {expected_col_count}, got {} for SQL: {sql}",
-                    columns.len()
-                );
-                assert_eq!(
-                    rows.len(),
-                    expected_rows.len(),
-                    "row count mismatch: expected {}, got {} for SQL: {sql}",
-                    expected_rows.len(),
-                    rows.len()
-                );
-                for (i, expected_row) in expected_rows.iter().enumerate() {
-                    let expected_cells: Vec<&str> = expected_row.split_whitespace().collect();
-                    let actual_cells = &rows[i];
-                    assert_eq!(
-                        expected_cells.len(),
-                        actual_cells.len(),
-                        "cell count mismatch in row {i} for SQL: {sql}"
-                    );
-                    for (j, (expected, actual)) in
-                        expected_cells.iter().zip(actual_cells).enumerate()
-                    {
-                        assert_eq!(
-                            actual.trim(),
-                            *expected,
-                            "cell [{i},{j}] mismatch for SQL: {sql}"
-                        );
-                    }
-                }
+        // Extract columns and stringified rows from either Rows or RowsTyped
+        let (columns, string_rows) = match &result {
+            QueryOutput::Rows { columns, rows } => (columns.clone(), rows.clone()),
+            QueryOutput::RowsTyped { columns, rows } => {
+                let string_rows: Vec<Vec<String>> = rows
+                    .iter()
+                    .map(|row| row.iter().map(|d| d.to_string()).collect())
+                    .collect();
+                (columns.clone(), string_rows)
             }
-            other => panic!("expected Rows, got {other:?} for SQL: {sql}"),
+            other => panic!("expected Rows/RowsTyped, got {other:?} for SQL: {sql}"),
+        };
+
+        assert_eq!(
+            columns.len(),
+            expected_col_count,
+            "column count mismatch: expected {expected_col_count}, got {} for SQL: {sql}",
+            columns.len()
+        );
+        assert_eq!(
+            string_rows.len(),
+            expected_rows.len(),
+            "row count mismatch: expected {}, got {} for SQL: {sql}",
+            expected_rows.len(),
+            string_rows.len()
+        );
+        for (i, expected_row) in expected_rows.iter().enumerate() {
+            let expected_cells: Vec<&str> = expected_row.split_whitespace().collect();
+            let actual_cells = &string_rows[i];
+            assert_eq!(
+                expected_cells.len(),
+                actual_cells.len(),
+                "cell count mismatch in row {i} for SQL: {sql}"
+            );
+            for (j, (expected, actual)) in
+                expected_cells.iter().zip(actual_cells).enumerate()
+            {
+                assert_eq!(
+                    actual.trim(),
+                    *expected,
+                    "cell [{i},{j}] mismatch for SQL: {sql}"
+                );
+            }
         }
     }
 

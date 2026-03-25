@@ -104,20 +104,32 @@ impl Page {
     /// Read the page header.
     pub fn header(&self) -> PageHeader {
         PageHeader {
-            page_id: u64::from_le_bytes(self.data[4..12].try_into().unwrap()),
+            page_id: u64::from_le_bytes(
+                self.data[4..12].try_into().expect("8-byte page_id field"),
+            ),
             page_type: PageType::from_u8(self.data[12]).unwrap_or(PageType::Meta),
             flags: self.data[13],
-            cell_count: u16::from_le_bytes(self.data[14..16].try_into().unwrap()),
-            free_start: u16::from_le_bytes(self.data[16..18].try_into().unwrap()),
-            free_end: u16::from_le_bytes(self.data[18..20].try_into().unwrap()),
-            right_ptr: u64::from_le_bytes(self.data[20..28].try_into().unwrap()),
-            parent_ptr: u64::from_le_bytes(self.data[28..36].try_into().unwrap()),
-            checksum: self.data[36..40].try_into().unwrap(),
+            cell_count: u16::from_le_bytes(
+                self.data[14..16].try_into().expect("2-byte cell_count field"),
+            ),
+            free_start: u16::from_le_bytes(
+                self.data[16..18].try_into().expect("2-byte free_start field"),
+            ),
+            free_end: u16::from_le_bytes(
+                self.data[18..20].try_into().expect("2-byte free_end field"),
+            ),
+            right_ptr: u64::from_le_bytes(
+                self.data[20..28].try_into().expect("8-byte right_ptr field"),
+            ),
+            parent_ptr: u64::from_le_bytes(
+                self.data[28..36].try_into().expect("8-byte parent_ptr field"),
+            ),
+            checksum: self.data[36..40].try_into().expect("4-byte checksum field"),
         }
     }
 
     pub fn page_id(&self) -> u64 {
-        u64::from_le_bytes(self.data[4..12].try_into().unwrap())
+        u64::from_le_bytes(self.data[4..12].try_into().expect("8-byte page_id field"))
     }
 
     pub fn page_type(&self) -> PageType {
@@ -125,7 +137,7 @@ impl Page {
     }
 
     pub fn cell_count(&self) -> u16 {
-        u16::from_le_bytes(self.data[14..16].try_into().unwrap())
+        u16::from_le_bytes(self.data[14..16].try_into().expect("2-byte cell_count field"))
     }
 
     pub fn set_cell_count(&mut self, count: u16) {
@@ -133,7 +145,7 @@ impl Page {
     }
 
     pub fn free_start(&self) -> u16 {
-        u16::from_le_bytes(self.data[16..18].try_into().unwrap())
+        u16::from_le_bytes(self.data[16..18].try_into().expect("2-byte free_start field"))
     }
 
     pub fn set_free_start(&mut self, offset: u16) {
@@ -141,7 +153,7 @@ impl Page {
     }
 
     pub fn free_end(&self) -> u16 {
-        u16::from_le_bytes(self.data[18..20].try_into().unwrap())
+        u16::from_le_bytes(self.data[18..20].try_into().expect("2-byte free_end field"))
     }
 
     pub fn set_free_end(&mut self, offset: u16) {
@@ -149,7 +161,7 @@ impl Page {
     }
 
     pub fn right_ptr(&self) -> u64 {
-        u64::from_le_bytes(self.data[20..28].try_into().unwrap())
+        u64::from_le_bytes(self.data[20..28].try_into().expect("8-byte right_ptr field"))
     }
 
     pub fn set_right_ptr(&mut self, ptr: u64) {
@@ -157,7 +169,7 @@ impl Page {
     }
 
     pub fn parent_ptr(&self) -> u64 {
-        u64::from_le_bytes(self.data[28..36].try_into().unwrap())
+        u64::from_le_bytes(self.data[28..36].try_into().expect("8-byte parent_ptr field"))
     }
 
     pub fn set_parent_ptr(&mut self, ptr: u64) {
@@ -167,7 +179,11 @@ impl Page {
     /// Read the cell pointer at given index. Returns the offset within the page.
     pub fn cell_offset(&self, index: u16) -> u16 {
         let ptr_offset = PAGE_HEADER_SIZE + (index as usize) * 2;
-        u16::from_le_bytes(self.data[ptr_offset..ptr_offset + 2].try_into().unwrap())
+        u16::from_le_bytes(
+            self.data[ptr_offset..ptr_offset + 2]
+                .try_into()
+                .expect("2-byte cell pointer"),
+        )
     }
 
     /// Set the cell pointer at given index.
@@ -180,7 +196,11 @@ impl Page {
     pub fn cell_data(&self, index: u16) -> &[u8] {
         let offset = self.cell_offset(index) as usize;
         // Cell format: cell_size(u16) + data
-        let size = u16::from_le_bytes(self.data[offset..offset + 2].try_into().unwrap()) as usize;
+        let size = u16::from_le_bytes(
+            self.data[offset..offset + 2]
+                .try_into()
+                .expect("2-byte cell size"),
+        ) as usize;
         &self.data[offset + 2..offset + 2 + size]
     }
 

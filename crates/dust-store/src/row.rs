@@ -124,7 +124,7 @@ pub fn decode_row(data: &[u8]) -> Result<Vec<Datum>> {
         return Err(DustError::InvalidInput("row data too short".to_string()));
     }
 
-    let col_count = u16::from_le_bytes(data[0..2].try_into().unwrap()) as usize;
+    let col_count = u16::from_le_bytes(data[0..2].try_into().expect("2-byte col_count")) as usize;
     let mut offset = 2;
     let mut columns = Vec::with_capacity(col_count);
 
@@ -144,7 +144,11 @@ pub fn decode_row(data: &[u8]) -> Result<Vec<Datum>> {
                         "row data truncated (integer)".to_string(),
                     ));
                 }
-                let n = i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+                let n = i64::from_le_bytes(
+                    data[offset..offset + 8]
+                        .try_into()
+                        .expect("8-byte integer: bounds checked above"),
+                );
                 offset += 8;
                 Datum::Integer(n)
             }
@@ -154,7 +158,11 @@ pub fn decode_row(data: &[u8]) -> Result<Vec<Datum>> {
                         "row data truncated (text length)".to_string(),
                     ));
                 }
-                let len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+                let len = u32::from_le_bytes(
+                    data[offset..offset + 4]
+                        .try_into()
+                        .expect("4-byte text length: bounds checked above"),
+                ) as usize;
                 offset += 4;
                 if offset + len > data.len() {
                     return Err(DustError::InvalidInput(
@@ -181,7 +189,11 @@ pub fn decode_row(data: &[u8]) -> Result<Vec<Datum>> {
                         "row data truncated (real)".to_string(),
                     ));
                 }
-                let r = f64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+                let r = f64::from_le_bytes(
+                    data[offset..offset + 8]
+                        .try_into()
+                        .expect("8-byte real: bounds checked above"),
+                );
                 offset += 8;
                 Datum::Real(r)
             }
@@ -191,7 +203,11 @@ pub fn decode_row(data: &[u8]) -> Result<Vec<Datum>> {
                         "row data truncated (blob length)".to_string(),
                     ));
                 }
-                let len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+                let len = u32::from_le_bytes(
+                    data[offset..offset + 4]
+                        .try_into()
+                        .expect("4-byte blob length: bounds checked above"),
+                ) as usize;
                 offset += 4;
                 if offset + len > data.len() {
                     return Err(DustError::InvalidInput(
@@ -222,7 +238,7 @@ pub fn encode_key_u64(value: u64) -> [u8; 8] {
 
 /// Decode a u64 key from big-endian bytes.
 pub fn decode_key_u64(data: &[u8]) -> u64 {
-    u64::from_be_bytes(data[0..8].try_into().unwrap())
+    u64::from_be_bytes(data[0..8].try_into().expect("8-byte key"))
 }
 
 /// Secondary B+tree key: single-column [`encode_row`] payload + rowid (big-endian u64).

@@ -208,7 +208,11 @@ fn deserialize_columnar_meta(data: &[u8]) -> Result<ColumnarIndexMeta> {
 
     let mut offset = 0;
 
-    let magic = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+    let magic = u32::from_le_bytes(
+        data[offset..offset + 4]
+            .try_into()
+            .expect("4-byte magic: bounds checked above"),
+    );
     offset += 4;
     if magic != COLUMNAR_MAGIC {
         return Err(DustError::InvalidInput(
@@ -216,13 +220,25 @@ fn deserialize_columnar_meta(data: &[u8]) -> Result<ColumnarIndexMeta> {
         ));
     }
 
-    let _version = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+    let _version = u32::from_le_bytes(
+        data[offset..offset + 4]
+            .try_into()
+            .expect("4-byte version: bounds checked above"),
+    );
     offset += 4;
 
-    let num_rows = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
+    let num_rows = u64::from_le_bytes(
+        data[offset..offset + 8]
+            .try_into()
+            .expect("8-byte num_rows: bounds checked above"),
+    ) as usize;
     offset += 8;
 
-    let num_columns = u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap()) as usize;
+    let num_columns = u16::from_le_bytes(
+        data[offset..offset + 2]
+            .try_into()
+            .expect("2-byte num_columns: bounds checked above"),
+    ) as usize;
     offset += 2;
 
     let mut columns = Vec::with_capacity(num_columns);
@@ -232,7 +248,11 @@ fn deserialize_columnar_meta(data: &[u8]) -> Result<ColumnarIndexMeta> {
                 "columnar index: truncated column name length".to_string(),
             ));
         }
-        let name_len = u16::from_le_bytes(data[offset..offset + 2].try_into().unwrap()) as usize;
+        let name_len = u16::from_le_bytes(
+            data[offset..offset + 2]
+                .try_into()
+                .expect("2-byte name_len: bounds checked above"),
+        ) as usize;
         offset += 2;
         if offset + name_len > data.len() {
             return Err(DustError::InvalidInput(
@@ -251,7 +271,11 @@ fn deserialize_columnar_meta(data: &[u8]) -> Result<ColumnarIndexMeta> {
     }
     let mut row_ids = Vec::with_capacity(num_rows);
     for _ in 0..num_rows {
-        let rid = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        let rid = u64::from_le_bytes(
+            data[offset..offset + 8]
+                .try_into()
+                .expect("8-byte row_id: bounds checked above"),
+        );
         offset += 8;
         row_ids.push(rid);
     }
@@ -263,8 +287,11 @@ fn deserialize_columnar_meta(data: &[u8]) -> Result<ColumnarIndexMeta> {
                 "columnar index: truncated column data length".to_string(),
             ));
         }
-        let col_bytes_len =
-            u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+        let col_bytes_len = u32::from_le_bytes(
+            data[offset..offset + 4]
+                .try_into()
+                .expect("4-byte col_bytes_len: bounds checked above"),
+        ) as usize;
         offset += 4;
         if offset + col_bytes_len > data.len() {
             return Err(DustError::InvalidInput(

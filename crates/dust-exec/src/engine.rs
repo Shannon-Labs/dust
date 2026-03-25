@@ -660,9 +660,9 @@ impl ExecutionEngine {
             )));
         }
 
-        let columns = self.storage.table(table_name).unwrap().columns.clone();
+        let columns = self.storage.table(table_name).expect("table exists — checked above").columns.clone();
 
-        let store = self.storage.table_mut(table_name).expect("table exists");
+        let store = self.storage.table_mut(table_name).expect("table exists — checked above");
         let before = store.rows.len();
         if let Some(where_expr) = &delete.where_clause {
             store

@@ -95,7 +95,7 @@ impl WalWriter {
         // Read and verify header
         let mut header = [0u8; WAL_HEADER_SIZE];
         file.read_exact(&mut header)?;
-        let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        let magic = u32::from_le_bytes(header[0..4].try_into().expect("4-byte slice"));
         if magic != WAL_MAGIC {
             return Err(DustError::InvalidInput("invalid WAL magic".to_string()));
         }
@@ -117,7 +117,7 @@ impl WalWriter {
                 break;
             };
 
-            let lsn = u64::from_le_bytes(fheader[12..20].try_into().unwrap());
+            let lsn = u64::from_le_bytes(fheader[12..20].try_into().expect("8-byte slice"));
             let frame_data_size = match frame_type {
                 FrameType::PageWrite => PAGE_SIZE,
                 FrameType::Commit | FrameType::Checkpoint => 0,
@@ -217,7 +217,7 @@ impl WalWriter {
                 break;
             };
 
-            let page_id = u64::from_le_bytes(fheader[4..12].try_into().unwrap());
+            let page_id = u64::from_le_bytes(fheader[4..12].try_into().expect("8-byte slice"));
 
             match frame_type {
                 FrameType::PageWrite => {

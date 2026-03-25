@@ -5,6 +5,7 @@ use dust_exec::PersistentEngine;
 use dust_types::{DustError, Result};
 
 use crate::project::find_db_path;
+use crate::sql_quote::{quote_blob_hex, quote_ident, quote_literal};
 
 enum SqlValue {
     Null,
@@ -54,7 +55,9 @@ pub fn run(file_path: &Path) -> Result<()> {
         if let Some(sql) = create_sql {
             let dust_sql = convert_sqlite_create(sql, table_name);
             if let Err(e) = engine.query(&dust_sql) {
-                eprintln!("Warning: could not create table `{table_name}`: {e}. Trying simplified schema.");
+                eprintln!(
+                    "Warning: could not create table `{table_name}`: {e}. Trying simplified schema."
+                );
                 let simplified = simplified_create_table(table_name, &conn);
                 engine.query(&simplified)?;
             }
@@ -68,11 +71,11 @@ pub fn run(file_path: &Path) -> Result<()> {
         let col_names: Vec<&str> = col_info.iter().map(|c| c.0.as_str()).collect();
         let col_types: Vec<&str> = col_info.iter().map(|c| c.1.as_str()).collect();
 
-        let quoted_col_names: Vec<String> = col_names.iter().map(|c| format!("[{c}]")).collect();
+        let quoted_col_names: Vec<String> = col_names.iter().map(|c| quote_ident(c)).collect();
         let select_sql = format!(
-            "SELECT {} FROM [{}]",
+            "SELECT {} FROM {}",
             quoted_col_names.join(", "),
-            table_name
+            quote_ident(table_name)
         );
         let mut sel_stmt = conn.prepare(&select_sql).map_err(|e| {
             DustError::InvalidInput(format!("failed to prepare SELECT for `{table_name}`: {e}"))
@@ -96,11 +99,8 @@ pub fn run(file_path: &Path) -> Result<()> {
                     SqlValue::Null => "NULL".to_string(),
                     SqlValue::Integer(i) => i.to_string(),
                     SqlValue::Real(f) => f.to_string(),
-                    SqlValue::Text(s) => {
-                        let escaped = s.replace('\'', "''");
-                        format!("'{escaped}'")
-                    }
-                    SqlValue::Blob(b) => format!("X'{}'", hex_encode(&b)),
+                    SqlValue::Text(s) => quote_literal(&s),
+                    SqlValue::Blob(b) => quote_blob_hex(&hex_encode(&b)),
                 };
                 value_strs.push(lit);
             }
@@ -160,9 +160,9 @@ fn flush_inserts(
         .map(|c| quote_ident(c))
         .collect::<Vec<_>>()
         .join(", ");
-    let escaped_table = table_name.replace('"', "\"\"");
     let sql = format!(
-        "INSERT INTO \"{escaped_table}\" ({col_list}) VALUES {}",
+        "INSERT INTO {} ({col_list}) VALUES {}",
+        quote_ident(table_name),
         value_parts.join(", ")
     );
     engine.query(&sql)?;
@@ -171,8 +171,7 @@ fn flush_inserts(
 
 fn get_column_info(conn: &rusqlite::Connection, table_name: &str) -> Result<Vec<(String, String)>> {
     // PRAGMA does not support parameter binding — format the table name inline.
-    let escaped = table_name.replace('"', "\"\"");
-    let pragma_sql = format!("PRAGMA table_info(\"{escaped}\")");
+    let pragma_sql = format!("PRAGMA table_info({})", quote_ident(table_name));
     let mut stmt = conn
         .prepare(&pragma_sql)
         .map_err(|e| DustError::InvalidInput(format!("PRAGMA table_info failed: {e}")))?;
@@ -212,15 +211,16 @@ fn convert_sqlite_create(sql: &str, table_name: &str) -> String {
     out = out.split_whitespace().collect::<Vec<_>>().join(" ");
 
     if !out.to_uppercase().starts_with("CREATE TABLE") {
-        let escaped = table_name.replace('"', "\"\"");
-        out = format!("CREATE TABLE IF NOT EXISTS \"{escaped}\" (id INTEGER)")
+        out = format!(
+            "CREATE TABLE IF NOT EXISTS {} (id INTEGER)",
+            quote_ident(table_name)
+        )
     }
 
     out
 }
 
 fn simplified_create_table(table_name: &str, conn: &rusqlite::Connection) -> String {
-    let escaped = table_name.replace('"', "\"\"");
     match get_column_info(conn, table_name) {
         Ok(cols) if !cols.is_empty() => {
             let col_defs: Vec<String> = cols
@@ -232,31 +232,24 @@ fn simplified_create_table(table_name: &str, conn: &rusqlite::Connection) -> Str
                         "BLOB" => "BLOB",
                         _ => "TEXT",
                     };
-                    format!("{name} {dust_type}")
+                    format!("{} {dust_type}", quote_ident(name))
                 })
                 .collect();
             format!(
-                "CREATE TABLE IF NOT EXISTS \"{escaped}\" ({})",
+                "CREATE TABLE IF NOT EXISTS {} ({})",
+                quote_ident(table_name),
                 col_defs.join(", ")
             )
         }
-        _ => format!("CREATE TABLE IF NOT EXISTS \"{escaped}\" (id INTEGER)"),
+        _ => format!(
+            "CREATE TABLE IF NOT EXISTS {} (id INTEGER)",
+            quote_ident(table_name)
+        ),
     }
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect()
-}
-
-fn quote_ident(name: &str) -> String {
-    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !name.starts_with(|c: char| c.is_ascii_digit())
-        && !name.is_empty()
-    {
-        name.to_string()
-    } else {
-        format!("\"{}\"", name.replace('"', "\"\""))
-    }
 }
 
 #[cfg(test)]
@@ -292,9 +285,9 @@ mod tests {
 
     #[test]
     fn test_quote_ident() {
-        assert_eq!(quote_ident("simple"), "simple");
+        assert_eq!(quote_ident("simple"), "\"simple\"");
         assert_eq!(quote_ident("with space"), "\"with space\"");
-        assert_eq!(quote_ident("select"), "select");
+        assert_eq!(quote_ident("select"), "\"select\"");
         assert_eq!(quote_ident("has\"quote"), "\"has\"\"quote\"");
         assert_eq!(quote_ident("123start"), "\"123start\"");
     }

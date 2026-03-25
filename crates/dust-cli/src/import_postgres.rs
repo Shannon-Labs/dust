@@ -4,6 +4,7 @@ use dust_exec::PersistentEngine;
 use dust_types::{DustError, Result};
 
 use crate::project::find_db_path;
+use crate::sql_quote::{quote_blob_hex, quote_ident, quote_literal};
 
 pub fn run(uri: &str) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()
@@ -61,32 +62,31 @@ async fn run_async(uri: &str) -> Result<()> {
                 let data_type: String = r.get(1);
                 let is_nullable: String = r.get(2);
                 let dust_type = pg_type_to_dust(&data_type);
-                let nullable = if is_nullable == "NO" {
-                    " NOT NULL"
-                } else {
-                    ""
-                };
-                format!("\"{}\" {dust_type}{nullable}", col_name.replace('"', "\"\""))
+                let nullable = if is_nullable == "NO" { " NOT NULL" } else { "" };
+                format!("{} {dust_type}{nullable}", quote_ident(&col_name))
             })
             .collect();
 
         let col_names: Vec<String> = col_rows.iter().map(|r| r.get::<_, String>(0)).collect();
         let col_types: Vec<String> = col_rows.iter().map(|r| r.get::<_, String>(1)).collect();
 
-        let quoted_table_local = format!("\"{}\"", table_name.replace('"', "\"\""));
         let create_sql = format!(
-            "CREATE TABLE IF NOT EXISTS {quoted_table_local} ({})",
+            "CREATE TABLE IF NOT EXISTS {} ({})",
+            quote_ident(table_name),
             col_defs.join(", ")
         );
         engine.query(&create_sql)?;
         total_tables += 1;
 
-        let pg_quoted_cols: Vec<String> = col_names.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect();
-        let select_sql = format!("SELECT {} FROM \"{}\"", pg_quoted_cols.join(", "), table_name.replace('"', "\"\""));
-        let data_rows = client
-            .query(&select_sql, &[])
-            .await
-            .map_err(|e| DustError::InvalidInput(format!("failed to read data from `{table_name}`: {e}")))?;
+        let pg_quoted_cols: Vec<String> = col_names.iter().map(|c| quote_ident(c)).collect();
+        let select_sql = format!(
+            "SELECT {} FROM {}",
+            pg_quoted_cols.join(", "),
+            quote_ident(table_name)
+        );
+        let data_rows = client.query(&select_sql, &[]).await.map_err(|e| {
+            DustError::InvalidInput(format!("failed to read data from `{table_name}`: {e}"))
+        })?;
 
         let mut insert_parts = Vec::with_capacity(100);
 
@@ -99,8 +99,7 @@ async fn run_async(uri: &str) -> Result<()> {
             insert_parts.push(format!("({})", values.join(", ")));
 
             if insert_parts.len() >= 100 {
-                let count =
-                    flush_inserts(&mut engine, table_name, &col_names, &insert_parts)?;
+                let count = flush_inserts(&mut engine, table_name, &col_names, &insert_parts)?;
                 total_rows += count;
                 insert_parts.clear();
             }
@@ -112,7 +111,10 @@ async fn run_async(uri: &str) -> Result<()> {
         }
 
         let row_count = data_rows.len();
-        println!("  Imported `{table_name}` ({} columns, {row_count} rows)", col_names.len());
+        println!(
+            "  Imported `{table_name}` ({} columns, {row_count} rows)",
+            col_names.len()
+        );
     }
 
     engine.sync()?;
@@ -130,10 +132,14 @@ fn flush_inserts(
     if value_parts.is_empty() {
         return Ok(0);
     }
-    let quoted_table = format!("\"{}\"", table_name.replace('"', "\"\""));
-    let col_list = col_names.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect::<Vec<_>>().join(", ");
+    let col_list = col_names
+        .iter()
+        .map(|c| quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
-        "INSERT INTO {quoted_table} ({col_list}) VALUES {}",
+        "INSERT INTO {} ({col_list}) VALUES {}",
+        quote_ident(table_name),
         value_parts.join(", ")
     );
     engine.query(&sql)?;
@@ -164,27 +170,18 @@ fn datum_to_sql_literal(row: &tokio_postgres::Row, col_idx: usize, pg_type: &str
                 None => "NULL".to_string(),
             }
         }
-        "boolean" => {
-            match row.get::<_, Option<bool>>(col_idx) {
-                Some(val) => if val { "TRUE" } else { "FALSE" }.to_string(),
-                None => "NULL".to_string(),
-            }
-        }
-        "bytea" => {
-            match row.get::<_, Option<Vec<u8>>>(col_idx) {
-                Some(val) => format!("X'{}'", hex_encode(&val)),
-                None => "NULL".to_string(),
-            }
-        }
-        _ => {
-            match row.get::<_, Option<String>>(col_idx) {
-                Some(val) => {
-                    let escaped = val.replace('\'', "''");
-                    format!("'{escaped}'")
-                }
-                None => "NULL".to_string(),
-            }
-        }
+        "boolean" => match row.get::<_, Option<bool>>(col_idx) {
+            Some(val) => if val { "TRUE" } else { "FALSE" }.to_string(),
+            None => "NULL".to_string(),
+        },
+        "bytea" => match row.get::<_, Option<Vec<u8>>>(col_idx) {
+            Some(val) => quote_blob_hex(&hex_encode(&val)),
+            None => "NULL".to_string(),
+        },
+        _ => match row.get::<_, Option<String>>(col_idx) {
+            Some(val) => quote_literal(&val),
+            None => "NULL".to_string(),
+        },
     }
 }
 
@@ -240,8 +237,8 @@ mod tests {
         // Verify that the SELECT query generation uses PostgreSQL double-quote syntax
         let col_name = "user name";
         let table_name = "my table";
-        let pg_quoted_col = format!("\"{}\"", col_name.replace('"', "\"\""));
-        let pg_quoted_table = format!("\"{}\"", table_name.replace('"', "\"\""));
+        let pg_quoted_col = quote_ident(col_name);
+        let pg_quoted_table = quote_ident(table_name);
         let select_sql = format!("SELECT {} FROM {}", pg_quoted_col, pg_quoted_table);
         assert_eq!(select_sql, "SELECT \"user name\" FROM \"my table\"");
         assert!(!select_sql.contains('['));
@@ -251,7 +248,7 @@ mod tests {
     fn test_flush_inserts_quotes_identifiers() {
         // Verify identifier quoting in flush_inserts SQL generation (double-quote style)
         let table = "test\"table";
-        let quoted = format!("\"{}\"", table.replace('"', "\"\""));
+        let quoted = quote_ident(table);
         assert_eq!(quoted, "\"test\"\"table\"");
     }
 }

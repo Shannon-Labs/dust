@@ -142,15 +142,17 @@ impl PackReader {
             return Err(DustError::InvalidInput("invalid pack magic".to_string()));
         }
 
-        let version = u16::from_le_bytes(bytes[8..10].try_into().unwrap());
+        let version = u16::from_le_bytes(bytes[8..10].try_into().expect("2-byte version field"));
         if version != PACK_VERSION {
             return Err(DustError::InvalidInput(format!(
                 "unsupported pack version: {version}"
             )));
         }
 
-        let entry_count = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
-        let index_offset = u64::from_le_bytes(bytes[14..22].try_into().unwrap()) as usize;
+        let entry_count =
+            u32::from_le_bytes(bytes[10..14].try_into().expect("4-byte entry_count")) as usize;
+        let index_offset =
+            u64::from_le_bytes(bytes[14..22].try_into().expect("8-byte index_offset")) as usize;
 
         let mut entries = HashMap::with_capacity(entry_count);
         let mut offset = index_offset;
@@ -164,10 +166,18 @@ impl PackReader {
             hash.copy_from_slice(&bytes[offset..offset + 32]);
             offset += 32;
 
-            let entry_offset = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            let entry_offset = u64::from_le_bytes(
+                bytes[offset..offset + 8]
+                    .try_into()
+                    .expect("8-byte entry_offset: bounds checked above"),
+            );
             offset += 8;
 
-            let size = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            let size = u32::from_le_bytes(
+                bytes[offset..offset + 4]
+                    .try_into()
+                    .expect("4-byte size: bounds checked above"),
+            );
             offset += 4;
 
             let kind_byte = bytes[offset];

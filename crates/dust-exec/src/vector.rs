@@ -181,7 +181,7 @@ impl HnswIndex {
             return id;
         }
 
-        let ep = self.entry_point.unwrap();
+        let ep = self.entry_point.expect("entry_point is Some — checked above");
         let mut current_ep = ep;
 
         // Phase 1: Greedily descend from the top layer down to level+1
@@ -334,7 +334,7 @@ impl HnswIndex {
             return Vec::new();
         }
 
-        let ep = self.entry_point.unwrap();
+        let ep = self.entry_point.expect("entry_point is Some — checked above");
         let mut current_ep = ep;
 
         // Descend from top layer
@@ -380,7 +380,7 @@ impl HnswRegistry {
         self.indices.insert(name.to_string(), index);
         self.lookup
             .insert((table.to_string(), column.to_string()), name.to_string());
-        self.indices.get_mut(name).unwrap()
+        self.indices.get_mut(name).expect("index was just inserted")
     }
 
     /// Get an index by name.

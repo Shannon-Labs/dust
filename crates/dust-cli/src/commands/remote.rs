@@ -31,8 +31,8 @@ pub enum RemoteCommand {
 pub fn run(args: RemoteArgs) -> Result<()> {
     match args.command {
         RemoteCommand::Push { remote, branch } => {
-            let project_root = find_project_root(&std::env::current_dir()?)
-                .unwrap_or_else(|| std::env::current_dir().unwrap());
+            let cwd = std::env::current_dir()?;
+            let project_root = find_project_root(&cwd).unwrap_or(cwd);
             let workspace = WorkspaceLayout::new(&project_root);
 
             let branch_name = match branch {
@@ -44,7 +44,7 @@ pub fn run(args: RemoteArgs) -> Result<()> {
                 }
             };
 
-            let transport = dust_store::remote::RemoteTransport::from_str(&remote)?;
+            let transport = remote.parse::<dust_store::remote::RemoteTransport>()?;
             let result = dust_store::remote::push_branch(&workspace, &branch_name, &transport)?;
 
             println!("Pushed branch `{}` to {}", branch_name.as_str(), remote);
@@ -64,8 +64,8 @@ pub fn run(args: RemoteArgs) -> Result<()> {
             Ok(())
         }
         RemoteCommand::Pull { remote, branch } => {
-            let project_root = find_project_root(&std::env::current_dir()?)
-                .unwrap_or_else(|| std::env::current_dir().unwrap());
+            let cwd = std::env::current_dir()?;
+            let project_root = find_project_root(&cwd).unwrap_or(cwd);
             let workspace = WorkspaceLayout::new(&project_root);
 
             let branch_name = match branch {
@@ -77,7 +77,7 @@ pub fn run(args: RemoteArgs) -> Result<()> {
                 }
             };
 
-            let transport = dust_store::remote::RemoteTransport::from_str(&remote)?;
+            let transport = remote.parse::<dust_store::remote::RemoteTransport>()?;
             let result = dust_store::remote::pull_branch(&workspace, &branch_name, &transport)?;
 
             if result.local_ref_updated {

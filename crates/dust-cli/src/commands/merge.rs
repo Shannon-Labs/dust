@@ -1,12 +1,13 @@
 use clap::{Args, Subcommand};
 use dust_core::ProjectPaths;
 use dust_exec::PersistentEngine;
-use dust_store::{preview_merge_from_paths, MergeConflictType, MergeResolution};
+use dust_store::{MergeConflictType, MergeResolution, preview_merge_from_paths};
 use dust_types::{DustError, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::project::{find_project_root, read_current_branch, refs_dir};
+use crate::sql_quote::{quote_ident, quote_literal};
 
 // ---------------------------------------------------------------------------
 // Persisted merge-state: written to .dust/workspace/merge_state.toml while
@@ -32,16 +33,12 @@ fn load_merge_state(project_root: &std::path::Path) -> Option<PersistedMergeStat
     toml::from_str(&content).ok()
 }
 
-fn save_merge_state(
-    project_root: &std::path::Path,
-    state: &PersistedMergeState,
-) -> Result<()> {
+fn save_merge_state(project_root: &std::path::Path, state: &PersistedMergeState) -> Result<()> {
     let path = merge_state_path(project_root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let content =
-        toml::to_string_pretty(state).map_err(|e| DustError::Message(e.to_string()))?;
+    let content = toml::to_string_pretty(state).map_err(|e| DustError::Message(e.to_string()))?;
     std::fs::write(&path, content)?;
     Ok(())
 }
@@ -189,7 +186,7 @@ pub fn run(args: MergeArgs) -> Result<()> {
                     ));
                 }
 
-                let resolutions = &state.unwrap().resolutions;
+                let resolutions = &state.expect("merge state must be Some after all_resolved check").resolutions;
                 execute_merge_with_resolutions(
                     &source_db_path,
                     &target_db_path,
@@ -201,10 +198,7 @@ pub fn run(args: MergeArgs) -> Result<()> {
             }
 
             remove_merge_state(&project_root);
-            println!(
-                "Merge {} -> {}: complete",
-                source_branch, current_branch
-            );
+            println!("Merge {} -> {}: complete", source_branch, current_branch);
         }
         // -----------------------------------------------------------------
         // dust merge resolve <conflict_id> --resolution source|target
@@ -244,12 +238,63 @@ pub fn run(args: MergeArgs) -> Result<()> {
 // Merge execution helpers
 // ---------------------------------------------------------------------------
 
+fn select_all_rows(
+    engine: &mut PersistentEngine,
+    table: &str,
+) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+    let output = engine.query(&format!("SELECT * FROM {}", quote_ident(table)))?;
+    Ok(output.into_string_rows())
+}
+
+fn create_text_table(engine: &mut PersistentEngine, table: &str, columns: &[String]) -> Result<()> {
+    let col_defs = columns
+        .iter()
+        .map(|column| format!("{} TEXT", quote_ident(column)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    engine.query(&format!("CREATE TABLE {} ({col_defs})", quote_ident(table)))?;
+    Ok(())
+}
+
+fn value_literal(value: &str) -> String {
+    if value == "NULL" {
+        "NULL".to_string()
+    } else {
+        quote_literal(value)
+    }
+}
+
+fn insert_rows(
+    engine: &mut PersistentEngine,
+    table: &str,
+    columns: &[String],
+    rows: &[Vec<String>],
+) -> Result<()> {
+    let column_list = columns
+        .iter()
+        .map(|column| quote_ident(column))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    for row in rows {
+        let values = row
+            .iter()
+            .map(|value| value_literal(value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "INSERT INTO {} ({column_list}) VALUES ({values})",
+            quote_ident(table)
+        );
+        engine.query(&sql)?;
+    }
+
+    Ok(())
+}
+
 /// Clean auto-merge: source has tables/rows that target does not -- copy them
 /// over. Tables that exist only in target are left alone.
-fn execute_clean_merge(
-    source_db: &std::path::Path,
-    target_db: &std::path::Path,
-) -> Result<()> {
+fn execute_clean_merge(source_db: &std::path::Path, target_db: &std::path::Path) -> Result<()> {
     if !source_db.exists() {
         // Nothing to merge from.
         return Ok(());
@@ -272,30 +317,9 @@ fn execute_clean_merge(
     for table in &source_tables {
         if !target_tables.contains(table) {
             // Table only in source -- recreate it in target and copy all rows.
-            let rows_sql = format!("SELECT * FROM \"{}\"", table);
-            let output = source_engine.query(&rows_sql)?;
-            if let dust_exec::QueryOutput::Rows { columns, rows } = output {
-                let col_defs: Vec<String> = columns
-                    .iter()
-                    .map(|c| format!("\"{}\" TEXT", c))
-                    .collect();
-                let create_sql =
-                    format!("CREATE TABLE \"{}\" ({})", table, col_defs.join(", "));
-                target_engine.query(&create_sql)?;
-
-                for row in &rows {
-                    let values: Vec<String> = row
-                        .iter()
-                        .map(|v| format!("'{}'", v.replace('\'', "''")))
-                        .collect();
-                    let insert_sql = format!(
-                        "INSERT INTO \"{}\" VALUES ({})",
-                        table,
-                        values.join(", ")
-                    );
-                    target_engine.query(&insert_sql)?;
-                }
-            }
+            let (columns, rows) = select_all_rows(&mut source_engine, table)?;
+            create_text_table(&mut target_engine, table, &columns)?;
+            insert_rows(&mut target_engine, table, &columns, &rows)?;
         } else {
             // Table exists in both -- add rows from source that target is
             // missing. We compare by row count: if source has more rows we
@@ -305,28 +329,8 @@ fn execute_clean_merge(
             let target_count = target_engine.row_count(table)?;
 
             if source_count > target_count {
-                let rows_sql = format!("SELECT * FROM \"{}\"", table);
-                let output = source_engine.query(&rows_sql)?;
-                if let dust_exec::QueryOutput::Rows { columns, rows } = output {
-                    // Skip the first target_count rows (already present).
-                    for row in rows.iter().skip(target_count) {
-                        let values: Vec<String> = row
-                            .iter()
-                            .map(|v| format!("'{}'", v.replace('\'', "''")))
-                            .collect();
-                        let insert_sql = format!(
-                            "INSERT INTO \"{}\" ({}) VALUES ({})",
-                            table,
-                            columns
-                                .iter()
-                                .map(|c| format!("\"{}\"", c))
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            values.join(", ")
-                        );
-                        target_engine.query(&insert_sql)?;
-                    }
-                }
+                let (columns, rows) = select_all_rows(&mut source_engine, table)?;
+                insert_rows(&mut target_engine, table, &columns, &rows[target_count..])?;
             }
         }
     }
@@ -377,62 +381,24 @@ fn execute_merge_with_resolutions(
         if !target_table_set.contains(table) {
             // Schema conflict resolved to "source" -- create table in target.
             // If resolved to "target" the table stays absent.
-            let schema_conflict = preview.conflicts.iter().any(|c| {
-                c.table_name == *table && c.conflict_type == MergeConflictType::Schema
-            });
+            let schema_conflict = preview
+                .conflicts
+                .iter()
+                .any(|c| c.table_name == *table && c.conflict_type == MergeConflictType::Schema);
             if schema_conflict && winner.map(|w| w.as_str()) == Some("target") {
                 continue;
             }
-            let rows_sql = format!("SELECT * FROM \"{}\"", table);
-            let output = source_engine.query(&rows_sql)?;
-            if let dust_exec::QueryOutput::Rows { columns, rows } = output {
-                let col_defs: Vec<String> = columns
-                    .iter()
-                    .map(|c| format!("\"{}\" TEXT", c))
-                    .collect();
-                let create_sql =
-                    format!("CREATE TABLE \"{}\" ({})", table, col_defs.join(", "));
-                target_engine.query(&create_sql)?;
-                for row in &rows {
-                    let values: Vec<String> = row
-                        .iter()
-                        .map(|v| format!("'{}'", v.replace('\'', "''")))
-                        .collect();
-                    let insert_sql = format!(
-                        "INSERT INTO \"{}\" VALUES ({})",
-                        table,
-                        values.join(", ")
-                    );
-                    target_engine.query(&insert_sql)?;
-                }
-            }
+            let (columns, rows) = select_all_rows(&mut source_engine, table)?;
+            create_text_table(&mut target_engine, table, &columns)?;
+            insert_rows(&mut target_engine, table, &columns, &rows)?;
         } else {
             // Table in both branches.
             match winner.map(|w| w.as_str()) {
                 Some("source") => {
                     // Replace target table contents with source.
-                    let _ = target_engine.query(&format!("DELETE FROM \"{}\"", table));
-                    let rows_sql = format!("SELECT * FROM \"{}\"", table);
-                    let output = source_engine.query(&rows_sql)?;
-                    if let dust_exec::QueryOutput::Rows { columns, rows } = output {
-                        for row in &rows {
-                            let values: Vec<String> = row
-                                .iter()
-                                .map(|v| format!("'{}'", v.replace('\'', "''")))
-                                .collect();
-                            let insert_sql = format!(
-                                "INSERT INTO \"{}\" ({}) VALUES ({})",
-                                table,
-                                columns
-                                    .iter()
-                                    .map(|c| format!("\"{}\"", c))
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
-                                values.join(", ")
-                            );
-                            target_engine.query(&insert_sql)?;
-                        }
-                    }
+                    let _ = target_engine.query(&format!("DELETE FROM {}", quote_ident(table)));
+                    let (columns, rows) = select_all_rows(&mut source_engine, table)?;
+                    insert_rows(&mut target_engine, table, &columns, &rows)?;
                 }
                 Some("target") => {
                     // Keep target as-is -- nothing to do.
@@ -442,27 +408,8 @@ fn execute_merge_with_resolutions(
                     let source_count = source_engine.row_count(table)?;
                     let target_count = target_engine.row_count(table)?;
                     if source_count > target_count {
-                        let rows_sql = format!("SELECT * FROM \"{}\"", table);
-                        let output = source_engine.query(&rows_sql)?;
-                        if let dust_exec::QueryOutput::Rows { columns, rows } = output {
-                            for row in rows.iter().skip(target_count) {
-                                let values: Vec<String> = row
-                                    .iter()
-                                    .map(|v| format!("'{}'", v.replace('\'', "''")))
-                                    .collect();
-                                let insert_sql = format!(
-                                    "INSERT INTO \"{}\" ({}) VALUES ({})",
-                                    table,
-                                    columns
-                                        .iter()
-                                        .map(|c| format!("\"{}\"", c))
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                    values.join(", ")
-                                );
-                                target_engine.query(&insert_sql)?;
-                            }
-                        }
+                        let (columns, rows) = select_all_rows(&mut source_engine, table)?;
+                        insert_rows(&mut target_engine, table, &columns, &rows[target_count..])?;
                     }
                 }
             }

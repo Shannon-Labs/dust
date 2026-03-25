@@ -29,7 +29,7 @@ fn decode_leaf_cell(cell: &[u8]) -> Result<(&[u8], &[u8])> {
             "corrupt B-tree cell: too short for key length".to_string(),
         ));
     }
-    let key_len = u16::from_le_bytes(cell[0..2].try_into().unwrap()) as usize;
+    let key_len = u16::from_le_bytes(cell[0..2].try_into().expect("2-byte key_len")) as usize;
     let val_offset = 2 + key_len;
     if cell.len() < val_offset + 4 {
         return Err(DustError::InvalidInput(
@@ -37,7 +37,9 @@ fn decode_leaf_cell(cell: &[u8]) -> Result<(&[u8], &[u8])> {
         ));
     }
     let key = &cell[2..val_offset];
-    let val_len = u32::from_le_bytes(cell[val_offset..val_offset + 4].try_into().unwrap()) as usize;
+    let val_len =
+        u32::from_le_bytes(cell[val_offset..val_offset + 4].try_into().expect("4-byte val_len"))
+            as usize;
     if cell.len() < val_offset + 4 + val_len {
         return Err(DustError::InvalidInput(
             "corrupt B-tree cell: too short for value data".to_string(),
@@ -63,7 +65,7 @@ fn decode_internal_cell(cell: &[u8]) -> Result<(&[u8], u64)> {
             "corrupt internal cell: too short for key length".to_string(),
         ));
     }
-    let key_len = u16::from_le_bytes(cell[0..2].try_into().unwrap()) as usize;
+    let key_len = u16::from_le_bytes(cell[0..2].try_into().expect("2-byte key_len")) as usize;
     let child_offset = 2 + key_len;
     if cell.len() < child_offset + 8 {
         return Err(DustError::InvalidInput(
@@ -71,7 +73,11 @@ fn decode_internal_cell(cell: &[u8]) -> Result<(&[u8], u64)> {
         ));
     }
     let key = &cell[2..child_offset];
-    let child = u64::from_le_bytes(cell[child_offset..child_offset + 8].try_into().unwrap());
+    let child = u64::from_le_bytes(
+        cell[child_offset..child_offset + 8]
+            .try_into()
+            .expect("8-byte child page id"),
+    );
     Ok((key, child))
 }
 
@@ -82,7 +88,7 @@ fn cell_key(cell: &[u8]) -> Result<&[u8]> {
             "corrupt B-tree cell: too short for key length".to_string(),
         ));
     }
-    let key_len = u16::from_le_bytes(cell[0..2].try_into().unwrap()) as usize;
+    let key_len = u16::from_le_bytes(cell[0..2].try_into().expect("2-byte key_len")) as usize;
     if cell.len() < 2 + key_len {
         return Err(DustError::InvalidInput(
             "corrupt B-tree cell: too short for key data".to_string(),

@@ -3,7 +3,7 @@
 /// Unlike the in-memory ExecutionEngine, this engine persists data to disk
 /// between invocations via B+tree storage.
 use dust_sql::{
-    AlterTableAction, AstStatement, BinOp, ColumnRef, DeleteStatement, Expr, IndexColumn,
+    AlterTableAction, AstStatement, ColumnRef, DeleteStatement, Expr, IndexColumn,
     InsertStatement, JoinClause, JoinType, SelectItem, SetOpKind, UpdateStatement, parse_program,
 };
 use dust_store::{Datum, TableEngine};
@@ -11,11 +11,23 @@ use dust_types::{DustError, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::aggregate::{
+    eval_aggregate, is_aggregate_expr, persistent_eval_window_fn, persistent_has_window_fn,
+};
+use crate::column::{
+    expr_display_name, resolve_column_index, resolve_order_by_string_column,
+    validate_expr_columns, validate_select_columns,
+};
 use crate::engine::QueryOutput;
+use crate::eval::{
+    cmp_datums, cmp_string_values, coerce_by_affinity, eval_datum_expr, eval_where_datums,
+    parse_eq_where_column_literal,
+    resolve_column_index_runtime, ColumnBinding, RowSet,
+};
 use crate::expr_validate::validate_ast_statement;
 use crate::persistent_schema::{
-    ColumnSchema, PersistedSchema, SecondaryIndexDef, TableSchema, TypeAffinity,
-    column_schema_from_def, parse_default_expression, table_schema_from_ast, type_affinity,
+    ColumnSchema, PersistedSchema, SecondaryIndexDef, TableSchema,
+    column_schema_from_def, parse_default_expression, table_schema_from_ast,
 };
 
 type ColumnEvaluator = Box<dyn Fn(&[Datum]) -> String>;
@@ -55,99 +67,6 @@ fn simple_index_column_name(col: &IndexColumn) -> Result<String> {
     Err(DustError::InvalidInput(
         "CREATE INDEX supports only a single plain column name (no expressions)".to_string(),
     ))
-}
-
-fn parse_eq_where_column_literal(expr: &Expr) -> Option<(String, Option<String>, Datum)> {
-    match expr {
-        Expr::BinaryOp {
-            op: BinOp::Eq,
-            left,
-            right,
-            ..
-        } => match (left.as_ref(), right.as_ref()) {
-            (Expr::ColumnRef(cref), other) => {
-                let d = expr_to_literal_datum(other)?;
-                Some((
-                    cref.column.value.clone(),
-                    cref.table.as_ref().map(|t| t.value.clone()),
-                    d,
-                ))
-            }
-            (other, Expr::ColumnRef(cref)) => {
-                let d = expr_to_literal_datum(other)?;
-                Some((
-                    cref.column.value.clone(),
-                    cref.table.as_ref().map(|t| t.value.clone()),
-                    d,
-                ))
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn expr_to_literal_datum(expr: &Expr) -> Option<Datum> {
-    match expr {
-        Expr::Integer(lit) => Some(Datum::Integer(lit.value)),
-        Expr::Float(lit) => lit
-            .value
-            .parse::<f64>()
-            .ok()
-            .map(Datum::Real),
-        Expr::StringLit { value, .. } => Some(Datum::Text(value.clone())),
-        Expr::Boolean { value, .. } => Some(Datum::Boolean(*value)),
-        Expr::Null(_) => Some(Datum::Null),
-        Expr::Parenthesized { expr, .. } => expr_to_literal_datum(expr),
-        _ => None,
-    }
-}
-
-fn is_scalar_sql_fn(name: &str) -> bool {
-    matches!(
-        name,
-        "lower"
-            | "upper"
-            | "coalesce"
-            | "length"
-            | "case"
-            | "substr"
-            | "substring"
-            | "trim"
-            | "ltrim"
-            | "rtrim"
-            | "replace"
-            | "abs"
-            | "round"
-            | "typeof"
-            | "nullif"
-            | "max"
-            | "min"
-            | "concat"
-            | "ifnull"
-            | "hex"
-            | "quote"
-            | "instr"
-    )
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ColumnBinding {
-    table_name: String,
-    alias: Option<String>,
-    column_name: String,
-}
-
-impl ColumnBinding {
-    fn matches_qualifier(&self, qualifier: &str) -> bool {
-        self.table_name == qualifier || self.alias.as_deref() == Some(qualifier)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct RowSet {
-    columns: Vec<ColumnBinding>,
-    rows: Vec<Vec<Datum>>,
 }
 
 #[derive(Debug, Clone)]
@@ -236,10 +155,7 @@ impl PersistentEngine {
         match statement {
             AstStatement::Select(select) => self.execute_select(select),
             AstStatement::SetOp {
-                kind,
-                left,
-                right,
-                ..
+                kind, left, right, ..
             } => self.execute_set_op(*kind, left, right),
             AstStatement::Insert(insert) => self.execute_insert(source, insert),
             AstStatement::Update(update) => self.execute_update(source, update),
@@ -853,8 +769,13 @@ impl PersistentEngine {
                     rows: right_rows,
                 },
             ) => {
-                let (columns, rows) =
-                    crate::set_ops::combine_set_op_rows(kind, columns, left_rows, right_columns, right_rows)?;
+                let (columns, rows) = crate::set_ops::combine_set_op_rows(
+                    kind,
+                    columns,
+                    left_rows,
+                    right_columns,
+                    right_rows,
+                )?;
                 Ok(QueryOutput::Rows { columns, rows })
             }
             _ => Err(DustError::UnsupportedQuery(
@@ -985,29 +906,41 @@ impl PersistentEngine {
         let mut matched_right = vec![false; right.rows.len()];
         let mut rows = Vec::new();
 
+        // Pre-allocate a reusable buffer for evaluating join conditions.
+        // Only clone into `rows` when a match is confirmed, avoiding O(n*m) clones.
+        let combined_len = left.columns.len() + right.columns.len();
+        let mut eval_buf: Vec<Datum> = Vec::with_capacity(combined_len);
+
         for left_row in &left.rows {
             let mut matched_any = false;
             for (right_index, right_row) in right.rows.iter().enumerate() {
-                let mut combined = left_row.clone();
-                combined.extend(right_row.clone());
                 let matches = match join.join_type {
                     JoinType::Cross => true,
-                    _ => join
-                        .on
-                        .as_ref()
-                        .is_none_or(|expr| eval_where_datums(expr, &columns, &combined)),
+                    _ => match join.on.as_ref() {
+                        None => true,
+                        Some(expr) => {
+                            eval_buf.clear();
+                            eval_buf.extend_from_slice(left_row);
+                            eval_buf.extend_from_slice(right_row);
+                            eval_where_datums(expr, &columns, &eval_buf)
+                        }
+                    },
                 };
 
                 if matches {
                     matched_any = true;
                     matched_right[right_index] = true;
+                    let mut combined = Vec::with_capacity(combined_len);
+                    combined.extend_from_slice(left_row);
+                    combined.extend_from_slice(right_row);
                     rows.push(combined);
                 }
             }
 
             if !matched_any && matches!(join.join_type, JoinType::Left | JoinType::Full) {
-                let mut combined = left_row.clone();
-                combined.extend(right_nulls.clone());
+                let mut combined = Vec::with_capacity(combined_len);
+                combined.extend_from_slice(left_row);
+                combined.extend_from_slice(&right_nulls);
                 rows.push(combined);
             }
         }
@@ -1017,8 +950,9 @@ impl PersistentEngine {
                 if matched_right[right_index] {
                     continue;
                 }
-                let mut combined = left_nulls.clone();
-                combined.extend(right_row.clone());
+                let mut combined = Vec::with_capacity(combined_len);
+                combined.extend_from_slice(&left_nulls);
+                combined.extend_from_slice(right_row);
                 rows.push(combined);
             }
         }
@@ -1086,12 +1020,13 @@ impl PersistentEngine {
         index: &dust_sql::CreateIndexStatement,
     ) -> Result<QueryOutput> {
         if let Some(u) = &index.using
-            && !u.value.eq_ignore_ascii_case("btree") {
-                return Err(DustError::InvalidInput(format!(
-                    "index type `{}` is not supported (only btree)",
-                    u.value
-                )));
-            }
+            && !u.value.eq_ignore_ascii_case("btree")
+        {
+            return Err(DustError::InvalidInput(format!(
+                "index type `{}` is not supported (only btree)",
+                u.value
+            )));
+        }
         if index.columns.len() != 1 {
             return Err(DustError::InvalidInput(
                 "multi-column indexes are not supported yet".to_string(),
@@ -1296,9 +1231,7 @@ impl PersistentEngine {
 
         for item in &select.projection {
             match item {
-                SelectItem::Expr {
-                    expr, alias, ..
-                } => {
+                SelectItem::Expr { expr, alias, .. } => {
                     let col_name = alias
                         .as_ref()
                         .map(|a| a.value.clone())
@@ -1320,7 +1253,8 @@ impl PersistentEngine {
                         }
                     } else {
                         for (row_idx, row) in rows.iter().enumerate() {
-                            output_rows[row_idx].push(eval_datum_expr(expr, columns, row).to_string());
+                            output_rows[row_idx]
+                                .push(eval_datum_expr(expr, columns, row).to_string());
                         }
                     }
                 }
@@ -1328,9 +1262,8 @@ impl PersistentEngine {
                     for (ci, col) in col_names.iter().enumerate() {
                         output_columns.push(col.clone());
                         for (row_idx, row) in rows.iter().enumerate() {
-                            output_rows[row_idx].push(
-                                row.get(ci).map(|d| d.to_string()).unwrap_or_default(),
-                            );
+                            output_rows[row_idx]
+                                .push(row.get(ci).map(|d| d.to_string()).unwrap_or_default());
                         }
                     }
                 }
@@ -1558,10 +1491,7 @@ impl PersistentEngine {
         let row_count = insert.values.len();
 
         // Find autoincrement column index if any
-        let autoincrement_col = table_schema
-            .columns
-            .iter()
-            .position(|c| c.autoincrement);
+        let autoincrement_col = table_schema.columns.iter().position(|c| c.autoincrement);
 
         for value_row in &insert.values {
             if value_row.len() != col_indices.len() {
@@ -1591,13 +1521,11 @@ impl PersistentEngine {
             }
             // Fill in autoincrement value if the column is NULL or not provided
             if let Some(ai_col) = autoincrement_col
-                && matches!(datums[ai_col], Datum::Null) {
-                    let next_id = self
-                        .store
-                        .table_next_rowid(table_name)
-                        .unwrap_or(1) as i64;
-                    datums[ai_col] = Datum::Integer(next_id);
-                }
+                && matches!(datums[ai_col], Datum::Null)
+            {
+                let next_id = self.store.table_next_rowid(table_name).unwrap_or(1) as i64;
+                datums[ai_col] = Datum::Integer(next_id);
+            }
             self.validate_row_constraints(table_name, &table_schema, None, &datums)?;
             self.store.insert_row(table_name, datums)?;
         }
@@ -1704,1134 +1632,6 @@ impl PersistentEngine {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Datum-based expression evaluation (for persistent engine)
-// ---------------------------------------------------------------------------
-
-fn eval_where_datums(expr: &Expr, columns: &[ColumnBinding], row: &[Datum]) -> bool {
-    match eval_datum_expr(expr, columns, row) {
-        Datum::Boolean(b) => b,
-        Datum::Integer(n) => n != 0,
-        _ => false,
-    }
-}
-
-fn eval_datum_expr(expr: &Expr, columns: &[ColumnBinding], row: &[Datum]) -> Datum {
-    match expr {
-        Expr::Integer(lit) => Datum::Integer(lit.value),
-        Expr::Float(lit) => lit
-            .value
-            .parse::<f64>()
-            .map(Datum::Real)
-            .unwrap_or(Datum::Null),
-        Expr::StringLit { value, .. } => Datum::Text(value.clone()),
-        Expr::Null(_) => Datum::Null,
-        Expr::Boolean { value, .. } => Datum::Boolean(*value),
-        Expr::ColumnRef(cref) => resolve_column_index_runtime(columns, cref)
-            .and_then(|idx| row.get(idx).cloned())
-            .unwrap_or(Datum::Null),
-        Expr::BinaryOp {
-            left, op, right, ..
-        } => {
-            let lval = eval_datum_expr(left, columns, row);
-            let rval = eval_datum_expr(right, columns, row);
-            eval_datum_binop(*op, &lval, &rval)
-        }
-        Expr::UnaryOp {
-            op: dust_sql::UnaryOp::Not,
-            operand,
-            ..
-        } => match eval_datum_expr(operand, columns, row) {
-            Datum::Boolean(b) => Datum::Boolean(!b),
-            _ => Datum::Null,
-        },
-        Expr::UnaryOp {
-            op: dust_sql::UnaryOp::Neg,
-            operand,
-            ..
-        } => match eval_datum_expr(operand, columns, row) {
-            Datum::Integer(n) => Datum::Integer(-n),
-            _ => Datum::Null,
-        },
-        Expr::IsNull {
-            expr: inner,
-            negated,
-            ..
-        } => {
-            let val = eval_datum_expr(inner, columns, row);
-            let is_null = matches!(val, Datum::Null);
-            Datum::Boolean(if *negated { !is_null } else { is_null })
-        }
-        Expr::InList {
-            expr: inner,
-            list,
-            negated,
-            ..
-        } => {
-            let val = eval_datum_expr(inner, columns, row);
-            if matches!(val, Datum::Null) {
-                return Datum::Null;
-            }
-
-            let mut found = false;
-            let mut saw_null = false;
-            for item in list {
-                let item_value = eval_datum_expr(item, columns, row);
-                if matches!(item_value, Datum::Null) {
-                    saw_null = true;
-                    continue;
-                }
-                if eval_datum_binop(BinOp::Eq, &val, &item_value) == Datum::Boolean(true) {
-                    found = true;
-                    break;
-                }
-            }
-
-            if found {
-                Datum::Boolean(!*negated)
-            } else if saw_null {
-                Datum::Null
-            } else {
-                Datum::Boolean(*negated)
-            }
-        }
-        Expr::Between {
-            expr: inner,
-            low,
-            high,
-            negated,
-            ..
-        } => {
-            let val = eval_datum_expr(inner, columns, row);
-            let lo = eval_datum_expr(low, columns, row);
-            let hi = eval_datum_expr(high, columns, row);
-            if matches!(val, Datum::Null) || matches!(lo, Datum::Null) || matches!(hi, Datum::Null)
-            {
-                return Datum::Null;
-            }
-            let gte = eval_datum_binop(BinOp::GtEq, &val, &lo) == Datum::Boolean(true);
-            let lte = eval_datum_binop(BinOp::LtEq, &val, &hi) == Datum::Boolean(true);
-            Datum::Boolean(if *negated { !(gte && lte) } else { gte && lte })
-        }
-        Expr::Like {
-            expr: inner,
-            pattern,
-            negated,
-            ..
-        } => {
-            let val = eval_datum_expr(inner, columns, row);
-            let pat = eval_datum_expr(pattern, columns, row);
-            let matched = match (&val, &pat) {
-                (Datum::Text(s), Datum::Text(p)) => like_match(s, p),
-                (Datum::Null, _) | (_, Datum::Null) => return Datum::Null,
-                _ => false,
-            };
-            Datum::Boolean(if *negated { !matched } else { matched })
-        }
-        Expr::Parenthesized { expr: inner, .. } => eval_datum_expr(inner, columns, row),
-        Expr::FunctionCall { name, args, .. } => {
-            eval_scalar_fn(&name.value.to_ascii_lowercase(), args, columns, row)
-        }
-        Expr::Cast {
-            expr: inner,
-            data_type,
-            ..
-        } => {
-            let inner_val = eval_datum_expr(inner, columns, row);
-            let type_name = data_type
-                .tokens
-                .iter()
-                .map(|t| t.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ")
-                .to_uppercase();
-            match type_name.as_str() {
-                "INTEGER" | "INT" | "BIGINT" | "SMALLINT" => match &inner_val {
-                    Datum::Integer(_) => inner_val,
-                    Datum::Text(s) => s
-                        .trim()
-                        .parse::<i64>()
-                        .map(Datum::Integer)
-                        .unwrap_or(Datum::Null),
-                    Datum::Boolean(b) => Datum::Integer(if *b { 1 } else { 0 }),
-                    Datum::Real(f) => Datum::Integer(*f as i64),
-                    Datum::Null => Datum::Null,
-                    _ => inner_val,
-                },
-                "TEXT" | "VARCHAR" | "CHAR" => match &inner_val {
-                    Datum::Integer(i) => Datum::Text(i.to_string()),
-                    Datum::Real(f) => Datum::Text(f.to_string()),
-                    Datum::Boolean(b) => Datum::Text(b.to_string()),
-                    Datum::Null => Datum::Null,
-                    _ => inner_val,
-                },
-                "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" | "DECIMAL" => match &inner_val {
-                    Datum::Real(_) => inner_val,
-                    Datum::Integer(i) => Datum::Real(*i as f64),
-                    Datum::Text(s) => s
-                        .trim()
-                        .parse::<f64>()
-                        .map(Datum::Real)
-                        .unwrap_or(Datum::Null),
-                    Datum::Null => Datum::Null,
-                    _ => inner_val,
-                },
-                "BOOLEAN" | "BOOL" => match &inner_val {
-                    Datum::Boolean(_) => inner_val,
-                    Datum::Integer(i) => Datum::Boolean(*i != 0),
-                    Datum::Text(s) => match s.to_lowercase().as_str() {
-                        "true" | "t" | "1" | "yes" => Datum::Boolean(true),
-                        "false" | "f" | "0" | "no" => Datum::Boolean(false),
-                        _ => Datum::Null,
-                    },
-                    Datum::Null => Datum::Null,
-                    _ => inner_val,
-                },
-                _ => inner_val, // passthrough for unrecognized types
-            }
-        }
-        Expr::Star(_) => Datum::Null,
-        Expr::Subquery { .. } | Expr::InSubquery { .. } => {
-            // Subquery evaluation not yet implemented in this code path.
-            // Subquery execution is handled at a higher level.
-            Datum::Null
-        }
-        Expr::VectorLiteral { elements, .. } => {
-            let mut vals = Vec::with_capacity(elements.len());
-            for elem in elements {
-                match eval_datum_expr(elem, columns, row) {
-                    Datum::Integer(n) => vals.push(n as f32),
-                    Datum::Real(f) => vals.push(f as f32),
-                    Datum::Text(s) => {
-                        if let Ok(f) = s.parse::<f32>() {
-                            vals.push(f);
-                        } else {
-                            return Datum::Null;
-                        }
-                    }
-                    _ => return Datum::Null,
-                }
-            }
-            Datum::Text(crate::vector::format_vector(&vals))
-        }
-    }
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect()
-}
-
-fn eval_scalar_fn(name: &str, args: &[Expr], columns: &[ColumnBinding], row: &[Datum]) -> Datum {
-    // Helper: evaluate first arg (or return Null).
-    let arg0 = || {
-        args.first()
-            .map(|a| eval_datum_expr(a, columns, row))
-            .unwrap_or(Datum::Null)
-    };
-    let arg1 = || {
-        args.get(1)
-            .map(|a| eval_datum_expr(a, columns, row))
-            .unwrap_or(Datum::Null)
-    };
-    let arg2 = || {
-        args.get(2)
-            .map(|a| eval_datum_expr(a, columns, row))
-            .unwrap_or(Datum::Null)
-    };
-
-    match name {
-        "lower" => match arg0() {
-            Datum::Text(s) => Datum::Text(s.to_lowercase()),
-            Datum::Null => Datum::Null,
-            other => other,
-        },
-        "upper" => match arg0() {
-            Datum::Text(s) => Datum::Text(s.to_uppercase()),
-            Datum::Null => Datum::Null,
-            other => other,
-        },
-        "coalesce" => args
-            .iter()
-            .map(|a| eval_datum_expr(a, columns, row))
-            .find(|v| !matches!(v, Datum::Null))
-            .unwrap_or(Datum::Null),
-        "length" => match arg0() {
-            Datum::Text(s) => Datum::Integer(s.chars().count() as i64),
-            Datum::Null => Datum::Null,
-            _ => Datum::Null,
-        },
-        "case" => eval_case_function(args, columns, row),
-        "substr" | "substring" => {
-            let val = arg0();
-            let start = arg1();
-            match (val, start) {
-                (Datum::Text(s), Datum::Integer(start)) => {
-                    let start_idx = (start.max(1) - 1) as usize;
-                    let chars: Vec<char> = s.chars().collect();
-                    match arg2() {
-                        Datum::Integer(len) => {
-                            let end_idx = (start_idx + len.max(0) as usize).min(chars.len());
-                            Datum::Text(chars[start_idx.min(chars.len())..end_idx].iter().collect())
-                        }
-                        _ => Datum::Text(chars[start_idx.min(chars.len())..].iter().collect()),
-                    }
-                }
-                (Datum::Null, _) | (_, Datum::Null) => Datum::Null,
-                _ => Datum::Null,
-            }
-        }
-        "trim" => match arg0() {
-            Datum::Text(s) => Datum::Text(s.trim().to_string()),
-            Datum::Null => Datum::Null,
-            other => other,
-        },
-        "ltrim" => match arg0() {
-            Datum::Text(s) => Datum::Text(s.trim_start().to_string()),
-            Datum::Null => Datum::Null,
-            other => other,
-        },
-        "rtrim" => match arg0() {
-            Datum::Text(s) => Datum::Text(s.trim_end().to_string()),
-            Datum::Null => Datum::Null,
-            other => other,
-        },
-        "replace" => {
-            let val = arg0();
-            let from = arg1();
-            let to = arg2();
-            match (val, from, to) {
-                (Datum::Text(s), Datum::Text(from), Datum::Text(to)) => {
-                    Datum::Text(s.replace(&from, &to))
-                }
-                (Datum::Null, _, _) => Datum::Null,
-                _ => Datum::Null,
-            }
-        }
-        "abs" => match arg0() {
-            Datum::Integer(i) => Datum::Integer(i.abs()),
-            Datum::Real(f) => Datum::Real(f.abs()),
-            Datum::Null => Datum::Null,
-            _ => Datum::Null,
-        },
-        "round" => {
-            let val = arg0();
-            match val {
-                Datum::Real(f) => match arg1() {
-                    Datum::Integer(places) => {
-                        let factor = 10f64.powi(places as i32);
-                        Datum::Real((f * factor).round() / factor)
-                    }
-                    _ => Datum::Real(f.round()),
-                },
-                Datum::Integer(i) => Datum::Integer(i),
-                Datum::Null => Datum::Null,
-                _ => Datum::Null,
-            }
-        }
-        "typeof" => match arg0() {
-            Datum::Integer(_) => Datum::Text("integer".to_string()),
-            Datum::Real(_) => Datum::Text("real".to_string()),
-            Datum::Text(_) => Datum::Text("text".to_string()),
-            Datum::Boolean(_) => Datum::Text("boolean".to_string()),
-            Datum::Null => Datum::Text("null".to_string()),
-            Datum::Blob(_) => Datum::Text("blob".to_string()),
-        },
-        "nullif" => {
-            let a = arg0();
-            let b = arg1();
-            if a == b { Datum::Null } else { a }
-        }
-        "ifnull" => {
-            let a = arg0();
-            if matches!(a, Datum::Null) { arg1() } else { a }
-        }
-        "concat" => {
-            let mut result = String::new();
-            for a in args {
-                match eval_datum_expr(a, columns, row) {
-                    Datum::Null => return Datum::Null,
-                    Datum::Text(s) => result.push_str(&s),
-                    Datum::Integer(i) => result.push_str(&i.to_string()),
-                    Datum::Real(f) => result.push_str(&f.to_string()),
-                    Datum::Boolean(b) => result.push_str(&b.to_string()),
-                    Datum::Blob(b) => result.push_str(&format!("x'{}'", bytes_to_hex(&b))),
-                }
-            }
-            Datum::Text(result)
-        }
-        "hex" => match arg0() {
-            Datum::Text(s) => Datum::Text(bytes_to_hex(s.as_bytes()).to_uppercase()),
-            Datum::Blob(b) => Datum::Text(bytes_to_hex(&b).to_uppercase()),
-            Datum::Null => Datum::Null,
-            _ => Datum::Null,
-        },
-        "quote" => match arg0() {
-            Datum::Text(s) => Datum::Text(format!("'{}'", s.replace('\'', "''"))),
-            Datum::Null => Datum::Text("NULL".to_string()),
-            Datum::Integer(i) => Datum::Text(i.to_string()),
-            Datum::Real(f) => Datum::Text(f.to_string()),
-            Datum::Boolean(b) => Datum::Text(b.to_string()),
-            Datum::Blob(b) => Datum::Text(format!("x'{}'", bytes_to_hex(&b))),
-        },
-        "instr" => {
-            let haystack = arg0();
-            let needle = arg1();
-            match (haystack, needle) {
-                (Datum::Text(h), Datum::Text(n)) => match h.find(&n) {
-                    Some(pos) => Datum::Integer(h[..pos].chars().count() as i64 + 1),
-                    None => Datum::Integer(0),
-                },
-                (Datum::Null, _) | (_, Datum::Null) => Datum::Null,
-                _ => Datum::Null,
-            }
-        }
-        // scalar min/max with 2 args (not aggregates)
-        "min" if args.len() == 2 => {
-            let a = arg0();
-            let b = arg1();
-            match (&a, &b) {
-                (Datum::Null, _) | (_, Datum::Null) => Datum::Null,
-                (Datum::Integer(x), Datum::Integer(y)) => Datum::Integer(*x.min(y)),
-                (Datum::Real(x), Datum::Real(y)) => Datum::Real(x.min(*y)),
-                (Datum::Text(x), Datum::Text(y)) => Datum::Text(x.min(y).clone()),
-                _ => a,
-            }
-        }
-        "max" if args.len() == 2 => {
-            let a = arg0();
-            let b = arg1();
-            match (&a, &b) {
-                (Datum::Null, _) | (_, Datum::Null) => Datum::Null,
-                (Datum::Integer(x), Datum::Integer(y)) => Datum::Integer(*x.max(y)),
-                (Datum::Real(x), Datum::Real(y)) => Datum::Real(x.max(*y)),
-                (Datum::Text(x), Datum::Text(y)) => Datum::Text(x.max(y).clone()),
-                _ => a,
-            }
-        }
-        f if crate::datetime::is_datetime_fn(f) => {
-            let mut str_args: Vec<String> = Vec::with_capacity(args.len());
-            for a in args {
-                match eval_datum_expr(a, columns, row) {
-                    Datum::Text(s) => str_args.push(s),
-                    Datum::Integer(n) => str_args.push(n.to_string()),
-                    Datum::Real(r) => str_args.push(r.to_string()),
-                    Datum::Boolean(b) => str_args.push(b.to_string()),
-                    Datum::Null | Datum::Blob(_) => return Datum::Null,
-                }
-            }
-            match f {
-                "date" => crate::datetime::eval_date(&str_args)
-                    .map(Datum::Text)
-                    .unwrap_or(Datum::Null),
-                "time" => crate::datetime::eval_time(&str_args)
-                    .map(Datum::Text)
-                    .unwrap_or(Datum::Null),
-                "datetime" => crate::datetime::eval_datetime(&str_args)
-                    .map(Datum::Text)
-                    .unwrap_or(Datum::Null),
-                "strftime" => crate::datetime::eval_strftime(&str_args)
-                    .map(Datum::Text)
-                    .unwrap_or(Datum::Null),
-                "julianday" => crate::datetime::eval_julianday(&str_args)
-                    .map(Datum::Real)
-                    .unwrap_or(Datum::Null),
-                "unixepoch" => crate::datetime::eval_unixepoch(&str_args)
-                    .map(Datum::Integer)
-                    .unwrap_or(Datum::Null),
-                _ => Datum::Null,
-            }
-        }
-        _ => Datum::Null,
-    }
-}
-
-/// Try to coerce a pair of Datums to f64 for numeric comparison.
-fn coerce_numeric(a: &Datum, b: &Datum) -> Option<(f64, f64)> {
-    let af = match a {
-        Datum::Integer(n) => *n as f64,
-        Datum::Real(f) => *f,
-        Datum::Text(s) => s.parse::<f64>().ok()?,
-        _ => return None,
-    };
-    let bf = match b {
-        Datum::Integer(n) => *n as f64,
-        Datum::Real(f) => *f,
-        Datum::Text(s) => s.parse::<f64>().ok()?,
-        _ => return None,
-    };
-    Some((af, bf))
-}
-
-fn eval_datum_binop(op: BinOp, left: &Datum, right: &Datum) -> Datum {
-    match op {
-        BinOp::Eq => match (left, right) {
-            (Datum::Null, _) | (_, Datum::Null) => Datum::Null,
-            (Datum::Integer(a), Datum::Integer(b)) => Datum::Boolean(a == b),
-            (Datum::Text(a), Datum::Text(b)) => Datum::Boolean(a == b),
-            (Datum::Boolean(a), Datum::Boolean(b)) => Datum::Boolean(a == b),
-            (Datum::Real(a), Datum::Real(b)) => Datum::Boolean(a == b),
-            _ => {
-                if let Some((a, b)) = coerce_numeric(left, right) {
-                    Datum::Boolean(a == b)
-                } else {
-                    Datum::Boolean(false)
-                }
-            }
-        },
-        BinOp::NotEq => match eval_datum_binop(BinOp::Eq, left, right) {
-            Datum::Boolean(b) => Datum::Boolean(!b),
-            other => other,
-        },
-        BinOp::Lt => match (left, right) {
-            (Datum::Integer(a), Datum::Integer(b)) => Datum::Boolean(a < b),
-            (Datum::Text(a), Datum::Text(b)) => Datum::Boolean(a < b),
-            _ => coerce_numeric(left, right)
-                .map(|(a, b)| Datum::Boolean(a < b))
-                .unwrap_or(Datum::Null),
-        },
-        BinOp::LtEq => match (left, right) {
-            (Datum::Integer(a), Datum::Integer(b)) => Datum::Boolean(a <= b),
-            (Datum::Text(a), Datum::Text(b)) => Datum::Boolean(a <= b),
-            _ => coerce_numeric(left, right)
-                .map(|(a, b)| Datum::Boolean(a <= b))
-                .unwrap_or(Datum::Null),
-        },
-        BinOp::Gt => match (left, right) {
-            (Datum::Integer(a), Datum::Integer(b)) => Datum::Boolean(a > b),
-            (Datum::Text(a), Datum::Text(b)) => Datum::Boolean(a > b),
-            _ => coerce_numeric(left, right)
-                .map(|(a, b)| Datum::Boolean(a > b))
-                .unwrap_or(Datum::Null),
-        },
-        BinOp::GtEq => match (left, right) {
-            (Datum::Integer(a), Datum::Integer(b)) => Datum::Boolean(a >= b),
-            (Datum::Text(a), Datum::Text(b)) => Datum::Boolean(a >= b),
-            _ => coerce_numeric(left, right)
-                .map(|(a, b)| Datum::Boolean(a >= b))
-                .unwrap_or(Datum::Null),
-        },
-        BinOp::And => {
-            let lb = match left {
-                Datum::Boolean(b) => Some(*b),
-                Datum::Integer(n) => Some(*n != 0),
-                _ => None,
-            };
-            let rb = match right {
-                Datum::Boolean(b) => Some(*b),
-                Datum::Integer(n) => Some(*n != 0),
-                _ => None,
-            };
-            match (lb, rb) {
-                (Some(l), Some(r)) => Datum::Boolean(l && r),
-                _ => Datum::Null,
-            }
-        }
-        BinOp::Or => {
-            let lb = match left {
-                Datum::Boolean(b) => Some(*b),
-                Datum::Integer(n) => Some(*n != 0),
-                _ => None,
-            };
-            let rb = match right {
-                Datum::Boolean(b) => Some(*b),
-                Datum::Integer(n) => Some(*n != 0),
-                _ => None,
-            };
-            match (lb, rb) {
-                (Some(l), Some(r)) => Datum::Boolean(l || r),
-                _ => Datum::Null,
-            }
-        }
-        BinOp::Add => match (left, right) {
-            (Datum::Integer(a), Datum::Integer(b)) => Datum::Integer(a + b),
-            _ => Datum::Null,
-        },
-        BinOp::Sub => match (left, right) {
-            (Datum::Integer(a), Datum::Integer(b)) => Datum::Integer(a - b),
-            _ => Datum::Null,
-        },
-        BinOp::Mul => match (left, right) {
-            (Datum::Integer(a), Datum::Integer(b)) => Datum::Integer(a * b),
-            _ => Datum::Null,
-        },
-        BinOp::Div => match (left, right) {
-            (Datum::Integer(a), Datum::Integer(b)) if *b != 0 => Datum::Integer(a / b),
-            _ => Datum::Null,
-        },
-        BinOp::Mod => match (left, right) {
-            (Datum::Integer(a), Datum::Integer(b)) if *b != 0 => Datum::Integer(a % b),
-            _ => Datum::Null,
-        },
-        BinOp::Concat => match (left, right) {
-            (Datum::Text(a), Datum::Text(b)) => Datum::Text(format!("{a}{b}")),
-            _ => Datum::Null,
-        },
-    }
-}
-
-fn like_match(s: &str, pattern: &str) -> bool {
-    let mut si = s.chars().peekable();
-    let mut pi = pattern.chars().peekable();
-    like_match_inner(&mut si, &mut pi)
-}
-
-fn like_match_inner(
-    s: &mut std::iter::Peekable<std::str::Chars<'_>>,
-    p: &mut std::iter::Peekable<std::str::Chars<'_>>,
-) -> bool {
-    loop {
-        match (p.peek().copied(), s.peek().copied()) {
-            (None, None) => return true,
-            (None, Some(_)) => return false,
-            (Some('%'), _) => {
-                p.next();
-                let remaining_pattern: String = p.collect();
-                let remaining_str: String = s.collect();
-                for (idx, _) in remaining_str.char_indices() {
-                    if like_match(&remaining_str[idx..], &remaining_pattern) {
-                        return true;
-                    }
-                }
-                // Also try starting after the last character (empty suffix)
-                if like_match(&remaining_str[remaining_str.len()..], &remaining_pattern) {
-                    return true;
-                }
-                return false;
-            }
-            (Some('_'), Some(_)) => {
-                p.next();
-                s.next();
-            }
-            (Some('_'), None) => return false,
-            (Some(pc), Some(sc)) => {
-                if pc.eq_ignore_ascii_case(&sc) {
-                    p.next();
-                    s.next();
-                } else {
-                    return false;
-                }
-            }
-            (Some(_), None) => return false,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Aggregate functions
-// ---------------------------------------------------------------------------
-
-fn is_aggregate_expr(expr: &Expr) -> bool {
-    match expr {
-        Expr::FunctionCall { name, .. } => matches!(
-            name.value.to_ascii_lowercase().as_str(),
-            "count" | "sum" | "avg" | "min" | "max"
-        ),
-        _ => false,
-    }
-}
-
-fn persistent_has_window_fn(expr: &Expr) -> bool {
-    match expr {
-        Expr::FunctionCall { window, args, .. } => {
-            window.is_some() || args.iter().any(persistent_has_window_fn)
-        }
-        Expr::BinaryOp { left, right, .. } => {
-            persistent_has_window_fn(left) || persistent_has_window_fn(right)
-        }
-        _ => false,
-    }
-}
-
-fn eval_aggregate(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec<Datum>]) -> Result<String> {
-    match expr {
-        Expr::FunctionCall { name, args, .. } => {
-            let func = name.value.to_ascii_lowercase();
-            match func.as_str() {
-                "count" => Ok(if args.len() == 1 && matches!(args[0], Expr::Star(_)) {
-                    rows.len().to_string()
-                } else if let Some(arg) = args.first() {
-                    let count = rows
-                        .iter()
-                        .filter(|row| !matches!(eval_datum_expr(arg, columns, row), Datum::Null))
-                        .count();
-                    count.to_string()
-                } else {
-                    rows.len().to_string()
-                }),
-                "sum" => Ok(if let Some(arg) = args.first() {
-                    let values: Vec<i64> = rows
-                        .iter()
-                        .filter_map(|row| match eval_datum_expr(arg, columns, row) {
-                            Datum::Integer(n) => Some(n),
-                            _ => None,
-                        })
-                        .collect();
-                    if values.is_empty() {
-                        "NULL".to_string()
-                    } else {
-                        values.iter().sum::<i64>().to_string()
-                    }
-                } else {
-                    "0".to_string()
-                }),
-                "avg" => Ok(if let Some(arg) = args.first() {
-                    let values: Vec<i64> = rows
-                        .iter()
-                        .filter_map(|row| match eval_datum_expr(arg, columns, row) {
-                            Datum::Integer(n) => Some(n),
-                            _ => None,
-                        })
-                        .collect();
-                    if values.is_empty() {
-                        "NULL".to_string()
-                    } else {
-                        let sum: i64 = values.iter().sum();
-                        let avg = sum as f64 / values.len() as f64;
-                        avg.to_string()
-                    }
-                } else {
-                    "NULL".to_string()
-                }),
-                "min" => Ok(if let Some(arg) = args.first() {
-                    let mut min_val: Option<Datum> = None;
-                    for row in rows {
-                        let val = eval_datum_expr(arg, columns, row);
-                        if matches!(val, Datum::Null) {
-                            continue;
-                        }
-                        min_val = Some(match min_val {
-                            None => val,
-                            Some(ref current) => {
-                                if cmp_datums(&val, current) == std::cmp::Ordering::Less {
-                                    val
-                                } else {
-                                    current.clone()
-                                }
-                            }
-                        });
-                    }
-                    min_val
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "NULL".to_string())
-                } else {
-                    "NULL".to_string()
-                }),
-                "max" => Ok(if let Some(arg) = args.first() {
-                    let mut max_val: Option<Datum> = None;
-                    for row in rows {
-                        let val = eval_datum_expr(arg, columns, row);
-                        if matches!(val, Datum::Null) {
-                            continue;
-                        }
-                        max_val = Some(match max_val {
-                            None => val,
-                            Some(ref current) => {
-                                if cmp_datums(&val, current) == std::cmp::Ordering::Greater {
-                                    val
-                                } else {
-                                    current.clone()
-                                }
-                            }
-                        });
-                    }
-                    max_val
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "NULL".to_string())
-                } else {
-                    "NULL".to_string()
-                }),
-                n if is_scalar_sql_fn(n) => Ok(rows
-                    .first()
-                    .map(|row| eval_datum_expr(expr, columns, row).to_string())
-                    .unwrap_or_else(|| "NULL".to_string())),
-                _ => Err(DustError::InvalidInput(format!(
-                    "unsupported aggregate or function `{func}` in aggregate SELECT"
-                ))),
-            }
-        }
-        _ => Ok(rows
-            .first()
-            .map(|row| eval_datum_expr(expr, columns, row).to_string())
-            .unwrap_or_else(|| "NULL".to_string())),
-    }
-}
-
-fn cmp_datums(a: &Datum, b: &Datum) -> std::cmp::Ordering {
-    a.cmp_fast(b)
-}
-
-/// Compare two string values, trying numeric comparison first.
-fn cmp_string_values(a: &str, b: &str) -> std::cmp::Ordering {
-    if let (Ok(a), Ok(b)) = (a.parse::<f64>(), b.parse::<f64>()) {
-        a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
-    } else {
-        a.cmp(b)
-    }
-}
-
-/// Resolve an ORDER BY expression to a column index in output string columns.
-/// Tries: (1) column ref name, (2) expression display name.
-fn resolve_order_by_string_column(expr: &Expr, output_columns: &[String]) -> Option<usize> {
-    match expr {
-        Expr::ColumnRef(cref) => output_columns.iter().position(|c| c == &cref.column.value),
-        other => {
-            let display = expr_display_name(other);
-            output_columns.iter().position(|c| c == &display)
-        }
-    }
-}
-
-fn expr_display_name(expr: &Expr) -> String {
-    match expr {
-        Expr::ColumnRef(cref) => {
-            if let Some(table) = &cref.table {
-                format!("{}.{}", table.value, cref.column.value)
-            } else {
-                cref.column.value.clone()
-            }
-        }
-        Expr::FunctionCall { name, .. } => format!("{}(...)", name.value),
-        Expr::Integer(lit) => lit.value.to_string(),
-        Expr::StringLit { value, .. } => format!("'{value}'"),
-        Expr::Star(_) => "*".to_string(),
-        _ => "?column?".to_string(),
-    }
-}
-
-fn persistent_eval_window_fn(
-    name: &str,
-    args: &[Expr],
-    spec: &dust_sql::WindowSpec,
-    columns: &[ColumnBinding],
-    rows: &[Vec<Datum>],
-) -> Result<Vec<String>> {
-    if rows.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let _col_names: Vec<String> = columns.iter().map(|c| c.column_name.clone()).collect();
-
-    // Partition rows
-    let partitions: Vec<Vec<usize>> = if spec.partition_by.is_empty() {
-        vec![(0..rows.len()).collect()]
-    } else {
-        let mut parts: Vec<Vec<usize>> = Vec::new();
-        let mut key_map: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-        for (idx, row) in rows.iter().enumerate() {
-            let key: String = spec
-                .partition_by
-                .iter()
-                .map(|e| eval_datum_expr(e, columns, row).to_string())
-                .collect::<Vec<_>>()
-                .join("\x00");
-            if let Some(&pidx) = key_map.get(&key) {
-                parts[pidx].push(idx);
-            } else {
-                let pidx = parts.len();
-                key_map.insert(key, pidx);
-                parts.push(vec![idx]);
-            }
-        }
-        parts
-    };
-
-    let mut result = vec!["NULL".to_string(); rows.len()];
-
-    for partition_indices in &partitions {
-        let mut sorted_indices = partition_indices.clone();
-        if !spec.order_by.is_empty() {
-            sorted_indices.sort_by(|&a, &b| {
-                for item in &spec.order_by {
-                    let aval = eval_datum_expr(&item.expr, columns, &rows[a]);
-                    let bval = eval_datum_expr(&item.expr, columns, &rows[b]);
-                    let mut cmp = cmp_datums(&aval, &bval);
-                    if item.ordering == Some(dust_sql::IndexOrdering::Desc) {
-                        cmp = cmp.reverse();
-                    }
-                    if cmp != std::cmp::Ordering::Equal {
-                        return cmp;
-                    }
-                }
-                std::cmp::Ordering::Equal
-            });
-        }
-
-        match name {
-            "row_number" => {
-                for (rank, &row_idx) in sorted_indices.iter().enumerate() {
-                    result[row_idx] = (rank + 1).to_string();
-                }
-            }
-            "rank" => {
-                let mut rank = 1i64;
-                let mut prev_vals: Option<Vec<Datum>> = None;
-                for (pos, &row_idx) in sorted_indices.iter().enumerate() {
-                    let order_vals: Vec<Datum> = spec
-                        .order_by
-                        .iter()
-                        .map(|ob| eval_datum_expr(&ob.expr, columns, &rows[row_idx]))
-                        .collect();
-                    if let Some(ref prev) = prev_vals
-                        && order_vals != *prev {
-                            rank = (pos + 1) as i64;
-                        }
-                    result[row_idx] = rank.to_string();
-                    prev_vals = Some(order_vals);
-                }
-            }
-            "dense_rank" => {
-                let mut rank = 1i64;
-                let mut prev_vals: Option<Vec<Datum>> = None;
-                for &row_idx in &sorted_indices {
-                    let order_vals: Vec<Datum> = spec
-                        .order_by
-                        .iter()
-                        .map(|ob| eval_datum_expr(&ob.expr, columns, &rows[row_idx]))
-                        .collect();
-                    if let Some(ref prev) = prev_vals
-                        && order_vals != *prev {
-                            rank += 1;
-                        }
-                    result[row_idx] = rank.to_string();
-                    prev_vals = Some(order_vals);
-                }
-            }
-            "lag" => {
-                let offset = if let Some(Expr::Integer(lit)) = args.get(1) {
-                    lit.value.max(1) as usize
-                } else {
-                    1
-                };
-                let default = args.get(2).map(|e| eval_datum_expr(e, columns, &rows[0]).to_string());
-                for (pos, &row_idx) in sorted_indices.iter().enumerate() {
-                    if pos >= offset {
-                        let src_idx = sorted_indices[pos - offset];
-                        if let Some(arg) = args.first() {
-                            result[row_idx] = eval_datum_expr(arg, columns, &rows[src_idx]).to_string();
-                        }
-                    } else if let Some(ref d) = default {
-                        result[row_idx] = d.clone();
-                    }
-                }
-            }
-            "lead" => {
-                let offset = if let Some(Expr::Integer(lit)) = args.get(1) {
-                    lit.value.max(1) as usize
-                } else {
-                    1
-                };
-                let default = args.get(2).map(|e| eval_datum_expr(e, columns, &rows[0]).to_string());
-                for (pos, &row_idx) in sorted_indices.iter().enumerate() {
-                    if pos + offset < sorted_indices.len() {
-                        let src_idx = sorted_indices[pos + offset];
-                        if let Some(arg) = args.first() {
-                            result[row_idx] = eval_datum_expr(arg, columns, &rows[src_idx]).to_string();
-                        }
-                    } else if let Some(ref d) = default {
-                        result[row_idx] = d.clone();
-                    }
-                }
-            }
-            _ => {
-                return Err(DustError::UnsupportedQuery(format!(
-                    "unsupported window function `{name}`"
-                )));
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-fn validate_select_columns(
-    select: &dust_sql::SelectStatement,
-    columns: &[ColumnBinding],
-) -> Result<()> {
-    for item in &select.projection {
-        match item {
-            SelectItem::Expr { expr, .. } => validate_expr_columns(columns, expr)?,
-            SelectItem::QualifiedWildcard { table, .. } => {
-                if !columns
-                    .iter()
-                    .any(|column| column.matches_qualifier(&table.value))
-                {
-                    return Err(DustError::InvalidInput(format!(
-                        "table `{}` does not exist in this query",
-                        table.value
-                    )));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Collect SELECT aliases so ORDER BY can reference them
-    let select_aliases: Vec<String> = select
-        .projection
-        .iter()
-        .filter_map(|item| {
-            if let SelectItem::Expr {
-                alias: Some(alias), ..
-            } = item
-            {
-                Some(alias.value.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    for item in &select.order_by {
-        if let Expr::ColumnRef(cref) = &item.expr {
-            if select_aliases.contains(&cref.column.value) {
-                continue; // alias reference, skip table-column validation
-            }
-        }
-        validate_expr_columns(columns, &item.expr)?;
-    }
-
-    for expr in &select.group_by {
-        validate_expr_columns(columns, expr)?;
-    }
-
-    if let Some(where_expr) = &select.where_clause {
-        validate_expr_columns(columns, where_expr)?;
-    }
-
-    if let Some(having) = &select.having {
-        validate_expr_columns(columns, having)?;
-    }
-
-    Ok(())
-}
-
-fn validate_expr_columns(columns: &[ColumnBinding], expr: &Expr) -> Result<()> {
-    match expr {
-        Expr::ColumnRef(cref) => resolve_column_index(columns, cref).map(|_| ()),
-        Expr::BinaryOp { left, right, .. } => {
-            validate_expr_columns(columns, left)?;
-            validate_expr_columns(columns, right)
-        }
-        Expr::UnaryOp { operand, .. }
-        | Expr::IsNull { expr: operand, .. }
-        | Expr::Cast { expr: operand, .. }
-        | Expr::Parenthesized { expr: operand, .. } => validate_expr_columns(columns, operand),
-        Expr::InList { expr, list, .. } => {
-            validate_expr_columns(columns, expr)?;
-            for item in list {
-                validate_expr_columns(columns, item)?;
-            }
-            Ok(())
-        }
-        Expr::Between {
-            expr, low, high, ..
-        } => {
-            validate_expr_columns(columns, expr)?;
-            validate_expr_columns(columns, low)?;
-            validate_expr_columns(columns, high)
-        }
-        Expr::Like { expr, pattern, .. } => {
-            validate_expr_columns(columns, expr)?;
-            validate_expr_columns(columns, pattern)
-        }
-        Expr::FunctionCall { args, .. } => {
-            for arg in args {
-                validate_expr_columns(columns, arg)?;
-            }
-            Ok(())
-        }
-        Expr::Subquery { .. } => Ok(()), // subquery columns validated separately
-        Expr::InSubquery { expr, .. } => validate_expr_columns(columns, expr),
-        Expr::VectorLiteral { elements, .. } => {
-            for elem in elements {
-                validate_expr_columns(columns, elem)?;
-            }
-            Ok(())
-        }
-        Expr::Integer(_)
-        | Expr::Float(_)
-        | Expr::StringLit { .. }
-        | Expr::Null(_)
-        | Expr::Boolean { .. }
-        | Expr::Star(_) => Ok(()),
-    }
-}
-
-fn resolve_column_index(columns: &[ColumnBinding], cref: &ColumnRef) -> Result<usize> {
-    let matches = columns
-        .iter()
-        .enumerate()
-        .filter(|(_, column)| {
-            column.column_name == cref.column.value
-                && cref
-                    .table
-                    .as_ref()
-                    .is_none_or(|table| column.matches_qualifier(&table.value))
-        })
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-
-    match matches.as_slice() {
-        [index] => Ok(*index),
-        [] => Err(DustError::InvalidInput(format!(
-            "column `{}` not found",
-            render_column_ref(cref)
-        ))),
-        _ => Err(DustError::InvalidInput(format!(
-            "column reference `{}` is ambiguous",
-            render_column_ref(cref)
-        ))),
-    }
-}
-
-fn resolve_column_index_runtime(columns: &[ColumnBinding], cref: &ColumnRef) -> Option<usize> {
-    // Fast path: unqualified column name — linear scan but with early exit
-    let col_name = &cref.column.value;
-    if let Some(table_name) = &cref.table {
-        columns
-            .iter()
-            .position(|c| c.column_name == *col_name && c.matches_qualifier(&table_name.value))
-    } else {
-        // Unqualified: find first matching column name
-        columns.iter().position(|c| c.column_name == *col_name)
-    }
-}
-
-fn render_column_ref(cref: &ColumnRef) -> String {
-    match &cref.table {
-        Some(table) => format!("{}.{}", table.value, cref.column.value),
-        None => cref.column.value.clone(),
-    }
-}
-
-fn eval_case_function(args: &[Expr], columns: &[ColumnBinding], row: &[Datum]) -> Datum {
-    if args.is_empty() {
-        return Datum::Null;
-    }
-
-    let has_else = args.len() % 2 == 1;
-    let branch_limit = if has_else { args.len() - 1 } else { args.len() };
-    let mut index = 0;
-    while index + 1 < branch_limit {
-        let condition = eval_datum_expr(&args[index], columns, row);
-        let matches = match condition {
-            Datum::Boolean(value) => value,
-            Datum::Integer(value) => value != 0,
-            _ => false,
-        };
-        if matches {
-            return eval_datum_expr(&args[index + 1], columns, row);
-        }
-        index += 2;
-    }
-
-    if has_else {
-        return eval_datum_expr(&args[args.len() - 1], columns, row);
-    }
-
-    Datum::Null
-}
-
 fn column_schema_from_ast(column: &dust_sql::ColumnDef) -> ColumnSchema {
     let mut schema = column_schema_from_def(column);
     for constraint in &column.constraints {
@@ -2879,56 +1679,6 @@ fn unique_constraints_for_column(column: &dust_sql::ColumnDef) -> Vec<Vec<String
     constraints
 }
 
-/// Coerce a Datum value to match the SQLite type affinity of a column.
-fn coerce_by_affinity(value: &Datum, col_type_name: Option<&str>) -> Datum {
-    let affinity = type_affinity(col_type_name.unwrap_or(""));
-    match affinity {
-        TypeAffinity::Integer => match value {
-            Datum::Integer(_) => value.clone(),
-            Datum::Text(s) => {
-                if let Ok(n) = s.trim().parse::<i64>() {
-                    Datum::Integer(n)
-                } else {
-                    value.clone()
-                }
-            }
-            _ => value.clone(),
-        },
-        TypeAffinity::Text => match value {
-            Datum::Text(_) => value.clone(),
-            Datum::Integer(n) => Datum::Text(n.to_string()),
-            Datum::Boolean(b) => Datum::Text(b.to_string()),
-            Datum::Real(r) => Datum::Text(r.to_string()),
-            Datum::Blob(_) | Datum::Null => value.clone(),
-        },
-        TypeAffinity::Real => match value {
-            Datum::Real(_) => value.clone(),
-            Datum::Integer(n) => Datum::Real(*n as f64),
-            Datum::Text(s) => {
-                if let Ok(r) = s.trim().parse::<f64>() {
-                    Datum::Real(r)
-                } else {
-                    value.clone()
-                }
-            }
-            _ => value.clone(),
-        },
-        TypeAffinity::Numeric => match value {
-            Datum::Text(s) => {
-                if let Ok(n) = s.trim().parse::<i64>() {
-                    Datum::Integer(n)
-                } else if let Ok(r) = s.trim().parse::<f64>() {
-                    Datum::Real(r)
-                } else {
-                    value.clone()
-                }
-            }
-            _ => value.clone(),
-        },
-        TypeAffinity::Blob => value.clone(),
-    }
-}
-
 fn schema_path_for_db(db_path: &Path) -> PathBuf {
     db_path.with_extension("schema.toml")
 }
@@ -2938,7 +1688,7 @@ fn combine_outputs(outputs: Vec<QueryOutput>) -> Result<QueryOutput> {
         0 => Err(DustError::InvalidInput(
             "no statements to execute".to_string(),
         )),
-        1 => Ok(outputs.into_iter().next().unwrap()),
+        1 => Ok(outputs.into_iter().next().expect("length is 1 — next() always returns Some")),
         _ => Ok(QueryOutput::Message(
             outputs
                 .into_iter()
@@ -2962,10 +1712,12 @@ fn render_query_output(output: &QueryOutput) -> String {
         }
         QueryOutput::RowsTyped { columns, rows } => {
             let mut lines = vec![columns.join("\t")];
-            lines.extend(
-                rows.iter()
-                    .map(|row| row.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\t")),
-            );
+            lines.extend(rows.iter().map(|row| {
+                row.iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            }));
             lines.join("\n")
         }
     }
@@ -3632,9 +2384,7 @@ mod tests {
         engine
             .query("INSERT INTO t (name) VALUES ('Alice')")
             .unwrap();
-        engine
-            .query("INSERT INTO t (name) VALUES ('Bob')")
-            .unwrap();
+        engine.query("INSERT INTO t (name) VALUES ('Bob')").unwrap();
 
         let output = engine.query("SELECT * FROM t").unwrap();
         assert_eq!(
@@ -3653,9 +2403,7 @@ mod tests {
     fn persistent_strftime_year() {
         let (mut engine, _dir) = temp_engine();
         assert_eq!(
-            engine
-                .query("SELECT strftime('%Y', '2024-06-15')")
-                .unwrap(),
+            engine.query("SELECT strftime('%Y', '2024-06-15')").unwrap(),
             QueryOutput::Rows {
                 columns: vec!["strftime(...)".to_string()],
                 rows: vec![vec!["2024".to_string()]],
@@ -4015,10 +2763,7 @@ mod tests {
             .query("SELECT (SELECT x FROM t)")
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("more than one row"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("more than one row"), "unexpected error: {err}");
     }
 
     #[test]

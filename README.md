@@ -14,7 +14,7 @@
   <a href="#quick-start">Quick start</a>
 </p>
 
-An extremely fast branchable SQL runtime and database toolchain, written in Rust.
+An extremely fast branchable SQL runtime and database toolchain, written in Rust. The current alpha ships 26 subcommands, plus built-in `help`.
 
 > *Dust* — the fundamental particle that connects everything (His Dark Materials), and also **d**(atabase) + (r)**ust**.
 
@@ -27,6 +27,8 @@ An extremely fast branchable SQL runtime and database toolchain, written in Rust
 </p>
 
 Dust replaces Docker + Postgres + your migration tool + your ORM + your test fixture setup with a single fast Rust binary.
+
+Prefer a guided tour? `dust demo` creates a seeded sample project, runs a live timed walkthrough, branches into an experiment, diffs it against main, and ends before Docker Postgres would usually finish cold-starting.
 
 ```
 $ dust init myapp && cd myapp
@@ -48,7 +50,7 @@ schema fingerprint: sch_a1b2c3d4e5f6
 
 ## Why
 
-Every backend project starts the same way: install Docker, pull a Postgres image, wait 5 seconds for it to start, set up a migration tool, configure an ORM, write test fixtures. Dust does all of this in 5 milliseconds.
+Dust initializes in milliseconds, creates branches in under a millisecond, and ships a 26-command workflow in one binary. The point is not just that it's embedded SQL. The point is that the whole local database toolchain becomes faster than the setup ceremony it replaces.
 
 | | Docker Postgres | Dust |
 |---|---|---|
@@ -74,6 +76,9 @@ cargo install dust-cli
 ## Quick start
 
 ```sh
+# Guided tour
+dust demo
+
 # Create a project
 dust init myapp && cd myapp
 
@@ -92,11 +97,31 @@ dust branch switch main
 dust doctor
 ```
 
+## Commands
+
+**Core**: `init`, `query`, `shell`, `explain`, `status`, `version`
+
+**Branching**: `branch`, `diff`, `merge`, `snapshot`
+
+**Schema**: `migrate`, `lint`, `codegen`, `doctor`
+
+**Data**: `import`, `export`, `seed`, `deploy`
+
+**Development**: `demo`, `dev`, `serve`, `test`, `bench`
+
+**Integration**: `mcp`, `lsp`, `remote`
+
 ## Features
 
 **SQL engine** — Full DDL + DML: SELECT with WHERE, JOIN, GROUP BY, ORDER BY, LIMIT, window functions (ROW_NUMBER, RANK, LEAD/LAG), CTEs, subqueries, CASE expressions, transactions. INSERT, UPDATE, DELETE. CREATE/ALTER/DROP TABLE. Constraints: PRIMARY KEY, NOT NULL, UNIQUE, DEFAULT, AUTOINCREMENT.
 
 **Database branching** — `dust branch create/switch/list/delete`. Branches are metadata-only references — creating one doesn't copy your data. Experiment with schema changes without touching production.
+
+**Developer workflow** — `dust demo`, `dust dev`, `dust lint`, `dust doctor`, `dust bench`, `dust test`, and `dust deploy` cover the local dev loop from first project to regression testing and packaging.
+
+**Schema workflow** — `dust migrate` plans and applies migrations, `dust codegen` emits typed query artifacts, and `dust diff` / `dust merge` make branch review concrete.
+
+**Integration surface** — `dust serve` exposes pgwire, `dust mcp` integrates with AI agents, `dust lsp` powers editor tooling, and `dust remote` handles push/pull workflows.
 
 **Schema identity** — Every table, column, and index gets a stable ID. Schema state is tracked via BLAKE3 fingerprints in `dust.lock`. Renames are preserved, not destructive.
 
@@ -110,8 +135,10 @@ dust doctor
 
 ```
 dust-cli          CLI entry point
+dust-codegen      Typed query artifact generation
 dust-core         Project management, health checks
 dust-exec         Execution engine, binder, expression evaluator
+dust-lsp          Language Server Protocol server
 dust-sql          Handwritten lexer/parser/AST with spans
 dust-catalog      Schema descriptors, stable object IDs
 dust-plan         Logical and physical query plans
@@ -132,7 +159,7 @@ Dust is in active development. The v0 core prototype is functional:
 - [x] Schema fingerprinting and lockfile
 - [x] Semantic schema diff with rename detection
 - [x] Binder with column validation and type inference
-- [x] 329 tests passing
+- [x] 591 tests passing across the workspace
 - [x] Persistent storage (B+tree backed, survives across commands)
 - [x] Window functions (ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD)
 - [x] CTEs, subqueries, UNION/INTERSECT/EXCEPT
@@ -142,8 +169,10 @@ Dust is in active development. The v0 core prototype is functional:
 - [x] WASM UDF sandbox with fuel metering
 - [x] Transactions (BEGIN/COMMIT/ROLLBACK)
 - [x] Postgres wire protocol (`dust serve`)
-- [ ] Migration generation and replay
-- [ ] Typed query codegen (Rust + TypeScript)
+- [x] Migration generation and replay
+- [x] Typed query codegen (Rust + TypeScript)
+- [x] SQL linting, branch merging, snapshots, and benchmark tooling
+- [x] Dev mode with file watching, seeds, SQL test runner, and deploy packaging
 
 ## License
 

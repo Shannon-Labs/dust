@@ -84,7 +84,7 @@ fn bind_select(storage: &Storage, select: &SelectStatement, result: &mut BindRes
             return;
         }
 
-        let store = storage.table(table_name).unwrap();
+        let store = storage.table(table_name).expect("table exists — checked above");
 
         // Validate projection columns
         for item in &select.projection {
@@ -114,10 +114,10 @@ fn bind_select(storage: &Storage, select: &SelectStatement, result: &mut BindRes
             })
             .collect();
         for item in &select.order_by {
-            if let Expr::ColumnRef(cref) = &item.expr {
-                if select_aliases.contains(&cref.column.value) {
-                    continue; // alias reference, skip table-column validation
-                }
+            if let Expr::ColumnRef(cref) = &item.expr
+                && select_aliases.contains(&cref.column.value)
+            {
+                continue; // alias reference, skip table-column validation
             }
             validate_expr_columns(table_name, &store.columns, &item.expr, result);
         }
@@ -143,7 +143,7 @@ fn bind_insert(storage: &Storage, insert: &InsertStatement, result: &mut BindRes
         return;
     }
 
-    let store = storage.table(table_name).unwrap();
+    let store = storage.table(table_name).expect("table exists — checked above");
 
     // Validate column list
     for col in &insert.columns {
@@ -182,7 +182,7 @@ fn bind_update(storage: &Storage, update: &UpdateStatement, result: &mut BindRes
         return;
     }
 
-    let store = storage.table(table_name).unwrap();
+    let store = storage.table(table_name).expect("table exists — checked above");
 
     // Validate assignment columns
     for assignment in &update.assignments {
@@ -212,7 +212,7 @@ fn bind_delete(storage: &Storage, delete: &DeleteStatement, result: &mut BindRes
     }
 
     if let Some(where_expr) = &delete.where_clause {
-        let store = storage.table(table_name).unwrap();
+        let store = storage.table(table_name).expect("table exists — checked above");
         validate_expr_columns(table_name, &store.columns, where_expr, result);
     }
 }

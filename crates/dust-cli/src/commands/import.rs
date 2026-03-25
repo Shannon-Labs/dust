@@ -584,7 +584,7 @@ fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
     }
 
     // First row is header
-    let header_row = range.rows().next().unwrap();
+    let header_row = range.rows().next().expect("height > 0 was checked above");
     let columns: Vec<String> = header_row
         .iter()
         .enumerate()
@@ -762,7 +762,7 @@ fn sanitize_sql_name(name: &str, default: &str, prefix: &str) -> String {
         .collect();
     if clean.is_empty() {
         default.to_string()
-    } else if clean.chars().next().unwrap().is_ascii_digit() {
+    } else if clean.chars().next().expect("clean is non-empty after the is_empty() check above").is_ascii_digit() {
         format!("{prefix}{clean}")
     } else {
         clean
