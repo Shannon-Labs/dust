@@ -32,6 +32,15 @@ pub enum ImportCommand {
     Sqlite {
         /// Path to .sqlite or .db file
         file: PathBuf,
+        /// Import only these tables (comma-separated or repeated)
+        #[arg(long, value_delimiter = ',')]
+        table: Vec<String>,
+        /// Only import rows not already present (by max rowid)
+        #[arg(long)]
+        incremental: bool,
+        /// Drop and recreate tables before importing
+        #[arg(long)]
+        replace: bool,
     },
     /// Import all tables from a PostgreSQL database
     Postgres {
@@ -115,8 +124,9 @@ pub fn run(args: ImportArgs) -> Result<()> {
         Some(ImportCommand::Jsonl { file, table }) => {
             return run_jsonl_import(file, table.as_deref(), mode);
         }
-        Some(ImportCommand::Sqlite { file }) => {
-            return crate::import_sqlite::run(file);
+        Some(ImportCommand::Sqlite { file, table, incremental, replace }) => {
+            let filter = if table.is_empty() { None } else { Some(table.as_slice()) };
+            return crate::import_sqlite::run(file, filter, *incremental, *replace);
         }
         Some(ImportCommand::Postgres { uri }) => {
             return crate::import_postgres::run(uri);
@@ -158,7 +168,7 @@ pub fn run(args: ImportArgs) -> Result<()> {
         "sql" => run_sql_import(file),
         "xlsx" | "xls" => run_xlsx_import(file, args.table.as_deref(), mode),
         "parquet" => run_parquet_import(file, args.table.as_deref(), mode),
-        "sqlite" | "db" => crate::import_sqlite::run(file),
+        "sqlite" | "db" => crate::import_sqlite::run(file, None, false, mode.replace),
         "dustdb" => run_dustdb_import(file),
         "dustpack" => run_dustpack_import(file),
         _ => run_csv_import(

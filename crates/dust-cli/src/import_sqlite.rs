@@ -15,7 +15,12 @@ enum SqlValue {
     Blob(Vec<u8>),
 }
 
-pub fn run(file_path: &Path) -> Result<()> {
+pub fn run(
+    file_path: &Path,
+    table_filter: Option<&[String]>,
+    incremental: bool,
+    replace: bool,
+) -> Result<()> {
     if !file_path.exists() {
         return Err(DustError::InvalidInput(format!(
             "file not found: {}",
@@ -50,20 +55,63 @@ pub fn run(file_path: &Path) -> Result<()> {
     let mut engine = PersistentEngine::open(&db_path)?;
 
     let mut total_tables = 0usize;
+    let mut total_rows = 0usize;
 
     for (table_name, create_sql) in &tables {
-        if let Some(sql) = create_sql {
-            let dust_sql = convert_sqlite_create(sql, table_name);
-            if let Err(e) = engine.query(&dust_sql) {
-                eprintln!(
-                    "Warning: could not create table `{table_name}`: {e}. Trying simplified schema."
-                );
+        // --table filter: skip tables not in the list
+        if let Some(filter) = table_filter {
+            if !filter.iter().any(|f| f.eq_ignore_ascii_case(table_name)) {
+                continue;
+            }
+        }
+
+        // --replace: drop existing table first
+        if replace {
+            let _ = engine.query(&format!("DROP TABLE IF EXISTS {}", quote_ident(table_name)));
+        }
+
+        // For --incremental, get the current max rowid in the dust table
+        // before creating it (only meaningful if table already exists).
+        let existing_max_rowid: i64 = if incremental {
+            match engine.query(&format!("SELECT COUNT(*) FROM {}", quote_ident(table_name))) {
+                Ok(_) => {
+                    // Table exists — use row count as the offset.
+                    // We'll skip that many rows from the source.
+                    match engine.query(&format!("SELECT COUNT(*) FROM {}", quote_ident(table_name))) {
+                        Ok(dust_exec::QueryOutput::Rows { rows, .. }) => {
+                            rows.first()
+                                .and_then(|r| r.first())
+                                .and_then(|s| s.parse::<i64>().ok())
+                                .unwrap_or(0)
+                        }
+                        _ => 0,
+                    }
+                }
+                Err(_) => 0, // table doesn't exist yet
+            }
+        } else {
+            0
+        };
+
+        // Create the table if it doesn't already exist
+        let table_exists_already = engine
+            .query(&format!("SELECT 1 FROM {} LIMIT 0", quote_ident(table_name)))
+            .is_ok();
+
+        if !table_exists_already {
+            if let Some(sql) = create_sql {
+                let dust_sql = convert_sqlite_create(sql, table_name);
+                if let Err(e) = engine.query(&dust_sql) {
+                    eprintln!(
+                        "Warning: could not create table `{table_name}`: {e}. Trying simplified schema."
+                    );
+                    let simplified = simplified_create_table(table_name, &conn);
+                    engine.query(&simplified)?;
+                }
+            } else {
                 let simplified = simplified_create_table(table_name, &conn);
                 engine.query(&simplified)?;
             }
-        } else {
-            let simplified = simplified_create_table(table_name, &conn);
-            engine.query(&simplified)?;
         }
         total_tables += 1;
 
@@ -72,11 +120,22 @@ pub fn run(file_path: &Path) -> Result<()> {
         let col_types: Vec<&str> = col_info.iter().map(|c| c.1.as_str()).collect();
 
         let quoted_col_names: Vec<String> = col_names.iter().map(|c| quote_ident(c)).collect();
-        let select_sql = format!(
-            "SELECT {} FROM {}",
-            quoted_col_names.join(", "),
-            quote_ident(table_name)
-        );
+
+        // For --incremental, use LIMIT -1 OFFSET to skip already-imported rows
+        let select_sql = if incremental && existing_max_rowid > 0 {
+            format!(
+                "SELECT {} FROM {} LIMIT -1 OFFSET {}",
+                quoted_col_names.join(", "),
+                quote_ident(table_name),
+                existing_max_rowid
+            )
+        } else {
+            format!(
+                "SELECT {} FROM {}",
+                quoted_col_names.join(", "),
+                quote_ident(table_name)
+            )
+        };
         let mut sel_stmt = conn.prepare(&select_sql).map_err(|e| {
             DustError::InvalidInput(format!("failed to prepare SELECT for `{table_name}`: {e}"))
         })?;
@@ -84,6 +143,7 @@ pub fn run(file_path: &Path) -> Result<()> {
         let col_count = col_names.len();
         let col_types_owned: Vec<String> = col_types.iter().map(|s| s.to_string()).collect();
         let mut insert_sql_parts = Vec::new();
+        let mut table_rows = 0usize;
         let mut row_query = sel_stmt.query([]).map_err(|e| {
             DustError::InvalidInput(format!("failed to execute SELECT for `{table_name}`: {e}"))
         })?;
@@ -106,22 +166,28 @@ pub fn run(file_path: &Path) -> Result<()> {
             }
             let values = format!("({})", value_strs.join(", "));
             insert_sql_parts.push(values);
+            table_rows += 1;
 
-            if insert_sql_parts.len() >= 100 {
-                let _count = flush_inserts(&mut engine, table_name, &col_names, &insert_sql_parts)?;
+            if insert_sql_parts.len() >= 500 {
+                flush_inserts(&mut engine, table_name, &col_names, &insert_sql_parts)?;
                 insert_sql_parts.clear();
             }
         }
 
         if !insert_sql_parts.is_empty() {
-            let _count = flush_inserts(&mut engine, table_name, &col_names, &insert_sql_parts)?;
+            flush_inserts(&mut engine, table_name, &col_names, &insert_sql_parts)?;
         }
 
-        println!("  Imported `{table_name}` ({} columns)", col_names.len());
+        if incremental && existing_max_rowid > 0 {
+            println!("  Imported `{table_name}` ({table_rows} new rows, {existing_max_rowid} skipped)");
+        } else {
+            println!("  Imported `{table_name}` ({table_rows} rows, {} columns)", col_names.len());
+        }
+        total_rows += table_rows;
     }
 
     engine.sync()?;
-    println!("Imported {total_tables} tables from SQLite.");
+    println!("Imported {total_tables} tables ({total_rows} rows) from SQLite.");
     Ok(())
 }
 
@@ -377,7 +443,7 @@ mod tests {
         // Run the import from within the project directory
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(&project_dir).unwrap();
-        let result = run(&sqlite_path);
+        let result = run(&sqlite_path, None, false, false);
         env::set_current_dir(&original_dir).unwrap();
 
         assert!(
@@ -426,7 +492,7 @@ mod tests {
 
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(&project_dir).unwrap();
-        let result = run(&sqlite_path);
+        let result = run(&sqlite_path, None, false, false);
         env::set_current_dir(&original_dir).unwrap();
 
         assert!(
