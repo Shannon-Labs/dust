@@ -68,8 +68,8 @@ pub fn run(
     output_dir: &Path,
     langs: &[Lang],
 ) -> Result<CodegenOutput, String> {
-    let schema_sql = fs::read_to_string(schema_path)
-        .map_err(|e| format!("failed to read schema: {e}"))?;
+    let schema_sql =
+        fs::read_to_string(schema_path).map_err(|e| format!("failed to read schema: {e}"))?;
 
     let fingerprint = SchemaFingerprint::compute(schema_sql.as_bytes());
 

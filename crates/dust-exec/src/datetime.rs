@@ -99,11 +99,7 @@ impl DateTime {
         } else {
             self.month as i64 - 3
         };
-        let era = if y >= 0 {
-            y / 400
-        } else {
-            (y - 399) / 400
-        };
+        let era = if y >= 0 { y / 400 } else { (y - 399) / 400 };
         let yoe = (y - era * 400) as u64;
         let doy = (153 * m as u64 + 2) / 5 + self.day as u64 - 1;
         let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
@@ -146,10 +142,14 @@ impl DateTime {
                     Some('M') => result.push_str(&format!("{:02}", self.minute)),
                     Some('S') => result.push_str(&format!("{:02}", self.second)),
                     Some('j') => {
-                        result.push_str(&format!("{:03}", day_of_year(self.year, self.month, self.day)));
+                        result.push_str(&format!(
+                            "{:03}",
+                            day_of_year(self.year, self.month, self.day)
+                        ));
                     }
                     Some('w') => {
-                        result.push_str(&format!("{}", day_of_week(self.year, self.month, self.day)));
+                        result
+                            .push_str(&format!("{}", day_of_week(self.year, self.month, self.day)));
                     }
                     Some('s') => {
                         result.push_str(&format!("{}", self.to_unix()));
@@ -600,10 +600,7 @@ mod tests {
 
     #[test]
     fn strftime_year() {
-        assert_eq!(
-            eval_strftime(&[s("%Y"), s("2024-06-15")]),
-            Some(s("2024"))
-        );
+        assert_eq!(eval_strftime(&[s("%Y"), s("2024-06-15")]), Some(s("2024")));
     }
 
     #[test]
@@ -617,19 +614,13 @@ mod tests {
     #[test]
     fn strftime_day_of_year() {
         // Jan 15 is the 15th day of the year
-        assert_eq!(
-            eval_strftime(&[s("%j"), s("2024-01-15")]),
-            Some(s("015"))
-        );
+        assert_eq!(eval_strftime(&[s("%j"), s("2024-01-15")]), Some(s("015")));
     }
 
     #[test]
     fn strftime_day_of_week() {
         // 2024-01-15 is a Monday = 1
-        assert_eq!(
-            eval_strftime(&[s("%w"), s("2024-01-15")]),
-            Some(s("1"))
-        );
+        assert_eq!(eval_strftime(&[s("%w"), s("2024-01-15")]), Some(s("1")));
     }
 
     #[test]
@@ -649,10 +640,7 @@ mod tests {
 
     #[test]
     fn unixepoch_epoch() {
-        assert_eq!(
-            eval_unixepoch(&[s("1970-01-01 00:00:00")]),
-            Some(0)
-        );
+        assert_eq!(eval_unixepoch(&[s("1970-01-01 00:00:00")]), Some(0));
     }
 
     #[test]
@@ -704,10 +692,7 @@ mod tests {
 
     #[test]
     fn time_from_datetime_string() {
-        assert_eq!(
-            eval_time(&[s("2024-01-15 14:30:00")]),
-            Some(s("14:30:00"))
-        );
+        assert_eq!(eval_time(&[s("2024-01-15 14:30:00")]), Some(s("14:30:00")));
     }
 
     #[test]

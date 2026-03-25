@@ -31,11 +31,7 @@ pub fn run() {
         let request: JsonRpcRequest = match serde_json::from_str(trimmed) {
             Ok(req) => req,
             Err(e) => {
-                let resp = JsonRpcResponse::error(
-                    Value::Null,
-                    -32700,
-                    format!("Parse error: {e}"),
-                );
+                let resp = JsonRpcResponse::error(Value::Null, -32700, format!("Parse error: {e}"));
                 write_response(&stdout, &resp);
                 continue;
             }
@@ -75,10 +71,7 @@ fn handle_request(state: &mut DustState, req: &JsonRpcRequest) -> Option<JsonRpc
         }
         "tools/call" => {
             let params = req.params.as_ref().cloned().unwrap_or(Value::Null);
-            let tool_name = params
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let tool_name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let arguments = params
                 .get("arguments")
                 .cloned()
@@ -193,7 +186,10 @@ fn dispatch_tool(state: &mut DustState, name: &str, args: &Value) -> Result<Stri
         "dust_import_sqlite" => {
             let file = get_str(args, "file")?;
             let table = args.get("table").and_then(Value::as_str);
-            let incremental = args.get("incremental").and_then(Value::as_bool).unwrap_or(false);
+            let incremental = args
+                .get("incremental")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             tools::import_sqlite(&path, file, table, incremental).map_err(|e| e.to_string())
         }
         "dust_export" => {
@@ -257,7 +253,9 @@ fn dispatch_tool(state: &mut DustState, name: &str, args: &Value) -> Result<Stri
             tools::switch_branch(&path, target).map_err(|e| e.to_string())?;
             state.close();
             // For now, merge means switching to target — full data merge requires storage-level support
-            Ok(format!("Switched to `{target}` (sandbox `{branch}` data is on its branch; use dust_branch_diff to compare)"))
+            Ok(format!(
+                "Switched to `{target}` (sandbox `{branch}` data is on its branch; use dust_branch_diff to compare)"
+            ))
         }
         "dust_sandbox_discard" => {
             let branch = get_str(args, "branch")?;

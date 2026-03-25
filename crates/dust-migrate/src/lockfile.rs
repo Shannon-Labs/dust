@@ -59,7 +59,10 @@ impl DustLock {
         if path.exists() && fs::symlink_metadata(path)?.file_type().is_symlink() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("refusing to write lockfile through symlink: {}", path.display()),
+                format!(
+                    "refusing to write lockfile through symlink: {}",
+                    path.display()
+                ),
             ));
         }
 
@@ -154,7 +157,9 @@ mod tests {
         symlink(&target, &link).expect("symlink");
 
         let lock = DustLock::from_schema("create table users (id uuid primary key);");
-        let err = lock.write_to_path(&link).expect_err("symlink write should fail");
+        let err = lock
+            .write_to_path(&link)
+            .expect_err("symlink write should fail");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

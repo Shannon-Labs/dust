@@ -186,7 +186,9 @@ pub fn run(args: MergeArgs) -> Result<()> {
                     ));
                 }
 
-                let resolutions = &state.expect("merge state must be Some after all_resolved check").resolutions;
+                let resolutions = &state
+                    .expect("merge state must be Some after all_resolved check")
+                    .resolutions;
                 execute_merge_with_resolutions(
                     &source_db_path,
                     &target_db_path,

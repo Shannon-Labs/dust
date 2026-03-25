@@ -48,14 +48,15 @@ pub fn run(args: DeployArgs) -> Result<()> {
         let mut engine = PersistentEngine::open(&active_db_path)?;
         let tables = engine.table_names();
         for table_name in &tables {
-            let count = match engine.query(&format!("SELECT count(*) FROM {}", quote_ident(table_name))) {
-                Ok(dust_exec::QueryOutput::Rows { rows, .. }) => rows
-                    .first()
-                    .and_then(|r| r.first())
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0),
-                _ => 0,
-            };
+            let count =
+                match engine.query(&format!("SELECT count(*) FROM {}", quote_ident(table_name))) {
+                    Ok(dust_exec::QueryOutput::Rows { rows, .. }) => rows
+                        .first()
+                        .and_then(|r| r.first())
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0),
+                    _ => 0,
+                };
             table_counts.push((table_name.clone(), count));
         }
     }

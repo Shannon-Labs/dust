@@ -86,7 +86,10 @@ pub fn generate_rust(queries: &[QueryAnnotation], fingerprint: &SchemaFingerprin
         };
 
         if !query.params.is_empty() {
-            out.push_str(&format!("// query: {} (types {})\n", query.name, source_label));
+            out.push_str(&format!(
+                "// query: {} (types {})\n",
+                query.name, source_label
+            ));
             out.push_str("#[derive(Debug, Clone, PartialEq, Eq)]\n");
             out.push_str(&format!("pub struct {struct_name}Params {{\n"));
             out.push_str(&format_params(&query.params, ""));
@@ -95,7 +98,10 @@ pub fn generate_rust(queries: &[QueryAnnotation], fingerprint: &SchemaFingerprin
 
         if !query.results.is_empty() {
             if query.params.is_empty() {
-                out.push_str(&format!("// query: {} (types {})\n", query.name, source_label));
+                out.push_str(&format!(
+                    "// query: {} (types {})\n",
+                    query.name, source_label
+                ));
             }
             out.push_str("#[derive(Debug, Clone, PartialEq, Eq)]\n");
             out.push_str(&format!("pub struct {struct_name}Row {{\n"));

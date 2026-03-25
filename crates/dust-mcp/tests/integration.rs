@@ -3,7 +3,7 @@
 //! These tests start the MCP server binary, send JSON-RPC requests via stdin,
 //! and verify the responses.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

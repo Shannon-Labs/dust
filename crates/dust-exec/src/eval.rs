@@ -1,7 +1,7 @@
-use dust_sql::{BinOp, ColumnRef, Expr};
-use dust_store::Datum;
 use crate::persistent_schema::TypeAffinity;
 use crate::persistent_schema::type_affinity;
+use dust_sql::{BinOp, ColumnRef, Expr};
+use dust_store::Datum;
 
 // ---------------------------------------------------------------------------
 // Column binding / row-set primitives
@@ -30,7 +30,9 @@ pub(crate) struct RowSet {
 // Literal parsing helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn parse_eq_where_column_literal(expr: &Expr) -> Option<(String, Option<String>, Datum)> {
+pub(crate) fn parse_eq_where_column_literal(
+    expr: &Expr,
+) -> Option<(String, Option<String>, Datum)> {
     match expr {
         Expr::BinaryOp {
             op: BinOp::Eq,
@@ -104,7 +106,10 @@ pub(crate) fn is_scalar_sql_fn(name: &str) -> bool {
 // Column index resolution
 // ---------------------------------------------------------------------------
 
-pub(crate) fn resolve_column_index_runtime(columns: &[ColumnBinding], cref: &ColumnRef) -> Option<usize> {
+pub(crate) fn resolve_column_index_runtime(
+    columns: &[ColumnBinding],
+    cref: &ColumnRef,
+) -> Option<usize> {
     // Fast path: unqualified column name — linear scan but with early exit
     let col_name = &cref.column.value;
     if let Some(table_name) = &cref.table {
@@ -333,7 +338,12 @@ pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
-pub(crate) fn eval_scalar_fn(name: &str, args: &[Expr], columns: &[ColumnBinding], row: &[Datum]) -> Datum {
+pub(crate) fn eval_scalar_fn(
+    name: &str,
+    args: &[Expr],
+    columns: &[ColumnBinding],
+    row: &[Datum],
+) -> Datum {
     // Helper: evaluate first arg (or return Null).
     let arg0 = || {
         args.first()

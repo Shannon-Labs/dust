@@ -48,7 +48,10 @@ pub fn read_message(reader: &mut impl BufRead) -> io::Result<String> {
         let mut line = String::new();
         let bytes = reader.read_line(&mut line)?;
         if bytes == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF reading headers"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "EOF reading headers",
+            ));
         }
 
         let trimmed = line.trim();
@@ -213,7 +216,10 @@ mod tests {
         let body2 = r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#;
         let input = format!(
             "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
-            body1.len(), body1, body2.len(), body2
+            body1.len(),
+            body1,
+            body2.len(),
+            body2
         );
         let mut reader = io::BufReader::new(input.as_bytes());
         let msg1 = read_message(&mut reader).unwrap();

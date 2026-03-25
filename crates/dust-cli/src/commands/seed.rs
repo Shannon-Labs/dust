@@ -9,7 +9,7 @@ use dust_types::{DustError, Result};
 use crate::project::find_project_root;
 
 // Re-use the seed profile types from the dev command.
-use crate::commands::dev::seeds::{load_seed_profile, run_seeds, SeedProfile};
+use crate::commands::dev::seeds::{SeedProfile, load_seed_profile, run_seeds};
 
 #[derive(Debug, Args)]
 pub struct SeedArgs {
@@ -27,9 +27,7 @@ pub fn run(args: SeedArgs) -> Result<()> {
     let root = match args.path {
         Some(p) => p,
         None => find_project_root(&env::current_dir()?).ok_or_else(|| {
-            DustError::ProjectNotFound(
-                env::current_dir().unwrap_or_default().display().to_string(),
-            )
+            DustError::ProjectNotFound(env::current_dir().unwrap_or_default().display().to_string())
         })?,
     };
 

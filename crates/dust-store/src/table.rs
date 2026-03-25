@@ -6,8 +6,8 @@
 use crate::btree::BTree;
 use crate::pager::Pager;
 use crate::row::{
-    decode_key_u64, decode_row, encode_key_u64, encode_row, rowid_from_secondary_key,
-    secondary_index_value_prefix, Datum,
+    Datum, decode_key_u64, decode_row, encode_key_u64, encode_row, rowid_from_secondary_key,
+    secondary_index_value_prefix,
 };
 use dust_types::{DustError, Result};
 use std::collections::{HashMap, HashSet};
@@ -328,7 +328,11 @@ impl TableEngine {
     }
 
     /// Look up rowids matching exact indexed value(s) (point query on a composite or single-column index).
-    pub fn secondary_lookup_rowids(&mut self, index_name: &str, datums: &[Datum]) -> Result<Vec<u64>> {
+    pub fn secondary_lookup_rowids(
+        &mut self,
+        index_name: &str,
+        datums: &[Datum],
+    ) -> Result<Vec<u64>> {
         let root = self
             .secondary_indexes
             .get(index_name)
@@ -1084,7 +1088,13 @@ mod tests {
 
         // Build a UNIQUE secondary index on email
         let root = engine.create_secondary_index("t", &[1], true).unwrap();
-        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), vec![1], root, true);
+        engine.register_secondary_index(
+            "idx_email".to_string(),
+            "t".to_string(),
+            vec![1],
+            root,
+            true,
+        );
 
         // Insert with same email value should fail
         let err = engine
@@ -1123,7 +1133,13 @@ mod tests {
             .unwrap();
 
         let root = engine.create_secondary_index("t", &[1], true).unwrap();
-        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), vec![1], root, true);
+        engine.register_secondary_index(
+            "idx_email".to_string(),
+            "t".to_string(),
+            vec![1],
+            root,
+            true,
+        );
 
         // Update row 2 to have same email as row 1 should fail
         let err = engine
@@ -1153,7 +1169,13 @@ mod tests {
             .unwrap();
 
         let root = engine.create_secondary_index("t", &[1], true).unwrap();
-        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), vec![1], root, true);
+        engine.register_secondary_index(
+            "idx_email".to_string(),
+            "t".to_string(),
+            vec![1],
+            root,
+            true,
+        );
 
         // Attempt to update r2 to the same email as r1 — should fail with unique violation
         let err = engine
@@ -1227,10 +1249,7 @@ mod tests {
     fn composite_index_creation_and_lookup() {
         let (mut engine, _dir) = temp_engine();
         engine
-            .create_table(
-                "t",
-                vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            )
+            .create_table("t", vec!["a".to_string(), "b".to_string(), "c".to_string()])
             .unwrap();
         engine
             .insert_row(
@@ -1275,37 +1294,25 @@ mod tests {
 
         // Lookup (x, 1) should return exactly 1 row
         let rowids = engine
-            .secondary_lookup_rowids(
-                "idx_ab",
-                &[Datum::Text("x".to_string()), Datum::Integer(1)],
-            )
+            .secondary_lookup_rowids("idx_ab", &[Datum::Text("x".to_string()), Datum::Integer(1)])
             .unwrap();
         assert_eq!(rowids.len(), 1, "composite lookup (x,1) should match 1 row");
 
         // Lookup (x, 2) should return exactly 1 row
         let rowids = engine
-            .secondary_lookup_rowids(
-                "idx_ab",
-                &[Datum::Text("x".to_string()), Datum::Integer(2)],
-            )
+            .secondary_lookup_rowids("idx_ab", &[Datum::Text("x".to_string()), Datum::Integer(2)])
             .unwrap();
         assert_eq!(rowids.len(), 1, "composite lookup (x,2) should match 1 row");
 
         // Lookup (y, 1) should return exactly 1 row
         let rowids = engine
-            .secondary_lookup_rowids(
-                "idx_ab",
-                &[Datum::Text("y".to_string()), Datum::Integer(1)],
-            )
+            .secondary_lookup_rowids("idx_ab", &[Datum::Text("y".to_string()), Datum::Integer(1)])
             .unwrap();
         assert_eq!(rowids.len(), 1, "composite lookup (y,1) should match 1 row");
 
         // Lookup (y, 2) should return 0 rows
         let rowids = engine
-            .secondary_lookup_rowids(
-                "idx_ab",
-                &[Datum::Text("y".to_string()), Datum::Integer(2)],
-            )
+            .secondary_lookup_rowids("idx_ab", &[Datum::Text("y".to_string()), Datum::Integer(2)])
             .unwrap();
         assert_eq!(
             rowids.len(),
@@ -1318,10 +1325,7 @@ mod tests {
     fn composite_unique_index_rejects_duplicate() {
         let (mut engine, _dir) = temp_engine();
         engine
-            .create_table(
-                "t",
-                vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            )
+            .create_table("t", vec!["a".to_string(), "b".to_string(), "c".to_string()])
             .unwrap();
         engine
             .insert_row(
@@ -1334,9 +1338,7 @@ mod tests {
             )
             .unwrap();
 
-        let root = engine
-            .create_secondary_index("t", &[0, 1], true)
-            .unwrap();
+        let root = engine.create_secondary_index("t", &[0, 1], true).unwrap();
         engine.register_secondary_index(
             "idx_ab_u".to_string(),
             "t".to_string(),

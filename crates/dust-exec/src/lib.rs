@@ -23,7 +23,7 @@ pub use set_ops::combine_set_op_rows;
 pub use storage::{Storage, Value};
 pub use udf::{Udf, UdfRegistry};
 pub use vector::{
-    HnswIndex, HnswRegistry, DistanceMetric, cosine_distance, euclidean_distance,
-    format_vector, parse_vector, vector_distance,
+    DistanceMetric, HnswIndex, HnswRegistry, cosine_distance, euclidean_distance, format_vector,
+    parse_vector, vector_distance,
 };
 pub use wasm_udf::load_wasm_module;

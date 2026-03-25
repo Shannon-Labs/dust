@@ -64,9 +64,7 @@ impl SltTest {
                 actual_cells.len(),
                 "cell count mismatch in row {i} for SQL: {sql}"
             );
-            for (j, (expected, actual)) in
-                expected_cells.iter().zip(actual_cells).enumerate()
-            {
+            for (j, (expected, actual)) in expected_cells.iter().zip(actual_cells).enumerate() {
                 assert_eq!(
                     actual.trim(),
                     *expected,

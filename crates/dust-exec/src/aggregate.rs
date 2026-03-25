@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 
+use crate::eval::{ColumnBinding, cmp_datums, eval_datum_expr, is_scalar_sql_fn};
 use dust_sql::Expr;
 use dust_store::Datum;
 use dust_types::{DustError, Result};
-use crate::eval::{eval_datum_expr, cmp_datums, is_scalar_sql_fn, ColumnBinding};
 
 fn fold_extreme(
     arg: Option<&Expr>,
@@ -81,7 +81,11 @@ pub(crate) fn persistent_has_window_fn(expr: &Expr) -> bool {
     }
 }
 
-pub(crate) fn eval_aggregate(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec<Datum>]) -> Result<String> {
+pub(crate) fn eval_aggregate(
+    expr: &Expr,
+    columns: &[ColumnBinding],
+    rows: &[Vec<Datum>],
+) -> Result<String> {
     match expr {
         Expr::FunctionCall {
             name,

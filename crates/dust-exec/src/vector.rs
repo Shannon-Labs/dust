@@ -7,8 +7,8 @@
 //! alongside the table and is used to accelerate ORDER BY vector_distance(...)
 //! LIMIT queries.
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 // -----------------------------------------------------------------------
 // Vector helpers
@@ -125,7 +125,9 @@ impl PartialOrd for OrderedFloat {
 }
 impl Ord for OrderedFloat {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.partial_cmp(&other.0).unwrap_or(std::cmp::Ordering::Equal)
+        self.0
+            .partial_cmp(&other.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 
@@ -156,7 +158,9 @@ impl HnswIndex {
     fn random_level(&self) -> usize {
         // Simple hash-based pseudo-random; avoids pulling in rand crate.
         let seed = self.nodes.len() as u64;
-        let hash = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let hash = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let r = (hash >> 33) as f64 / (1u64 << 31) as f64; // [0, 1)
         let level = (-r.ln() * HNSW_ML).floor() as usize;
         level.min(20) // cap to prevent degenerate cases
@@ -181,7 +185,9 @@ impl HnswIndex {
             return id;
         }
 
-        let ep = self.entry_point.expect("entry_point is Some — checked above");
+        let ep = self
+            .entry_point
+            .expect("entry_point is Some — checked above");
         let mut current_ep = ep;
 
         // Phase 1: Greedily descend from the top layer down to level+1
@@ -194,11 +200,7 @@ impl HnswIndex {
         for lc in (0..=insert_top).rev() {
             let neighbors = self.search_layer(current_ep, &vector, HNSW_EF_CONSTRUCTION, lc);
             // Select M closest neighbors
-            let selected: Vec<usize> = neighbors
-                .iter()
-                .take(HNSW_M)
-                .map(|&(nid, _)| nid)
-                .collect();
+            let selected: Vec<usize> = neighbors.iter().take(HNSW_M).map(|&(nid, _)| nid).collect();
 
             // Add bidirectional connections
             self.nodes[id].connections[lc] = selected.clone();
@@ -211,15 +213,22 @@ impl HnswIndex {
                         let mut scored: Vec<(usize, f32)> = self.nodes[nid].connections[lc]
                             .iter()
                             .map(|&cid| {
-                                let d = vector_distance(&node_vec, &self.nodes[cid].vector, self.metric);
+                                let d = vector_distance(
+                                    &node_vec,
+                                    &self.nodes[cid].vector,
+                                    self.metric,
+                                );
                                 (cid, d)
                             })
                             .collect();
                         scored.sort_by(|a, b| {
                             a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
                         });
-                        self.nodes[nid].connections[lc] =
-                            scored.into_iter().take(HNSW_M).map(|(cid, _)| cid).collect();
+                        self.nodes[nid].connections[lc] = scored
+                            .into_iter()
+                            .take(HNSW_M)
+                            .map(|(cid, _)| cid)
+                            .collect();
                     }
                 }
             }
@@ -286,7 +295,8 @@ impl HnswIndex {
         while let Some(Reverse((OrderedFloat(c_dist), c_id))) = candidates.pop() {
             // If closest candidate is farther than farthest result, stop
             if let Some(&(OrderedFloat(f_dist), _)) = results.peek()
-                && c_dist > f_dist && results.len() >= ef
+                && c_dist > f_dist
+                && results.len() >= ef
             {
                 break;
             }
@@ -334,7 +344,9 @@ impl HnswIndex {
             return Vec::new();
         }
 
-        let ep = self.entry_point.expect("entry_point is Some — checked above");
+        let ep = self
+            .entry_point
+            .expect("entry_point is Some — checked above");
         let mut current_ep = ep;
 
         // Descend from top layer

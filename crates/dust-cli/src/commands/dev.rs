@@ -289,7 +289,8 @@ fn start_serve_background(
                             if current != last_seen
                                 && let Ok(new_engine) = PersistentEngine::open(&dbp)
                             {
-                                *engine.lock().expect("engine mutex should not be poisoned") = new_engine;
+                                *engine.lock().expect("engine mutex should not be poisoned") =
+                                    new_engine;
                                 seen.store(current, Ordering::Release);
                             }
                             if let Err(e) = crate::pgwire::handle_connection(stream, engine).await {

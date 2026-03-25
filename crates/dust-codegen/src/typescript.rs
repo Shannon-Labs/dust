@@ -73,7 +73,10 @@ pub fn generate_typescript(queries: &[QueryAnnotation], fingerprint: &SchemaFing
         };
 
         if !query.params.is_empty() {
-            out.push_str(&format!("// query: {} (types {})\n", query.name, source_label));
+            out.push_str(&format!(
+                "// query: {} (types {})\n",
+                query.name, source_label
+            ));
             out.push_str(&format!("export interface {interface_name}Params {{\n"));
             out.push_str(&format_fields(&query.params, ""));
             out.push_str("}\n\n");
@@ -81,7 +84,10 @@ pub fn generate_typescript(queries: &[QueryAnnotation], fingerprint: &SchemaFing
 
         if !query.results.is_empty() {
             if query.params.is_empty() {
-                out.push_str(&format!("// query: {} (types {})\n", query.name, source_label));
+                out.push_str(&format!(
+                    "// query: {} (types {})\n",
+                    query.name, source_label
+                ));
             }
             out.push_str(&format!("export interface {interface_name}Row {{\n"));
             out.push_str(&format_fields(&query.results, ""));

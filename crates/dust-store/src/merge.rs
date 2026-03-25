@@ -604,10 +604,7 @@ fn collect_branch_data(
     let mut objects = Vec::new();
     let mut row_counts = HashMap::new();
     for name in &names {
-        let columns = engine
-            .table_columns(name)
-            .unwrap_or(&[])
-            .to_vec();
+        let columns = engine.table_columns(name).unwrap_or(&[]).to_vec();
         // Build a fingerprint from the column list so schema changes are detected.
         let fingerprint = {
             let mut material = name.clone();
@@ -890,10 +887,12 @@ mod tests {
         );
 
         assert!(!preview.can_auto_merge);
-        assert!(preview
-            .conflicts
-            .iter()
-            .any(|c| c.conflict_type == MergeConflictType::Schema));
+        assert!(
+            preview
+                .conflicts
+                .iter()
+                .any(|c| c.conflict_type == MergeConflictType::Schema)
+        );
     }
 
     #[test]
@@ -1103,11 +1102,13 @@ mod tests {
         );
 
         assert!(preview.can_auto_merge);
-        assert!(preview
-            .schema_merge
-            .changes
-            .iter()
-            .any(|c| matches!(c.kind, SchemaChangeKind::Removed)));
+        assert!(
+            preview
+                .schema_merge
+                .changes
+                .iter()
+                .any(|c| matches!(c.kind, SchemaChangeKind::Removed))
+        );
     }
 
     #[test]

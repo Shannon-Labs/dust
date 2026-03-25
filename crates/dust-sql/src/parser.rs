@@ -8,7 +8,7 @@ use crate::ast::{
     TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp, UpdateStatement,
     UpsertAction, UpsertClause, WindowSpec, WithStatement,
 };
-use crate::lexer::{lex, Keyword, Token, TokenKind};
+use crate::lexer::{Keyword, Token, TokenKind, lex};
 use dust_types::{DustError, Result};
 
 pub fn parse_program(input: &str) -> Result<Program> {
@@ -3000,9 +3000,13 @@ mod tests {
         };
         match &select.projection[0] {
             SelectItem::Expr {
-                expr: Expr::FunctionCall {
-                    name, args, distinct, ..
-                },
+                expr:
+                    Expr::FunctionCall {
+                        name,
+                        args,
+                        distinct,
+                        ..
+                    },
                 ..
             } => {
                 assert_eq!(name.value.to_ascii_lowercase(), "count");
@@ -3031,8 +3035,7 @@ mod tests {
     #[test]
     fn parses_on_conflict_do_update() {
         use crate::ast::UpsertAction;
-        let sql =
-            "INSERT INTO t (id, name) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET name = excluded.name";
+        let sql = "INSERT INTO t (id, name) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET name = excluded.name";
         let program = parse_program(sql).unwrap();
         let insert = match &program.statements[0] {
             AstStatement::Insert(i) => i,

@@ -64,14 +64,8 @@ mod inner {
             let udf = Udf::new(&fn_name, move |args: &[String]| {
                 // Serialize arguments as pipe-separated string
                 let input = args.join("|");
-                call_wasm_fn(
-                    &engine_ref,
-                    &module_ref,
-                    &linker_ref,
-                    &name,
-                    &input,
-                )
-                .unwrap_or_else(|e| format!("WASM_ERROR: {e}"))
+                call_wasm_fn(&engine_ref, &module_ref, &linker_ref, &name, &input)
+                    .unwrap_or_else(|e| format!("WASM_ERROR: {e}"))
             });
             registry.register(udf);
             registered.push(fn_name);

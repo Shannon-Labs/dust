@@ -17,14 +17,12 @@ pub struct SecondaryIndexDef {
     pub unique: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct PersistedSchema {
     pub tables: BTreeMap<String, TableSchema>,
     #[serde(default)]
     pub secondary_indexes: Vec<SecondaryIndexDef>,
 }
-
 
 impl PersistedSchema {
     pub fn load(path: &Path) -> Result<Self> {
@@ -328,10 +326,9 @@ mod tests {
 
     #[test]
     fn autoincrement_detected_in_schema() {
-        let program = parse_program(
-            "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)",
-        )
-        .unwrap();
+        let program =
+            parse_program("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+                .unwrap();
         let dust_sql::AstStatement::CreateTable(table) = &program.statements[0] else {
             panic!("expected create table");
         };

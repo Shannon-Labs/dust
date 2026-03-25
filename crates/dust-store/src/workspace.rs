@@ -72,9 +72,7 @@ impl WorkspaceLayout {
         if branch.as_str() == BranchName::MAIN {
             self.workspace_dir().join("data.db")
         } else {
-            self.branches_dir()
-                .join(branch.as_path())
-                .join("data.db")
+            self.branches_dir().join(branch.as_path()).join("data.db")
         }
     }
 
@@ -156,8 +154,7 @@ mod tests {
         // The ref should live in a nested directory
         assert_eq!(
             ref_path,
-            dir.path()
-                .join(".dust/workspace/refs/feature/auth.ref")
+            dir.path().join(".dust/workspace/refs/feature/auth.ref")
         );
 
         // Creating the parent directory must not panic (the key regression)

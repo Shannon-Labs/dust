@@ -260,9 +260,11 @@ mod tests {
         assert_ddl_message(&drop_t, "DROP TABLE");
 
         // Inserting into a dropped table should fail
-        assert!(database
-            .query("INSERT INTO t (id, name) VALUES (2, 'fail')")
-            .is_err());
+        assert!(
+            database
+                .query("INSERT INTO t (id, name) VALUES (2, 'fail')")
+                .is_err()
+        );
     }
 
     #[test]
@@ -1534,16 +1536,16 @@ mod tests {
         let row_count = 150_000;
         for i in 0..row_count {
             let name = match i % 5 {
-                0 => format!("\"hello, world {i}\""),        // comma inside quotes
-                1 => format!("\"line one\nline two {i}\""),  // newline inside quotes
+                0 => format!("\"hello, world {i}\""), // comma inside quotes
+                1 => format!("\"line one\nline two {i}\""), // newline inside quotes
                 2 => format!("\"\u{1F600}\u{4E16}\u{754C}{i}\""), // emoji + CJK
-                3 => format!("plain_{i}"),                    // unquoted
-                _ => format!("\"she said \"\"hi\"\" {i}\""),  // escaped quotes
+                3 => format!("plain_{i}"),            // unquoted
+                _ => format!("\"she said \"\"hi\"\" {i}\""), // escaped quotes
             };
             let note = match i % 4 {
-                0 => String::new(),                           // empty field
-                1 => "NULL".to_string(),                      // literal NULL text
-                2 => format!("\"\u{0301}\u{0327}mark{i}\""),  // combining marks
+                0 => String::new(),                          // empty field
+                1 => "NULL".to_string(),                     // literal NULL text
+                2 => format!("\"\u{0301}\u{0327}mark{i}\""), // combining marks
                 _ => format!("note_{i}"),
             };
             let tag = format!("t{i}");
@@ -1583,9 +1585,7 @@ mod tests {
         assert_eq!(imported, row_count, "all CSV rows should import");
 
         // Round-trip: SELECT * and verify count
-        let result = engine
-            .query("SELECT count(*) FROM big_csv")
-            .unwrap();
+        let result = engine.query("SELECT count(*) FROM big_csv").unwrap();
         let rows = rows_as_strings(&result);
         assert_eq!(
             rows[0][0],
@@ -1606,8 +1606,10 @@ mod tests {
         //
         // For now, verify the stub returns an appropriate error.
         let mut reg = dust_exec::udf::UdfRegistry::new();
-        let result =
-            dust_exec::wasm_udf::load_wasm_module(std::path::Path::new("nonexistent.wasm"), &mut reg);
+        let result = dust_exec::wasm_udf::load_wasm_module(
+            std::path::Path::new("nonexistent.wasm"),
+            &mut reg,
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err();
         assert!(
@@ -1682,10 +1684,7 @@ mod tests {
         match engine.query("SELECT count(*) FROM cp_a, cp_b") {
             Ok(result) => {
                 let rows = rows_as_strings(&result);
-                assert_eq!(
-                    rows[0][0], "250000",
-                    "cross join should produce 250K rows"
-                );
+                assert_eq!(rows[0][0], "250000", "cross join should produce 250K rows");
             }
             Err(e) => {
                 let msg = e.to_string();

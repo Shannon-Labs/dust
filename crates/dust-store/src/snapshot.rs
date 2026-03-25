@@ -17,11 +17,7 @@ pub struct NamedSnapshot {
 
 impl NamedSnapshot {
     /// Create a new snapshot from the given branch ref and persist it to disk.
-    pub fn create(
-        name: &str,
-        branch_ref: &BranchRef,
-        workspace: &WorkspaceLayout,
-    ) -> Result<Self> {
+    pub fn create(name: &str, branch_ref: &BranchRef, workspace: &WorkspaceLayout) -> Result<Self> {
         validate_snapshot_name(name)?;
 
         let snap = Self {
@@ -58,8 +54,7 @@ impl NamedSnapshot {
             )));
         }
         let content = std::fs::read_to_string(&path)?;
-        let snap: Self =
-            toml::from_str(&content).map_err(|e| DustError::Message(e.to_string()))?;
+        let snap: Self = toml::from_str(&content).map_err(|e| DustError::Message(e.to_string()))?;
         Ok(snap)
     }
 

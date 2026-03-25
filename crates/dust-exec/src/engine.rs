@@ -14,10 +14,10 @@ use dust_plan::{
     LogicalPlan, PhysicalPlan, PlannedStatement, SelectColumns, TableColumnPlan,
 };
 use dust_sql::{
-    parse_program, AlterTableAction, AstStatement, BinOp, ColumnConstraint, CreateIndexStatement,
+    AlterTableAction, AstStatement, BinOp, ColumnConstraint, CreateIndexStatement,
     CreateTableStatement, DeleteStatement, Expr, IndexOrdering as AstIndexOrdering,
     InsertStatement, SelectItem, SelectProjection, SetOpKind, Span, TableConstraint, TableElement,
-    TokenFragment, UpdateStatement,
+    TokenFragment, UpdateStatement, parse_program,
 };
 
 thread_local! {
@@ -55,24 +55,48 @@ pub enum QueryOutput {
 impl PartialEq for QueryOutput {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (QueryOutput::Rows { columns: lc, rows: lr }, QueryOutput::Rows { columns: rc, rows: rr }) => {
-                lc == rc && lr == rr
-            }
-            (QueryOutput::RowsTyped { columns: lc, rows: lr }, QueryOutput::RowsTyped { columns: rc, rows: rr }) => {
-                lc == rc && lr == rr
-            }
+            (
+                QueryOutput::Rows {
+                    columns: lc,
+                    rows: lr,
+                },
+                QueryOutput::Rows {
+                    columns: rc,
+                    rows: rr,
+                },
+            ) => lc == rc && lr == rr,
+            (
+                QueryOutput::RowsTyped {
+                    columns: lc,
+                    rows: lr,
+                },
+                QueryOutput::RowsTyped {
+                    columns: rc,
+                    rows: rr,
+                },
+            ) => lc == rc && lr == rr,
             (QueryOutput::Message(l), QueryOutput::Message(r)) => l == r,
             // Rows and RowsTyped are equivalent if their string representations match.
-            (QueryOutput::Rows { columns, rows }, QueryOutput::RowsTyped { columns: rc, rows: rr })
-            | (QueryOutput::RowsTyped { columns: rc, rows: rr }, QueryOutput::Rows { columns, rows }) => {
+            (
+                QueryOutput::Rows { columns, rows },
+                QueryOutput::RowsTyped {
+                    columns: rc,
+                    rows: rr,
+                },
+            )
+            | (
+                QueryOutput::RowsTyped {
+                    columns: rc,
+                    rows: rr,
+                },
+                QueryOutput::Rows { columns, rows },
+            ) => {
                 if columns != rc || rows.len() != rr.len() {
                     return false;
                 }
                 rows.iter().zip(rr.iter()).all(|(sr, tr)| {
                     sr.len() == tr.len()
-                        && sr.iter()
-                            .zip(tr.iter())
-                            .all(|(s, d)| s == &d.to_string())
+                        && sr.iter().zip(tr.iter()).all(|(s, d)| s == &d.to_string())
                 })
             }
             _ => false,
@@ -116,7 +140,10 @@ impl QueryOutput {
 
     /// Check if result has rows (either variant).
     pub fn has_rows(&self) -> bool {
-        matches!(self, QueryOutput::Rows { .. } | QueryOutput::RowsTyped { .. })
+        matches!(
+            self,
+            QueryOutput::Rows { .. } | QueryOutput::RowsTyped { .. }
+        )
     }
 }
 
@@ -604,10 +631,11 @@ impl ExecutionEngine {
             }
             // Fill in autoincrement value if the column is NULL or not provided
             if let Some(ai_col) = autoincrement_col
-                && matches!(row[ai_col], Value::Null) {
-                    let next_val = self.storage.next_autoincrement(table_name);
-                    row[ai_col] = Value::Integer(next_val);
-                }
+                && matches!(row[ai_col], Value::Null)
+            {
+                let next_val = self.storage.next_autoincrement(table_name);
+                row[ai_col] = Value::Integer(next_val);
+            }
             let store = self.storage.table_mut(table_name).expect("table exists");
             store.insert_row(row);
         }
@@ -664,9 +692,17 @@ impl ExecutionEngine {
             )));
         }
 
-        let columns = self.storage.table(table_name).expect("table exists — checked above").columns.clone();
+        let columns = self
+            .storage
+            .table(table_name)
+            .expect("table exists — checked above")
+            .columns
+            .clone();
 
-        let store = self.storage.table_mut(table_name).expect("table exists — checked above");
+        let store = self
+            .storage
+            .table_mut(table_name)
+            .expect("table exists — checked above");
         let before = store.rows.len();
         if let Some(where_expr) = &delete.where_clause {
             store
@@ -731,10 +767,7 @@ impl ExecutionEngine {
                 ));
             }
             let col_expr = &index.columns[0].expression;
-            let col_name = col_expr
-                .first()
-                .map(|f| f.text.clone())
-                .unwrap_or_default();
+            let col_name = col_expr.first().map(|f| f.text.clone()).unwrap_or_default();
 
             // Try to infer dimensions from existing data
             let dimensions = if let Some(store) = self.storage.table(table_name) {
@@ -798,18 +831,18 @@ impl ExecutionEngine {
         // Validate: non-aggregate SELECT columns must appear in GROUP BY
         for item in &select.projection {
             if let SelectItem::Expr { expr, .. } = item
-                && !contains_aggregate(expr) {
-                    for col_ref in collect_column_refs(expr) {
-                        if !select.group_by.iter().any(|g| {
-                            collect_column_refs(g).len() == 1
-                                && collect_column_refs(g)[0] == col_ref
-                        }) {
-                            return Err(DustError::InvalidInput(format!(
-                                "column `{col_ref}` must appear in GROUP BY clause or be used in an aggregate function"
-                            )));
-                        }
+                && !contains_aggregate(expr)
+            {
+                for col_ref in collect_column_refs(expr) {
+                    if !select.group_by.iter().any(|g| {
+                        collect_column_refs(g).len() == 1 && collect_column_refs(g)[0] == col_ref
+                    }) {
+                        return Err(DustError::InvalidInput(format!(
+                            "column `{col_ref}` must appear in GROUP BY clause or be used in an aggregate function"
+                        )));
                     }
                 }
+            }
         }
 
         // 1. Apply WHERE filter
@@ -845,11 +878,7 @@ impl ExecutionEngine {
         }
 
         // 3. Build output column names from the projection
-        let output_columns: Vec<String> = select
-            .projection
-            .iter()
-            .map(select_item_name)
-            .collect();
+        let output_columns: Vec<String> = select.projection.iter().map(select_item_name).collect();
 
         // 4. Evaluate each group to produce output rows
         let mut output_rows: Vec<Vec<String>> = Vec::new();
@@ -1159,9 +1188,10 @@ fn eval_window_fn(
                         .map(|ob| eval_datum_expr_for_order(&ob.expr, columns, &rows[row_idx]))
                         .collect();
                     if let Some(ref prev) = prev_vals
-                        && order_vals != *prev {
-                            rank = (pos + 1) as i64;
-                        }
+                        && order_vals != *prev
+                    {
+                        rank = (pos + 1) as i64;
+                    }
                     result[row_idx] = Value::Integer(rank);
                     prev_vals = Some(order_vals);
                 }
@@ -1176,9 +1206,10 @@ fn eval_window_fn(
                         .map(|ob| eval_datum_expr_for_order(&ob.expr, columns, &rows[row_idx]))
                         .collect();
                     if let Some(ref prev) = prev_vals
-                        && order_vals != *prev {
-                            rank += 1;
-                        }
+                        && order_vals != *prev
+                    {
+                        rank += 1;
+                    }
                     result[row_idx] = Value::Integer(rank);
                     prev_vals = Some(order_vals);
                 }
@@ -1230,8 +1261,13 @@ fn eval_window_fn(
                     let group_refs: Vec<&Vec<Value>> =
                         sorted_indices.iter().map(|&i| &rows[i]).collect();
                     if let Some(arg) = args.first() {
-                        result[row_idx] =
-                            eval_aggregate_fn(name, std::slice::from_ref(arg), false, columns, &group_refs);
+                        result[row_idx] = eval_aggregate_fn(
+                            name,
+                            std::slice::from_ref(arg),
+                            false,
+                            columns,
+                            &group_refs,
+                        );
                     } else if name == "count" {
                         result[row_idx] = Value::Integer(group_refs.len() as i64);
                     }
@@ -1349,9 +1385,7 @@ fn eval_aggregate_fn(
                     // COUNT(expr) — count non-NULL values
                     let count = group
                         .iter()
-                        .filter(|row| {
-                            !matches!(eval_expr_to_value(arg, columns, row), Value::Null)
-                        })
+                        .filter(|row| !matches!(eval_expr_to_value(arg, columns, row), Value::Null))
                         .count();
                     Value::Integer(count as i64)
                 }
@@ -1785,38 +1819,33 @@ fn eval_binary_op(op: BinOp, left: &Value, right: &Value) -> Value {
             _ => Value::Null,
         },
         BinOp::Add => match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => a
-                .checked_add(*b)
-                .map(Value::Integer)
-                .unwrap_or(Value::Null),
+            (Value::Integer(a), Value::Integer(b)) => {
+                a.checked_add(*b).map(Value::Integer).unwrap_or(Value::Null)
+            }
             _ => Value::Null,
         },
         BinOp::Sub => match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => a
-                .checked_sub(*b)
-                .map(Value::Integer)
-                .unwrap_or(Value::Null),
+            (Value::Integer(a), Value::Integer(b)) => {
+                a.checked_sub(*b).map(Value::Integer).unwrap_or(Value::Null)
+            }
             _ => Value::Null,
         },
         BinOp::Mul => match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => a
-                .checked_mul(*b)
-                .map(Value::Integer)
-                .unwrap_or(Value::Null),
+            (Value::Integer(a), Value::Integer(b)) => {
+                a.checked_mul(*b).map(Value::Integer).unwrap_or(Value::Null)
+            }
             _ => Value::Null,
         },
         BinOp::Div => match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => a
-                .checked_div(*b)
-                .map(Value::Integer)
-                .unwrap_or(Value::Null),
+            (Value::Integer(a), Value::Integer(b)) => {
+                a.checked_div(*b).map(Value::Integer).unwrap_or(Value::Null)
+            }
             _ => Value::Null,
         },
         BinOp::Mod => match (left, right) {
-            (Value::Integer(a), Value::Integer(b)) => a
-                .checked_rem(*b)
-                .map(Value::Integer)
-                .unwrap_or(Value::Null),
+            (Value::Integer(a), Value::Integer(b)) => {
+                a.checked_rem(*b).map(Value::Integer).unwrap_or(Value::Null)
+            }
             _ => Value::Null,
         },
         BinOp::Concat => match (left, right) {
@@ -1844,8 +1873,10 @@ fn like_match(s: &str, pattern: &str) -> bool {
                     // Try matching rest of pattern at every position
                     let remaining_pattern: String = p.collect();
                     let remaining_str: String = s.collect();
-                    let mut split_points =
-                        remaining_str.char_indices().map(|(index, _)| index).collect::<Vec<_>>();
+                    let mut split_points = remaining_str
+                        .char_indices()
+                        .map(|(index, _)| index)
+                        .collect::<Vec<_>>();
                     split_points.push(remaining_str.len());
                     for i in split_points {
                         if like_match(&remaining_str[i..], &remaining_pattern) {
@@ -3222,7 +3253,9 @@ mod tests {
         let output = engine.query("SELECT upper(name) FROM t").unwrap();
         assert!(output.has_rows());
 
-        let output = engine.query("SELECT coalesce(name, 'unknown') FROM t").unwrap();
+        let output = engine
+            .query("SELECT coalesce(name, 'unknown') FROM t")
+            .unwrap();
         assert!(output.has_rows());
     }
 
@@ -3231,9 +3264,7 @@ mod tests {
         let mut engine = new_engine();
         engine.set_deterministic_mode(true);
 
-        engine
-            .query("CREATE TABLE t (id INTEGER)")
-            .unwrap();
+        engine.query("CREATE TABLE t (id INTEGER)").unwrap();
 
         // now() should be blocked
         let result = engine.query("SELECT now()");
@@ -3320,7 +3351,10 @@ mod tests {
         match &output {
             QueryOutput::Rows { rows, .. } => {
                 let d: f32 = rows[0][0].parse().unwrap();
-                assert!((d - 1.0).abs() < 0.001, "expected ~1.0 (orthogonal), got {d}");
+                assert!(
+                    (d - 1.0).abs() < 0.001,
+                    "expected ~1.0 (orthogonal), got {d}"
+                );
             }
             other => panic!("expected Rows, got {:?}", other),
         }
@@ -3343,9 +3377,7 @@ mod tests {
     #[test]
     fn vector_norm_function() {
         let mut engine = new_engine();
-        let output = engine
-            .query("SELECT vector_norm([3.0, 4.0])")
-            .unwrap();
+        let output = engine.query("SELECT vector_norm([3.0, 4.0])").unwrap();
         match &output {
             QueryOutput::Rows { rows, .. } => {
                 let n: f32 = rows[0][0].parse().unwrap();
@@ -3390,8 +3422,10 @@ mod tests {
         match &output {
             QueryOutput::Rows { rows, .. } => {
                 let d: f32 = rows[0][0].parse().unwrap();
-                assert!((d - std::f32::consts::SQRT_2).abs() < 0.01,
-                    "expected ~1.414 (sqrt(2)), got {d}");
+                assert!(
+                    (d - std::f32::consts::SQRT_2).abs() < 0.01,
+                    "expected ~1.414 (sqrt(2)), got {d}"
+                );
             }
             other => panic!("expected Rows, got {:?}", other),
         }
@@ -3441,10 +3475,7 @@ mod tests {
             .unwrap();
         match &output {
             QueryOutput::Message(msg) => {
-                assert!(
-                    msg.contains("HNSW"),
-                    "Expected HNSW in message, got: {msg}"
-                );
+                assert!(msg.contains("HNSW"), "Expected HNSW in message, got: {msg}");
                 assert!(msg.contains("3 vectors"), "Expected 3 vectors, got: {msg}");
             }
             other => panic!("expected Message, got {:?}", other),

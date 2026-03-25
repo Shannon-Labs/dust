@@ -1,6 +1,6 @@
 //! Pager: manages page I/O and caching for a single database file.
 
-use crate::page::{Page, PageType, PAGE_SIZE};
+use crate::page::{PAGE_SIZE, Page, PageType};
 use dust_types::{DustError, Result};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};

@@ -8,7 +8,7 @@
 //!
 //! Leaf nodes: right_ptr holds the next-leaf pointer for range scans.
 
-use crate::page::{Page, PageType, PAGE_HEADER_SIZE, PAGE_SIZE};
+use crate::page::{PAGE_HEADER_SIZE, PAGE_SIZE, Page, PageType};
 use crate::pager::Pager;
 use dust_types::{DustError, Result};
 
@@ -37,9 +37,11 @@ fn decode_leaf_cell(cell: &[u8]) -> Result<(&[u8], &[u8])> {
         ));
     }
     let key = &cell[2..val_offset];
-    let val_len =
-        u32::from_le_bytes(cell[val_offset..val_offset + 4].try_into().expect("4-byte val_len"))
-            as usize;
+    let val_len = u32::from_le_bytes(
+        cell[val_offset..val_offset + 4]
+            .try_into()
+            .expect("4-byte val_len"),
+    ) as usize;
     if cell.len() < val_offset + 4 + val_len {
         return Err(DustError::InvalidInput(
             "corrupt B-tree cell: too short for value data".to_string(),
@@ -987,7 +989,7 @@ mod tests {
 
     #[test]
     fn delete_at_scale_no_corruption() {
-        use crate::row::{decode_key_u64, encode_key_u64, encode_row, Datum};
+        use crate::row::{Datum, decode_key_u64, encode_key_u64, encode_row};
 
         let (mut pager, _dir) = temp_pager();
         let mut tree = BTree::create(&mut pager).unwrap();

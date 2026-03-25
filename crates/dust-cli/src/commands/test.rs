@@ -22,9 +22,7 @@ pub fn run(args: TestArgs) -> Result<()> {
     let root = match args.path {
         Some(p) => p,
         None => find_project_root(&env::current_dir()?).ok_or_else(|| {
-            DustError::ProjectNotFound(
-                env::current_dir().unwrap_or_default().display().to_string(),
-            )
+            DustError::ProjectNotFound(env::current_dir().unwrap_or_default().display().to_string())
         })?,
     };
 
@@ -138,19 +136,18 @@ fn run_single_test(schema_sql: &str, test_path: &PathBuf) -> Result<()> {
         }
 
         // The chunk may contain the directive as a prefix line.
-        let (sql_to_run, this_expects_error) = if let Some(rest) =
-            strip_expect_error_prefix(trimmed)
-        {
-            let sql = rest.trim();
-            if sql.is_empty() {
-                // Directive only -- applies to the next statement.
-                expect_error = true;
-                continue;
-            }
-            (sql, true)
-        } else {
-            (trimmed, expect_error)
-        };
+        let (sql_to_run, this_expects_error) =
+            if let Some(rest) = strip_expect_error_prefix(trimmed) {
+                let sql = rest.trim();
+                if sql.is_empty() {
+                    // Directive only -- applies to the next statement.
+                    expect_error = true;
+                    continue;
+                }
+                (sql, true)
+            } else {
+                (trimmed, expect_error)
+            };
 
         // Reset the flag -- it is consumed by the current statement.
         expect_error = false;
@@ -201,11 +198,7 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        let end = s
-            .char_indices()
-            .nth(max)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
+        let end = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
         format!("{}...", &s[..end])
     }
 }

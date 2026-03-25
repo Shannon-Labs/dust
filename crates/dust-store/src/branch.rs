@@ -1,5 +1,5 @@
-use crate::manifest::Manifest;
 use crate::WorkspaceLayout;
+use crate::manifest::Manifest;
 use dust_types::{DustError, Result, SchemaFingerprint};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -220,7 +220,10 @@ mod tests {
         assert_eq!(b.as_str(), "team/project/feature/auth");
         assert_eq!(
             b.as_path(),
-            PathBuf::from("team").join("project").join("feature").join("auth")
+            PathBuf::from("team")
+                .join("project")
+                .join("feature")
+                .join("auth")
         );
     }
 

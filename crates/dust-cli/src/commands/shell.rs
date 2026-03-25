@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use clap::Args;
 use dust_exec::PersistentEngine;
 use dust_types::Result;
-use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 
 use crate::format::print_output;
 use crate::project::find_db_path;

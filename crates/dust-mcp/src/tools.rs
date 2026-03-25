@@ -234,10 +234,7 @@ pub fn get_tables(engine: &mut PersistentEngine) -> Result<Vec<TableInfo>> {
     let mut tables = Vec::new();
     for name in names {
         let row_count = engine.row_count(&name).unwrap_or(0);
-        tables.push(TableInfo {
-            name,
-            row_count,
-        });
+        tables.push(TableInfo { name, row_count });
     }
     Ok(tables)
 }
@@ -314,9 +311,7 @@ fn collect_refs(
     if !dir.is_dir() {
         return Ok(());
     }
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .collect();
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let path = entry.path();
@@ -325,8 +320,9 @@ fn collect_refs(
         } else if path.extension().is_some_and(|ext| ext == "ref") {
             let rel = path.strip_prefix(base).unwrap_or(&path);
             let name = rel.to_string_lossy().trim_end_matches(".ref").to_string();
-            let branch = BranchName::new(&name)
-                .map_err(|e| DustError::InvalidInput(format!("invalid branch ref `{name}`: {e}")))?;
+            let branch = BranchName::new(&name).map_err(|e| {
+                DustError::InvalidInput(format!("invalid branch ref `{name}`: {e}"))
+            })?;
             out.push(BranchListEntry {
                 name: branch.as_str().to_string(),
                 current: branch.as_str() == current,
@@ -337,8 +333,9 @@ fn collect_refs(
 }
 
 pub fn create_branch(project_path: &Path, name: &str) -> Result<()> {
-    let root = find_project_root(project_path)
-        .ok_or_else(|| DustError::Message("no dust project found — run `dust init` first".to_string()))?;
+    let root = find_project_root(project_path).ok_or_else(|| {
+        DustError::Message("no dust project found — run `dust init` first".to_string())
+    })?;
     let branch = BranchName::new(name)?;
     let ref_path = branch_ref_path(&root, &branch);
 
@@ -372,17 +369,17 @@ pub fn create_branch(project_path: &Path, name: &str) -> Result<()> {
 
     if current_ref_path.exists() {
         let current_ref_str = std::fs::read_to_string(&current_ref_path)?;
-        let current_ref: BranchRef = toml::from_str(&current_ref_str)
-            .map_err(|e| DustError::Message(e.to_string()))?;
+        let current_ref: BranchRef =
+            toml::from_str(&current_ref_str).map_err(|e| DustError::Message(e.to_string()))?;
         let new_ref = BranchRef::new(branch.clone(), current_ref.head.clone());
-        let content = toml::to_string_pretty(&new_ref)
-            .map_err(|e| DustError::Message(e.to_string()))?;
+        let content =
+            toml::to_string_pretty(&new_ref).map_err(|e| DustError::Message(e.to_string()))?;
         std::fs::write(&ref_path, content)?;
     } else {
         let head = dust_store::BranchHead::default();
         let new_ref = BranchRef::new(branch, head);
-        let content = toml::to_string_pretty(&new_ref)
-            .map_err(|e| DustError::Message(e.to_string()))?;
+        let content =
+            toml::to_string_pretty(&new_ref).map_err(|e| DustError::Message(e.to_string()))?;
         std::fs::write(&ref_path, content)?;
     }
 
@@ -420,7 +417,11 @@ pub struct TableDiffEntry {
     pub to_rows: Option<usize>,
 }
 
-pub fn branch_diff(project_path: &Path, from: Option<&str>, to: Option<&str>) -> Result<BranchDiffResult> {
+pub fn branch_diff(
+    project_path: &Path,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<BranchDiffResult> {
     let root = find_project_root(project_path)
         .ok_or_else(|| DustError::Message("no dust project found".to_string()))?;
     let project = ProjectPaths::new(&root);
@@ -464,13 +465,11 @@ pub fn import_csv(
         )));
     }
 
-    let table = table_name
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            path.file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "imported".to_string())
-        });
+    let table = table_name.map(|s| s.to_string()).unwrap_or_else(|| {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "imported".to_string())
+    });
 
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(has_header)
@@ -496,7 +495,10 @@ pub fn import_csv(
 
     // Create table
     let col_defs: Vec<String> = headers.iter().map(|h| format!("{h} TEXT")).collect();
-    let create_sql = format!("CREATE TABLE IF NOT EXISTS {table} ({})", col_defs.join(", "));
+    let create_sql = format!(
+        "CREATE TABLE IF NOT EXISTS {table} ({})",
+        col_defs.join(", ")
+    );
     engine.query(&create_sql)?;
 
     // Insert rows
@@ -553,7 +555,13 @@ pub fn import_sqlite(
 fn sanitize_column_name(name: &str) -> String {
     let sanitized: String = name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if sanitized.is_empty() || sanitized.starts_with(|c: char| c.is_ascii_digit()) {
         format!("col_{sanitized}")
@@ -578,8 +586,9 @@ pub struct DoctorResult {
 }
 
 pub fn run_doctor(project_path: &Path) -> Result<DoctorResult> {
-    let root = find_project_root(project_path)
-        .ok_or_else(|| DustError::Message("no dust project found — run `dust init` first".to_string()))?;
+    let root = find_project_root(project_path).ok_or_else(|| {
+        DustError::Message("no dust project found — run `dust init` first".to_string())
+    })?;
     let project = ProjectPaths::new(&root);
     let report = project.doctor()?;
 
@@ -605,8 +614,7 @@ pub fn generate_sandbox_name() -> String {
 
 /// Read the current branch name from the project HEAD ref.
 pub fn current_branch(project_path: &Path) -> Result<String> {
-    let root = find_project_root(project_path)
-        .unwrap_or_else(|| project_path.to_path_buf());
+    let root = find_project_root(project_path).unwrap_or_else(|| project_path.to_path_buf());
     let project = ProjectPaths::new(&root);
     Ok(project.read_current_branch_name())
 }
@@ -618,14 +626,15 @@ mod tests {
     #[test]
     fn json_format_preserves_string_type() {
         let columns = vec!["id".to_string(), "phone".to_string()];
-        let rows = vec![
-            vec!["1".to_string(), "555-0100".to_string()],
-        ];
+        let rows = vec![vec!["1".to_string(), "555-0100".to_string()]];
         let output = format_rows(&columns, &rows, "json");
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
         // Both values should be strings — "1" should NOT be coerced to a number
         assert_eq!(parsed[0]["id"], serde_json::Value::String("1".to_string()));
-        assert_eq!(parsed[0]["phone"], serde_json::Value::String("555-0100".to_string()));
+        assert_eq!(
+            parsed[0]["phone"],
+            serde_json::Value::String("555-0100".to_string())
+        );
     }
 
     #[test]

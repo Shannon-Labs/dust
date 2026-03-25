@@ -84,11 +84,7 @@ fn truncate_for_display(s: &str) -> String {
 
 /// Normalize NULL display: empty strings in query output are rendered as "NULL".
 fn normalize_null(s: &str) -> &str {
-    if s.is_empty() {
-        NULL_DISPLAY
-    } else {
-        s
-    }
+    if s.is_empty() { NULL_DISPLAY } else { s }
 }
 
 /// Postgres-style aligned table output with right-aligned numbers,

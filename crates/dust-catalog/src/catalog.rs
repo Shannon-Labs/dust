@@ -119,11 +119,12 @@ impl CatalogBuilder {
                 spec.name
             )));
         }
-        if let Some(missing) = spec
-            .columns
-            .iter()
-            .find(|column| !table.columns.iter().any(|table_column| table_column.name == **column))
-        {
+        if let Some(missing) = spec.columns.iter().find(|column| {
+            !table
+                .columns
+                .iter()
+                .any(|table_column| table_column.name == **column)
+        }) {
             return Err(DustError::InvalidInput(format!(
                 "index `{}` references unknown column `{missing}` on table `{}`",
                 spec.name, table.name
