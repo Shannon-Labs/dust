@@ -686,6 +686,7 @@ dependencies = [
  "dust-lsp",
  "dust-mcp",
  "dust-migrate",
+ "dust-plan",
  "dust-sql",
  "dust-store",
  "dust-types",
@@ -761,6 +762,7 @@ dependencies = [
  "csv",
  "dust-core",
  "dust-exec",
+ "dust-sql",
  "dust-store",
  "dust-types",
  "serde",
@@ -774,6 +776,7 @@ name = "dust-migrate"
 version = "0.1.0"
 dependencies = [
  "dust-catalog",
+ "dust-sql",
  "dust-types",
  "serde",
  "tempfile",

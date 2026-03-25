@@ -18,7 +18,7 @@ pub struct ShellArgs {
 }
 
 pub fn run(args: ShellArgs) -> Result<()> {
-    let db_path = find_db_path(&args.path);
+    let db_path = find_db_path(&args.path)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     let version = env!("CARGO_PKG_VERSION");

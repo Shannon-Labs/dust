@@ -21,7 +21,7 @@ pub struct QueryArgs {
 
 pub fn run(args: QueryArgs) -> Result<()> {
     let sql = read_sql(args.sql, args.file)?;
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
     let output = engine.query(&sql)?;
 

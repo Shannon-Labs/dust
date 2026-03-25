@@ -47,22 +47,16 @@ pub(crate) fn current_branch_db_path(root: &Path) -> PathBuf {
 }
 
 /// Find the branch-specific database file path by walking up from `start`
-/// looking for `dust.toml`. If no project exists, auto-creates one in the
-/// current directory (zero-config startup). Branches other than `main` are
-/// stored under `.dust/workspace/branches/<branch>/data.db`.
-pub fn find_db_path(start: &Path) -> PathBuf {
-    let root = find_project_root(start).unwrap_or_else(|| {
-        // Zero-config: auto-initialize a project in the current directory
-        let project = dust_core::ProjectPaths::new(start);
-        if project.init(false).is_ok() {
-            eprintln!(
-                "Created new dust database at {}",
-                project.root.join(".dust").display()
-            );
-        }
-        start.to_path_buf()
-    });
-    ProjectPaths::new(root).active_data_db_path()
+/// looking for `dust.toml`. Returns an error if no project is found.
+pub fn find_db_path(start: &Path) -> dust_types::Result<PathBuf> {
+    let root = find_project_root(start).ok_or_else(|| {
+        dust_types::DustError::InvalidInput(format!(
+            "no dust project found (looked for dust.toml from {} upward)\n\
+             hint: run `dust init` to create a project here",
+            start.display()
+        ))
+    })?;
+    Ok(ProjectPaths::new(root).active_data_db_path())
 }
 
 /// Read the current branch name from the HEAD file. Defaults to "main".
@@ -133,7 +127,7 @@ mod tests {
         fs::create_dir_all(&nested).unwrap();
 
         assert_eq!(
-            find_db_path(&nested),
+            find_db_path(&nested).unwrap(),
             root.join(".dust/workspace/branches/feature/auth/data.db")
         );
     }

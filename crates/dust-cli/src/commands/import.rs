@@ -202,7 +202,7 @@ fn run_csv_import(
         return Err(DustError::InvalidInput("CSV has no columns".to_string()));
     }
 
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     // Create table
@@ -344,7 +344,7 @@ fn run_json_import(path: &Path, table: Option<&str>) -> Result<()> {
         .map(String::from)
         .unwrap_or_else(|| table_name_from_path(path));
 
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     create_text_table(&mut engine, &table_name, &columns)?;
@@ -413,7 +413,7 @@ fn run_jsonl_import(path: &Path, table: Option<&str>) -> Result<()> {
         .map(String::from)
         .unwrap_or_else(|| table_name_from_path(path));
 
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     create_text_table(&mut engine, &table_name, &columns)?;
@@ -445,7 +445,7 @@ fn run_sql_import(path: &Path) -> Result<()> {
     // Strip SQLite dump pragmas and comments that dust can't handle
     let cleaned = strip_sqlite_dump_preamble(&content);
 
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     let program = dust_sql::parse_program(&cleaned)?;
@@ -606,7 +606,7 @@ fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
         .map(String::from)
         .unwrap_or_else(|| table_name_from_path(path));
 
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     create_text_table(&mut engine, &table_name, &columns)?;
@@ -683,7 +683,7 @@ fn run_parquet_import(path: &Path, table: Option<&str>) -> Result<()> {
         .map(String::from)
         .unwrap_or_else(|| table_name_from_path(path));
 
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     create_text_table(&mut engine, &table_name, &columns)?;
@@ -988,7 +988,7 @@ fn datum_to_sql_literal(datum: &Datum) -> String {
 
 /// Import tables and data from a .dustdb binary file into the current project.
 fn import_dustdb_from_reader(reader: &mut impl IoRead) -> Result<(Vec<String>, usize)> {
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     import_dustdb_from_reader_into(reader, &db_path)
 }
 

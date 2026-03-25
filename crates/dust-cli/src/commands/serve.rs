@@ -26,7 +26,7 @@ pub struct ServeArgs {
 }
 
 pub fn run(args: ServeArgs) -> Result<()> {
-    let db_path = crate::project::find_db_path(&args.path);
+    let db_path = crate::project::find_db_path(&args.path)?;
     let engine = PersistentEngine::open(&db_path)?;
     let engine = Arc::new(Mutex::new(engine));
 

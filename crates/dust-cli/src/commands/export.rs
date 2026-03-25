@@ -32,7 +32,7 @@ pub fn run(args: ExportArgs) -> Result<()> {
 }
 
 fn export_dustdb(output_path: &Path) -> Result<()> {
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     let tables = engine.table_names();
@@ -103,7 +103,7 @@ fn export_dustdb(output_path: &Path) -> Result<()> {
 }
 
 fn export_dustpack(output_path: &Path) -> Result<()> {
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     let tables = engine.table_names();

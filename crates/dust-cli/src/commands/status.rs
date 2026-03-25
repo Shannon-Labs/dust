@@ -16,7 +16,7 @@ pub struct StatusArgs {
 
 pub fn run(args: StatusArgs) -> Result<()> {
     let ui = style::stdout();
-    let db_path = find_db_path(&args.path);
+    let db_path = find_db_path(&args.path)?;
 
     if !db_path.exists() {
         println!(

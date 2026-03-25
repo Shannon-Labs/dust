@@ -40,7 +40,7 @@ async fn run_async(uri: &str) -> Result<()> {
         return Ok(());
     }
 
-    let db_path = find_db_path(&env::current_dir()?);
+    let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     let mut total_tables = 0usize;
