@@ -5,9 +5,9 @@ Set FontSize 22
 Set Width 1400
 Set Height 1040
 Set Padding 24
-Set Framerate 24
-Set PlaybackSpeed 0.8
-Set TypingSpeed 40ms
+Set Framerate 15
+Set PlaybackSpeed 0.5
+Set TypingSpeed 50ms
 Set BorderRadius 12
 Set WindowBar Colorful
 Set Theme "GitHub Dark"
@@ -22,5 +22,5 @@ Type "rm -rf /tmp/dust-readme-demo" Enter
 Type "clear" Enter
 Show
 
-Type "dust demo --delay-ms 500 /tmp/dust-readme-demo" Enter
-Sleep 8s
+Type "dust demo --delay-ms 800 /tmp/dust-readme-demo" Enter
+Sleep 14s
