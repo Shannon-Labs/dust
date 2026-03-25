@@ -847,6 +847,23 @@ impl<'a> Parser<'a> {
         self.expect_keyword(Keyword::Table)?;
         let if_not_exists = self.eat_keywords(&[Keyword::If, Keyword::Not, Keyword::Exists]);
         let name = self.parse_identifier()?;
+
+        // CREATE TABLE name AS SELECT ...
+        if self.eat_keyword(Keyword::As)? {
+            self.expect_keyword(Keyword::Select)?;
+            let select = self.parse_select_body()?;
+            let end = self.statement_end();
+            let span = Span::new(start, end);
+            return Ok(AstStatement::CreateTable(CreateTableStatement {
+                name,
+                if_not_exists,
+                elements: Vec::new(),
+                as_select: Some(Box::new(select)),
+                span,
+                raw: self.slice(span).to_string(),
+            }));
+        }
+
         self.expect_kind(TokenKind::LParen)?;
 
         let mut elements = Vec::new();
@@ -871,6 +888,7 @@ impl<'a> Parser<'a> {
             name,
             if_not_exists,
             elements,
+            as_select: None,
             span,
             raw: self.slice(span).to_string(),
         }))

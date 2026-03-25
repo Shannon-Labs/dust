@@ -18,6 +18,7 @@ pub use binder::{BindResult, InferredType, ResolvedColumn, bind_statement, infer
 pub use deterministic::{check_deterministic, is_deterministic_fn};
 pub use engine::{ExecutionEngine, ExplainOutput, QueryOutput, register_udf};
 pub use persistent::PersistentEngine;
+pub use persistent_schema::TableSchema;
 pub use set_ops::combine_set_op_rows;
 pub use storage::{Storage, Value};
 pub use udf::{Udf, UdfRegistry};

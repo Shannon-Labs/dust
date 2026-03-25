@@ -445,6 +445,11 @@ impl PersistentEngine {
         self.schema.save(&self.schema_path)
     }
 
+    /// Return the schema for a table if it exists, loading it on demand.
+    pub fn get_table_schema(&mut self, name: &str) -> Option<TableSchema> {
+        self.ensure_table_schema(name).ok().map(|s| s.clone())
+    }
+
     fn execute_statement(&mut self, source: &str, statement: &AstStatement) -> Result<QueryOutput> {
         validate_ast_statement(statement)?;
         match statement {
@@ -465,15 +470,117 @@ impl PersistentEngine {
                         "table `{name}` already exists"
                     )));
                 }
-                let table_schema = table_schema_from_ast(table);
-                let columns = table_schema
-                    .columns
-                    .iter()
-                    .map(|column| column.name.clone())
-                    .collect();
-                self.store.create_table(name, columns)?;
-                self.schema.tables.insert(name.clone(), table_schema);
-                Ok(QueryOutput::Message("CREATE TABLE".to_string()))
+
+                if let Some(select) = &table.as_select {
+                    // CREATE TABLE ... AS SELECT ...
+                    let result = self.execute_select(select)?;
+                    let (col_names, datum_rows) = match result {
+                        QueryOutput::RowsTyped { columns, rows } => (columns, rows),
+                        QueryOutput::Rows { columns, rows } => {
+                            // Convert string rows to Datum rows with type inference
+                            let datum_rows: Vec<Vec<Datum>> = rows
+                                .into_iter()
+                                .map(|row| {
+                                    row.into_iter()
+                                        .map(|val| {
+                                            if val == "NULL" {
+                                                Datum::Null
+                                            } else if let Ok(i) = val.parse::<i64>() {
+                                                Datum::Integer(i)
+                                            } else if let Ok(f) = val.parse::<f64>() {
+                                                Datum::Real(f)
+                                            } else if val == "true" {
+                                                Datum::Boolean(true)
+                                            } else if val == "false" {
+                                                Datum::Boolean(false)
+                                            } else {
+                                                Datum::Text(val)
+                                            }
+                                        })
+                                        .collect()
+                                })
+                                .collect();
+                            (columns, datum_rows)
+                        }
+                        QueryOutput::Message(_) => {
+                            return Err(DustError::InvalidInput(
+                                "AS SELECT did not return rows".to_string(),
+                            ));
+                        }
+                    };
+
+                    // Infer column types from actual data:
+                    // INTEGER if all non-null values are integers,
+                    // REAL if any non-null value is a float,
+                    // TEXT otherwise.
+                    let num_cols = col_names.len();
+                    let mut type_names: Vec<Option<String>> = vec![None; num_cols];
+                    for col_idx in 0..num_cols {
+                        let mut seen_int = false;
+                        let mut seen_real = false;
+                        let mut seen_text = false;
+                        let mut seen_bool = false;
+                        for row in &datum_rows {
+                            if col_idx < row.len() {
+                                match &row[col_idx] {
+                                    Datum::Null => {}
+                                    Datum::Integer(_) => seen_int = true,
+                                    Datum::Real(_) => seen_real = true,
+                                    Datum::Boolean(_) => seen_bool = true,
+                                    Datum::Text(_) => seen_text = true,
+                                    Datum::Blob(_) => seen_text = true,
+                                }
+                            }
+                        }
+                        type_names[col_idx] = if seen_text {
+                            Some("TEXT".to_string())
+                        } else if seen_real {
+                            Some("REAL".to_string())
+                        } else if seen_int {
+                            Some("INTEGER".to_string())
+                        } else if seen_bool {
+                            Some("INTEGER".to_string())
+                        } else {
+                            None // all NULL
+                        };
+                    }
+
+                    let table_schema = TableSchema {
+                        columns: col_names
+                            .iter()
+                            .enumerate()
+                            .map(|(i, col_name)| ColumnSchema {
+                                name: col_name.clone(),
+                                nullable: true,
+                                default_expr: None,
+                                autoincrement: false,
+                                type_name: type_names[i].clone(),
+                            })
+                            .collect(),
+                        unique_constraints: Vec::new(),
+                    };
+                    self.store.create_table(name, col_names.clone())?;
+                    self.schema
+                        .tables
+                        .insert(name.to_string(), table_schema);
+
+                    // Insert all rows from the SELECT result
+                    for row in datum_rows {
+                        self.store.insert_row(name, row)?;
+                    }
+
+                    Ok(QueryOutput::Message("CREATE TABLE".to_string()))
+                } else {
+                    let table_schema = table_schema_from_ast(table);
+                    let columns = table_schema
+                        .columns
+                        .iter()
+                        .map(|column| column.name.clone())
+                        .collect();
+                    self.store.create_table(name, columns)?;
+                    self.schema.tables.insert(name.clone(), table_schema);
+                    Ok(QueryOutput::Message("CREATE TABLE".to_string()))
+                }
             }
             AstStatement::CreateIndex(index) => self.execute_create_index(index),
             AstStatement::DropTable(drop) => {

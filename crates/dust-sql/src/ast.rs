@@ -510,6 +510,8 @@ pub struct CreateTableStatement {
     pub name: Identifier,
     pub if_not_exists: bool,
     pub elements: Vec<TableElement>,
+    /// If present, this is a `CREATE TABLE ... AS SELECT ...` statement.
+    pub as_select: Option<Box<SelectStatement>>,
     pub span: Span,
     pub raw: String,
 }

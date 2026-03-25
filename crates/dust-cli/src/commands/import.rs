@@ -71,8 +71,23 @@ pub struct ImportArgs {
     #[arg(long, default_value = ",")]
     pub separator: String,
 
+    /// Drop and recreate the target table if it already exists
+    #[arg(long, conflicts_with = "upsert")]
+    pub replace: bool,
+
+    /// Upsert rows: INSERT ... ON CONFLICT(pk) DO UPDATE for tables with a PRIMARY KEY
+    #[arg(long, conflicts_with = "replace")]
+    pub upsert: bool,
+
     #[command(subcommand)]
     pub command: Option<ImportCommand>,
+}
+
+/// Options controlling how data is loaded into an existing table.
+#[derive(Debug, Clone, Copy)]
+struct ImportMode {
+    replace: bool,
+    upsert: bool,
 }
 
 impl ImportArgs {
@@ -80,16 +95,25 @@ impl ImportArgs {
     fn skip_header(&self) -> bool {
         self.no_header || !self.header
     }
+
+    fn mode(&self) -> ImportMode {
+        ImportMode {
+            replace: self.replace,
+            upsert: self.upsert,
+        }
+    }
 }
 
 pub fn run(args: ImportArgs) -> Result<()> {
+    let mode = args.mode();
+
     // Handle explicit subcommands first
     match &args.command {
         Some(ImportCommand::Json { file, table }) => {
-            return run_json_import(file, table.as_deref());
+            return run_json_import(file, table.as_deref(), mode);
         }
         Some(ImportCommand::Jsonl { file, table }) => {
-            return run_jsonl_import(file, table.as_deref());
+            return run_jsonl_import(file, table.as_deref(), mode);
         }
         Some(ImportCommand::Sqlite { file }) => {
             return crate::import_sqlite::run(file);
@@ -129,11 +153,11 @@ pub fn run(args: ImportArgs) -> Result<()> {
         .to_lowercase();
 
     match ext.as_str() {
-        "json" => run_json_import(file, args.table.as_deref()),
-        "jsonl" | "ndjson" => run_jsonl_import(file, args.table.as_deref()),
+        "json" => run_json_import(file, args.table.as_deref(), mode),
+        "jsonl" | "ndjson" => run_jsonl_import(file, args.table.as_deref(), mode),
         "sql" => run_sql_import(file),
-        "xlsx" | "xls" => run_xlsx_import(file, args.table.as_deref()),
-        "parquet" => run_parquet_import(file, args.table.as_deref()),
+        "xlsx" | "xls" => run_xlsx_import(file, args.table.as_deref(), mode),
+        "parquet" => run_parquet_import(file, args.table.as_deref(), mode),
         "sqlite" | "db" => crate::import_sqlite::run(file),
         "dustdb" => run_dustdb_import(file),
         "dustpack" => run_dustpack_import(file),
@@ -142,7 +166,55 @@ pub fn run(args: ImportArgs) -> Result<()> {
             args.table.as_deref(),
             !args.skip_header(),
             &args.separator,
+            mode,
         ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Replace / upsert helpers
+// ---------------------------------------------------------------------------
+
+/// If `--replace` is set and the table exists, drop it before import.
+fn maybe_drop_table(engine: &mut PersistentEngine, table_name: &str, mode: ImportMode) -> Result<()> {
+    if mode.replace {
+        let safe_name = sanitize_identifier(table_name);
+        engine.query(&format!("DROP TABLE IF EXISTS {safe_name}"))?;
+    }
+    Ok(())
+}
+
+/// Look up the primary key columns for `table_name` from the engine schema.
+/// Returns `None` if the table has no PK (or does not exist yet).
+fn pk_columns_for_table(engine: &mut PersistentEngine, table_name: &str) -> Option<Vec<String>> {
+    let schema = engine.get_table_schema(table_name)?;
+    // The first unique constraint recorded is the PRIMARY KEY (see table_schema_from_ast).
+    let pk = schema.unique_constraints.first()?;
+    if pk.is_empty() {
+        None
+    } else {
+        Some(pk.clone())
+    }
+}
+
+/// Build the upsert suffix for an INSERT statement:
+///   ON CONFLICT(pk1, pk2) DO UPDATE SET non_pk1 = excluded.non_pk1, ...
+/// Returns an empty string when upsert is not applicable.
+fn upsert_suffix(columns: &[String], pk_cols: &[String]) -> String {
+    let conflict_cols = pk_cols.join(", ");
+    let set_clauses: Vec<String> = columns
+        .iter()
+        .filter(|c| !pk_cols.contains(c))
+        .map(|c| format!("{c} = excluded.{c}"))
+        .collect();
+    if set_clauses.is_empty() {
+        // All columns are PK — use DO NOTHING
+        format!(" ON CONFLICT({conflict_cols}) DO NOTHING")
+    } else {
+        format!(
+            " ON CONFLICT({conflict_cols}) DO UPDATE SET {}",
+            set_clauses.join(", ")
+        )
     }
 }
 
@@ -155,6 +227,7 @@ fn run_csv_import(
     table: Option<&str>,
     has_header: bool,
     separator: &str,
+    mode: ImportMode,
 ) -> Result<()> {
     let table_name = table
         .map(String::from)
@@ -216,6 +289,9 @@ fn run_csv_import(
     let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
+    // Drop existing table if --replace was specified
+    maybe_drop_table(&mut engine, &table_name, mode)?;
+
     // Create table
     let col_defs = columns
         .iter()
@@ -235,6 +311,20 @@ fn run_csv_import(
         sanitize_identifier(&table_name)
     );
     engine.query(&create_sql)?;
+
+    // Resolve upsert suffix if --upsert was requested
+    let upsert_tail = if mode.upsert {
+        match pk_columns_for_table(&mut engine, &table_name) {
+            Some(pk) => upsert_suffix(&columns, &pk),
+            None => {
+                return Err(DustError::InvalidInput(
+                    "--upsert requires the target table to have a PRIMARY KEY".to_string(),
+                ));
+            }
+        }
+    } else {
+        String::new()
+    };
 
     // Re-open reader for actual data insertion (needed because we may have consumed a record)
     let mut reader = csv::ReaderBuilder::new()
@@ -259,7 +349,7 @@ fn run_csv_import(
         batch.push(fields);
 
         if batch.len() >= batch_size {
-            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
+            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types, &upsert_tail)?;
             batch.clear();
             if total_rows % 10000 == 0 {
                 eprint!("\r  Imported {total_rows} rows...");
@@ -269,7 +359,7 @@ fn run_csv_import(
 
     // Flush remaining
     if !batch.is_empty() {
-        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
+        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types, &upsert_tail)?;
     }
 
     println!(
@@ -287,6 +377,7 @@ fn insert_batch(
     columns: &[String],
     rows: &[Vec<String>],
     types: &[String],
+    upsert_tail: &str,
 ) -> Result<usize> {
     let mut value_parts = Vec::new();
     for fields in rows {
@@ -333,8 +424,9 @@ fn insert_batch(
     let col_names = columns.join(", ");
     let safe_name = sanitize_identifier(table_name);
     let insert_sql = format!(
-        "INSERT INTO {safe_name} ({col_names}) VALUES {}",
-        value_parts.join(", ")
+        "INSERT INTO {safe_name} ({col_names}) VALUES {}{}",
+        value_parts.join(", "),
+        upsert_tail
     );
     engine.query(&insert_sql)?;
     Ok(value_parts.len())
@@ -391,7 +483,7 @@ fn infer_column_types(
 // JSON import
 // ---------------------------------------------------------------------------
 
-fn run_json_import(path: &Path, table: Option<&str>) -> Result<()> {
+fn run_json_import(path: &Path, table: Option<&str>, mode: ImportMode) -> Result<()> {
     if !path.exists() {
         return Err(DustError::InvalidInput(format!(
             "file not found: {}",
@@ -432,8 +524,23 @@ fn run_json_import(path: &Path, table: Option<&str>) -> Result<()> {
     let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
+    maybe_drop_table(&mut engine, &table_name, mode)?;
     create_text_table(&mut engine, &table_name, &columns)?;
-    let total_rows = insert_json_rows(&mut engine, &table_name, &columns, &array)?;
+
+    let upsert_tail = if mode.upsert {
+        match pk_columns_for_table(&mut engine, &table_name) {
+            Some(pk) => upsert_suffix(&columns, &pk),
+            None => {
+                return Err(DustError::InvalidInput(
+                    "--upsert requires the target table to have a PRIMARY KEY".to_string(),
+                ));
+            }
+        }
+    } else {
+        String::new()
+    };
+
+    let total_rows = insert_json_rows(&mut engine, &table_name, &columns, &array, &upsert_tail)?;
 
     println!(
         "Imported {total_rows} rows into `{table_name}` ({} columns)",
@@ -448,7 +555,7 @@ fn run_json_import(path: &Path, table: Option<&str>) -> Result<()> {
 // JSONL import
 // ---------------------------------------------------------------------------
 
-fn run_jsonl_import(path: &Path, table: Option<&str>) -> Result<()> {
+fn run_jsonl_import(path: &Path, table: Option<&str>, mode: ImportMode) -> Result<()> {
     if !path.exists() {
         return Err(DustError::InvalidInput(format!(
             "file not found: {}",
@@ -501,8 +608,23 @@ fn run_jsonl_import(path: &Path, table: Option<&str>) -> Result<()> {
     let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
+    maybe_drop_table(&mut engine, &table_name, mode)?;
     create_text_table(&mut engine, &table_name, &columns)?;
-    let total_rows = insert_json_rows(&mut engine, &table_name, &columns, &objects)?;
+
+    let upsert_tail = if mode.upsert {
+        match pk_columns_for_table(&mut engine, &table_name) {
+            Some(pk) => upsert_suffix(&columns, &pk),
+            None => {
+                return Err(DustError::InvalidInput(
+                    "--upsert requires the target table to have a PRIMARY KEY".to_string(),
+                ));
+            }
+        }
+    } else {
+        String::new()
+    };
+
+    let total_rows = insert_json_rows(&mut engine, &table_name, &columns, &objects, &upsert_tail)?;
 
     println!(
         "Imported {total_rows} rows into `{table_name}` ({} columns)",
@@ -632,7 +754,7 @@ fn extract_statement_sql(source: &str, stmt: &dust_sql::AstStatement) -> String 
 // XLSX import
 // ---------------------------------------------------------------------------
 
-fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
+fn run_xlsx_import(path: &Path, table: Option<&str>, mode: ImportMode) -> Result<()> {
     if !path.exists() {
         return Err(DustError::InvalidInput(format!(
             "file not found: {}",
@@ -695,8 +817,22 @@ fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
     let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
+    maybe_drop_table(&mut engine, &table_name, mode)?;
     create_text_table(&mut engine, &table_name, &columns)?;
     let types: Vec<String> = vec!["TEXT".to_string(); columns.len()];
+
+    let upsert_tail = if mode.upsert {
+        match pk_columns_for_table(&mut engine, &table_name) {
+            Some(pk) => upsert_suffix(&columns, &pk),
+            None => {
+                return Err(DustError::InvalidInput(
+                    "--upsert requires the target table to have a PRIMARY KEY".to_string(),
+                ));
+            }
+        }
+    } else {
+        String::new()
+    };
 
     // Insert data rows (skip header)
     let mut total_rows = 0;
@@ -710,13 +846,13 @@ fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
         batch.push(padded);
 
         if batch.len() >= batch_size {
-            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
+            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types, &upsert_tail)?;
             batch.clear();
         }
     }
 
     if !batch.is_empty() {
-        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
+        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types, &upsert_tail)?;
     }
 
     println!(
@@ -732,7 +868,7 @@ fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
 // Parquet import
 // ---------------------------------------------------------------------------
 
-fn run_parquet_import(path: &Path, table: Option<&str>) -> Result<()> {
+fn run_parquet_import(path: &Path, table: Option<&str>, mode: ImportMode) -> Result<()> {
     if !path.exists() {
         return Err(DustError::InvalidInput(format!(
             "file not found: {}",
@@ -773,8 +909,22 @@ fn run_parquet_import(path: &Path, table: Option<&str>) -> Result<()> {
     let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
+    maybe_drop_table(&mut engine, &table_name, mode)?;
     create_text_table(&mut engine, &table_name, &columns)?;
     let types: Vec<String> = vec!["TEXT".to_string(); columns.len()];
+
+    let upsert_tail = if mode.upsert {
+        match pk_columns_for_table(&mut engine, &table_name) {
+            Some(pk) => upsert_suffix(&columns, &pk),
+            None => {
+                return Err(DustError::InvalidInput(
+                    "--upsert requires the target table to have a PRIMARY KEY".to_string(),
+                ));
+            }
+        }
+    } else {
+        String::new()
+    };
 
     // Read row groups and insert in batches
     let mut total_rows = 0;
@@ -803,13 +953,13 @@ fn run_parquet_import(path: &Path, table: Option<&str>) -> Result<()> {
         batch.push(fields);
 
         if batch.len() >= batch_size {
-            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
+            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types, &upsert_tail)?;
             batch.clear();
         }
     }
 
     if !batch.is_empty() {
-        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
+        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types, &upsert_tail)?;
     }
 
     println!(
@@ -937,6 +1087,7 @@ fn insert_json_rows(
     table_name: &str,
     columns: &[String],
     objects: &[serde_json::Value],
+    upsert_tail: &str,
 ) -> Result<usize> {
     let safe_name = sanitize_identifier(table_name);
     let col_names = columns.join(", ");
@@ -971,8 +1122,9 @@ fn insert_json_rows(
         }
 
         let insert_sql = format!(
-            "INSERT INTO {safe_name} ({col_names}) VALUES {}",
-            value_parts.join(", ")
+            "INSERT INTO {safe_name} ({col_names}) VALUES {}{}",
+            value_parts.join(", "),
+            upsert_tail
         );
         engine.query(&insert_sql)?;
         total_rows += value_parts.len();

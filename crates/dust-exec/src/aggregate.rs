@@ -116,31 +116,53 @@ pub(crate) fn eval_aggregate(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec
                     rows.len().to_string()
                 }),
                 "sum" => Ok(if let Some(arg) = args.first() {
-                    let mut sum: i64 = 0;
+                    let mut sum: f64 = 0.0;
                     let mut any = false;
+                    let mut all_int = true;
                     for row in rows {
-                        if let Datum::Integer(n) = eval_datum_expr(arg, columns, row) {
-                            sum += n;
-                            any = true;
+                        match eval_datum_expr(arg, columns, row) {
+                            Datum::Integer(n) => {
+                                sum += n as f64;
+                                any = true;
+                            }
+                            Datum::Real(f) => {
+                                sum += f;
+                                any = true;
+                                all_int = false;
+                            }
+                            _ => {}
                         }
                     }
-                    if any { sum.to_string() } else { "NULL".to_string() }
+                    if !any {
+                        "NULL".to_string()
+                    } else if all_int && sum.fract() == 0.0 {
+                        (sum as i64).to_string()
+                    } else {
+                        sum.to_string()
+                    }
                 } else {
                     "0".to_string()
                 }),
                 "avg" => Ok(if let Some(arg) = args.first() {
-                    let mut sum: i64 = 0;
+                    let mut sum: f64 = 0.0;
                     let mut count: usize = 0;
                     for row in rows {
-                        if let Datum::Integer(n) = eval_datum_expr(arg, columns, row) {
-                            sum += n;
-                            count += 1;
+                        match eval_datum_expr(arg, columns, row) {
+                            Datum::Integer(n) => {
+                                sum += n as f64;
+                                count += 1;
+                            }
+                            Datum::Real(f) => {
+                                sum += f;
+                                count += 1;
+                            }
+                            _ => {}
                         }
                     }
                     if count == 0 {
                         "NULL".to_string()
                     } else {
-                        (sum as f64 / count as f64).to_string()
+                        (sum / count as f64).to_string()
                     }
                 } else {
                     "NULL".to_string()
