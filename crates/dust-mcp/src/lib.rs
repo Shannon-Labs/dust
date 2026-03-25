@@ -134,8 +134,21 @@ fn dispatch_tool(state: &mut DustState, name: &str, args: &Value) -> Result<Stri
         "dust_query" => {
             let sql = get_str(args, "sql")?;
             let format = args.get("format").and_then(Value::as_str).unwrap_or("json");
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10000);
+            let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0);
             let engine = state.engine_for(&path).map_err(|e| e.to_string())?;
-            let output = engine.query(sql).map_err(|e| e.to_string())?;
+            // Auto-add LIMIT/OFFSET if not present
+            let lower = sql.to_ascii_lowercase();
+            let effective_sql = if !lower.contains("limit") {
+                if offset > 0 {
+                    format!("{sql} LIMIT {limit} OFFSET {offset}")
+                } else {
+                    format!("{sql} LIMIT {limit}")
+                }
+            } else {
+                sql.to_string()
+            };
+            let output = engine.query(&effective_sql).map_err(|e| e.to_string())?;
             Ok(tools::format_output(&output, format))
         }
         "dust_exec" => {
@@ -176,6 +189,33 @@ fn dispatch_tool(state: &mut DustState, name: &str, args: &Value) -> Result<Stri
             let header = args.get("header").and_then(Value::as_bool).unwrap_or(true);
             let engine = state.engine_for(&path).map_err(|e| e.to_string())?;
             tools::import_csv(engine, file, table, header).map_err(|e| e.to_string())
+        }
+        "dust_import_sqlite" => {
+            let file = get_str(args, "file")?;
+            let table = args.get("table").and_then(Value::as_str);
+            let incremental = args.get("incremental").and_then(Value::as_bool).unwrap_or(false);
+            tools::import_sqlite(&path, file, table, incremental).map_err(|e| e.to_string())
+        }
+        "dust_export" => {
+            let sql = get_str(args, "sql")?;
+            let format = args.get("format").and_then(Value::as_str).unwrap_or("csv");
+            let output_path = args.get("output").and_then(Value::as_str);
+            let engine = state.engine_for(&path).map_err(|e| e.to_string())?;
+            let result = engine.query(sql).map_err(|e| e.to_string())?;
+            let formatted = tools::format_output(&result, format);
+            if let Some(out) = output_path {
+                std::fs::write(out, &formatted).map_err(|e| e.to_string())?;
+                Ok(format!("Exported to {out}"))
+            } else {
+                Ok(formatted)
+            }
+        }
+        "dust_explain" => {
+            let sql = get_str(args, "sql")?;
+            let engine = state.engine_for(&path).map_err(|e| e.to_string())?;
+            let explain_sql = format!("EXPLAIN {sql}");
+            let output = engine.query(&explain_sql).map_err(|e| e.to_string())?;
+            Ok(tools::format_output(&output, "table"))
         }
         "dust_schema" => {
             let table = args.get("table").and_then(Value::as_str);

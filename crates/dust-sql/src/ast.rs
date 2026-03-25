@@ -59,6 +59,7 @@ pub enum AstStatement {
     Begin(Span),
     Commit(Span),
     Rollback(Span),
+    Pragma(Span),
     Raw(RawStatement),
 }
 
@@ -285,6 +286,7 @@ pub enum Expr {
     FunctionCall {
         name: Identifier,
         args: Vec<Expr>,
+        distinct: bool,
         window: Option<WindowSpec>,
         span: Span,
     },
@@ -310,6 +312,12 @@ pub enum Expr {
         elements: Vec<Expr>,
         span: Span,
     },
+    /// `[NOT] EXISTS (SELECT ...)`
+    Exists {
+        query: Box<SelectStatement>,
+        negated: bool,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -332,7 +340,8 @@ impl Expr {
             | Expr::Parenthesized { span, .. }
             | Expr::Subquery { span, .. }
             | Expr::InSubquery { span, .. }
-            | Expr::VectorLiteral { span, .. } => *span,
+            | Expr::VectorLiteral { span, .. }
+            | Expr::Exists { span, .. } => *span,
             Expr::ColumnRef(cref) => cref.span,
         }
     }
@@ -381,11 +390,24 @@ pub enum ConflictResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpsertClause {
+    pub conflict_columns: Vec<Identifier>,
+    pub action: UpsertAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpsertAction {
+    DoNothing,
+    DoUpdate { assignments: Vec<Assignment> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertStatement {
     pub table: Identifier,
     pub columns: Vec<Identifier>,
     pub values: Vec<Vec<Expr>>,
     pub conflict: ConflictResolution,
+    pub on_conflict: Option<UpsertClause>,
     pub span: Span,
     pub raw: String,
 }
@@ -642,6 +664,7 @@ pub enum Statement {
     Begin,
     Commit,
     Rollback,
+    Pragma,
     Raw(String),
 }
 
@@ -663,6 +686,7 @@ impl Statement {
             Self::Begin => "begin".to_string(),
             Self::Commit => "commit".to_string(),
             Self::Rollback => "rollback".to_string(),
+            Self::Pragma => "pragma".to_string(),
             Self::Raw(raw) => raw.clone(),
         }
     }

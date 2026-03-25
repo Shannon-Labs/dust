@@ -83,17 +83,35 @@ pub(crate) fn persistent_has_window_fn(expr: &Expr) -> bool {
 
 pub(crate) fn eval_aggregate(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec<Datum>]) -> Result<String> {
     match expr {
-        Expr::FunctionCall { name, args, .. } => {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+            ..
+        } => {
             let func = name.value.to_ascii_lowercase();
             match func.as_str() {
                 "count" => Ok(if args.len() == 1 && matches!(args[0], Expr::Star(_)) {
                     rows.len().to_string()
                 } else if let Some(arg) = args.first() {
-                    let count = rows
-                        .iter()
-                        .filter(|row| !matches!(eval_datum_expr(arg, columns, row), Datum::Null))
-                        .count();
-                    count.to_string()
+                    if *distinct {
+                        let mut seen = std::collections::HashSet::new();
+                        for row in rows {
+                            let val = eval_datum_expr(arg, columns, row);
+                            if !matches!(val, Datum::Null) {
+                                seen.insert(val.to_string());
+                            }
+                        }
+                        seen.len().to_string()
+                    } else {
+                        let count = rows
+                            .iter()
+                            .filter(|row| {
+                                !matches!(eval_datum_expr(arg, columns, row), Datum::Null)
+                            })
+                            .count();
+                        count.to_string()
+                    }
                 } else {
                     rows.len().to_string()
                 }),

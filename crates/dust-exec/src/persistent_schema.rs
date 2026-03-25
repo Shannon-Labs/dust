@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub struct SecondaryIndexDef {
     pub name: String,
     pub table: String,
-    pub column: String,
+    pub columns: Vec<String>,
     pub root_page_id: u64,
     pub unique: bool,
 }

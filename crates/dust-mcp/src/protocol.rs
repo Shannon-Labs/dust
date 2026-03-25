@@ -76,6 +76,8 @@ pub fn tools_list() -> Value {
                     "properties": {
                         "sql": {"type": "string", "description": "SQL query to execute"},
                         "format": {"type": "string", "description": "Output format: json, table, or csv (default: json)", "enum": ["json", "table", "csv"]},
+                        "limit": {"type": "integer", "description": "Maximum number of rows to return (default: 10000)"},
+                        "offset": {"type": "integer", "description": "Number of rows to skip (default: 0)"},
                         "path": {"type": "string", "description": "Path to the dust project (defaults to current directory)"}
                     },
                     "required": ["sql"]
@@ -154,6 +156,43 @@ pub fn tools_list() -> Value {
                         "path": {"type": "string", "description": "Path to the dust project (defaults to current directory)"}
                     },
                     "required": ["file"]
+                })
+            ),
+            tool_def("dust_import_sqlite",
+                "Import tables from a SQLite database file into the dust project",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {"type": "string", "description": "Path to the SQLite database file"},
+                        "table": {"type": "string", "description": "Import only this specific table (optional, imports all tables if omitted)"},
+                        "incremental": {"type": "boolean", "description": "Only import rows not already in dust (requires PRIMARY KEY)"},
+                        "path": {"type": "string", "description": "Path to the dust project (defaults to current directory)"}
+                    },
+                    "required": ["file"]
+                })
+            ),
+            tool_def("dust_export",
+                "Export a table or query results to a file (CSV, JSON, or Parquet)",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "sql": {"type": "string", "description": "SQL query to export (e.g. 'SELECT * FROM table')"},
+                        "format": {"type": "string", "description": "Output format: csv, json", "enum": ["csv", "json"]},
+                        "output": {"type": "string", "description": "Output file path (optional, returns data inline if omitted)"},
+                        "path": {"type": "string", "description": "Path to the dust project"}
+                    },
+                    "required": ["sql"]
+                })
+            ),
+            tool_def("dust_explain",
+                "Show the query execution plan for a SQL statement",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "sql": {"type": "string", "description": "SQL query to explain"},
+                        "path": {"type": "string", "description": "Path to the dust project"}
+                    },
+                    "required": ["sql"]
                 })
             ),
             tool_def("dust_schema",

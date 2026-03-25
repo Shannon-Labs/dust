@@ -202,18 +202,30 @@ fn run_csv_import(
         return Err(DustError::InvalidInput("CSV has no columns".to_string()));
     }
 
+    // Infer column types by sampling the first 100 data rows
+    let types = {
+        let mut sample_reader = csv::ReaderBuilder::new()
+            .delimiter(separator)
+            .has_headers(has_header)
+            .flexible(true)
+            .from_path(csv_path)
+            .map_err(|e| DustError::InvalidInput(format!("failed to open CSV for type inference: {e}")))?;
+        infer_column_types(&mut sample_reader, columns.len())
+    };
+
     let db_path = find_db_path(&env::current_dir()?)?;
     let mut engine = PersistentEngine::open(&db_path)?;
 
     // Create table
     let col_defs = columns
         .iter()
+        .zip(types.iter())
         .enumerate()
-        .map(|(i, name)| {
+        .map(|(i, (name, ty))| {
             if i == 0 {
-                format!("{name} TEXT NOT NULL")
+                format!("{name} {ty} NOT NULL")
             } else {
-                format!("{name} TEXT")
+                format!("{name} {ty}")
             }
         })
         .collect::<Vec<_>>()
@@ -247,7 +259,7 @@ fn run_csv_import(
         batch.push(fields);
 
         if batch.len() >= batch_size {
-            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
+            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
             batch.clear();
             if total_rows % 10000 == 0 {
                 eprint!("\r  Imported {total_rows} rows...");
@@ -257,7 +269,7 @@ fn run_csv_import(
 
     // Flush remaining
     if !batch.is_empty() {
-        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
+        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
     }
 
     println!(
@@ -274,14 +286,40 @@ fn insert_batch(
     table_name: &str,
     columns: &[String],
     rows: &[Vec<String>],
+    types: &[String],
 ) -> Result<usize> {
     let mut value_parts = Vec::new();
     for fields in rows {
         let values = fields
             .iter()
-            .map(|f| {
-                let escaped = f.replace('\'', "''");
-                format!("'{escaped}'")
+            .enumerate()
+            .map(|(i, f)| {
+                let trimmed = f.trim();
+                let ty = types.get(i).map(|s| s.as_str()).unwrap_or("TEXT");
+                match ty {
+                    "INTEGER" => {
+                        if trimmed.is_empty() {
+                            "NULL".to_string()
+                        } else if trimmed.parse::<i64>().is_ok() {
+                            trimmed.to_string()
+                        } else {
+                            "NULL".to_string()
+                        }
+                    }
+                    "REAL" => {
+                        if trimmed.is_empty() {
+                            "NULL".to_string()
+                        } else if trimmed.parse::<f64>().is_ok() {
+                            trimmed.to_string()
+                        } else {
+                            "NULL".to_string()
+                        }
+                    }
+                    _ => {
+                        let escaped = f.replace('\'', "''");
+                        format!("'{escaped}'")
+                    }
+                }
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -300,6 +338,53 @@ fn insert_batch(
     );
     engine.query(&insert_sql)?;
     Ok(value_parts.len())
+}
+
+/// Sample up to 100 data rows to infer whether each column is INTEGER, REAL, or TEXT.
+fn infer_column_types(
+    reader: &mut csv::Reader<impl std::io::Read>,
+    num_columns: usize,
+) -> Vec<String> {
+    let mut could_be_int = vec![true; num_columns];
+    let mut could_be_real = vec![true; num_columns];
+    let mut sample_count = 0;
+
+    for result in reader.records().take(100) {
+        let record = match result {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        sample_count += 1;
+        for (i, field) in record.iter().enumerate() {
+            if i >= num_columns {
+                break;
+            }
+            let trimmed = field.trim();
+            if trimmed.is_empty() {
+                continue; // NULL, skip
+            }
+            if could_be_int[i] && trimmed.parse::<i64>().is_err() {
+                could_be_int[i] = false;
+            }
+            if could_be_real[i] && trimmed.parse::<f64>().is_err() {
+                could_be_real[i] = false;
+            }
+        }
+    }
+
+    (0..num_columns)
+        .map(|i| {
+            if sample_count == 0 {
+                "TEXT".to_string()
+            } else if could_be_int[i] {
+                "INTEGER".to_string()
+            } else if could_be_real[i] {
+                "REAL".to_string()
+            } else {
+                "TEXT".to_string()
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -534,9 +619,10 @@ fn extract_statement_sql(source: &str, stmt: &dust_sql::AstStatement) -> String 
         AstStatement::DropIndex(s) => s.span,
         AstStatement::AlterTable(s) => s.span,
         AstStatement::With(s) => s.span,
-        AstStatement::Begin(span) | AstStatement::Commit(span) | AstStatement::Rollback(span) => {
-            *span
-        }
+        AstStatement::Begin(span)
+        | AstStatement::Commit(span)
+        | AstStatement::Rollback(span)
+        | AstStatement::Pragma(span) => *span,
         AstStatement::Raw(s) => s.span,
     };
     source[span.start..span.end].to_string()
@@ -610,6 +696,7 @@ fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
     let mut engine = PersistentEngine::open(&db_path)?;
 
     create_text_table(&mut engine, &table_name, &columns)?;
+    let types: Vec<String> = vec!["TEXT".to_string(); columns.len()];
 
     // Insert data rows (skip header)
     let mut total_rows = 0;
@@ -623,13 +710,13 @@ fn run_xlsx_import(path: &Path, table: Option<&str>) -> Result<()> {
         batch.push(padded);
 
         if batch.len() >= batch_size {
-            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
+            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
             batch.clear();
         }
     }
 
     if !batch.is_empty() {
-        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
+        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
     }
 
     println!(
@@ -687,6 +774,7 @@ fn run_parquet_import(path: &Path, table: Option<&str>) -> Result<()> {
     let mut engine = PersistentEngine::open(&db_path)?;
 
     create_text_table(&mut engine, &table_name, &columns)?;
+    let types: Vec<String> = vec!["TEXT".to_string(); columns.len()];
 
     // Read row groups and insert in batches
     let mut total_rows = 0;
@@ -715,13 +803,13 @@ fn run_parquet_import(path: &Path, table: Option<&str>) -> Result<()> {
         batch.push(fields);
 
         if batch.len() >= batch_size {
-            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
+            total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
             batch.clear();
         }
     }
 
     if !batch.is_empty() {
-        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch)?;
+        total_rows += insert_batch(&mut engine, &table_name, &columns, &batch, &types)?;
     }
 
     println!(
@@ -1562,5 +1650,55 @@ mod tests {
             other => panic!("expected Rows, got {:?}", other),
         };
         assert_eq!(row_count, 2, "expected 2 rows, got {row_count}");
+    }
+
+    #[test]
+    fn infer_column_types_detects_integer_real_text() {
+        use std::io::Cursor;
+
+        // CSV with header + data: col1 is integer, col2 is real, col3 is text
+        let csv_data = "a,b,c\n1,1.5,hello\n2,2.7,world\n3,3.0,foo\n";
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(Cursor::new(csv_data));
+        let types = super::infer_column_types(&mut reader, 3);
+        assert_eq!(types, vec!["INTEGER", "REAL", "TEXT"]);
+    }
+
+    #[test]
+    fn infer_column_types_all_text_when_mixed() {
+        use std::io::Cursor;
+
+        let csv_data = "x,y\n1,hello\nabc,2.5\n";
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(Cursor::new(csv_data));
+        let types = super::infer_column_types(&mut reader, 2);
+        assert_eq!(types, vec!["TEXT", "TEXT"]);
+    }
+
+    #[test]
+    fn infer_column_types_empty_fields_are_null() {
+        use std::io::Cursor;
+
+        // Empty fields should not disqualify INTEGER inference
+        let csv_data = "a,b\n1,\n2,3\n,4\n";
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(Cursor::new(csv_data));
+        let types = super::infer_column_types(&mut reader, 2);
+        assert_eq!(types, vec!["INTEGER", "INTEGER"]);
+    }
+
+    #[test]
+    fn infer_column_types_no_data_defaults_to_text() {
+        use std::io::Cursor;
+
+        let csv_data = "a,b\n";
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(Cursor::new(csv_data));
+        let types = super::infer_column_types(&mut reader, 2);
+        assert_eq!(types, vec!["TEXT", "TEXT"]);
     }
 }

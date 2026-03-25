@@ -103,6 +103,12 @@ pub enum Keyword {
     Deterministic,
     Vector,
     Hnsw,
+    // ON CONFLICT / PRAGMA
+    Conflict,
+    Do,
+    Nothing,
+    Excluded,
+    Pragma,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -503,6 +509,11 @@ fn keyword(text: &str) -> Option<Keyword> {
         "FOLLOWING" => Some(Keyword::Following),
         "CURRENT" => Some(Keyword::Current),
         "UNBOUNDED" => Some(Keyword::Unbounded),
+        "CONFLICT" => Some(Keyword::Conflict),
+        "DO" => Some(Keyword::Do),
+        "NOTHING" => Some(Keyword::Nothing),
+        "EXCLUDED" => Some(Keyword::Excluded),
+        "PRAGMA" => Some(Keyword::Pragma),
         _ => None,
     }
 }

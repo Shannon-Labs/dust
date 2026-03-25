@@ -6,7 +6,7 @@ use crate::ast::{
     IntegerLiteral, JoinClause, JoinType, OrderByItem, Program, RawStatement, SelectItem,
     SelectProjection, SelectStatement, SetOpKind, Span, Statement, TableConstraint,
     TableConstraintKind, TableElement, TokenFragment, TypeName, UnaryOp, UpdateStatement,
-    WindowSpec, WithStatement,
+    UpsertAction, UpsertClause, WindowSpec, WithStatement,
 };
 use crate::lexer::{lex, Keyword, Token, TokenKind};
 use dust_types::{DustError, Result};
@@ -115,6 +115,7 @@ impl<'a> Parser<'a> {
                 let token = self.bump().expect("peeked");
                 Ok(AstStatement::Rollback(token.span))
             }
+            Some(Keyword::Pragma) => self.parse_pragma(),
             _ => Ok(self.parse_raw(start)),
         }
     }
@@ -573,6 +574,50 @@ impl<'a> Parser<'a> {
             }
         }
 
+        // Parse optional ON CONFLICT clause
+        let on_conflict = if self.eat_keyword(Keyword::On)? {
+            self.expect_keyword(Keyword::Conflict)?;
+            // Parse optional conflict target columns
+            let conflict_columns = if self.peek_kind() == Some(&TokenKind::LParen) {
+                self.parse_parenthesized_identifier_list()?
+            } else {
+                Vec::new()
+            };
+            self.expect_keyword(Keyword::Do)?;
+            let action = if self.eat_keyword(Keyword::Nothing)? {
+                UpsertAction::DoNothing
+            } else {
+                self.expect_keyword(Keyword::Update)?;
+                self.expect_keyword(Keyword::Set)?;
+                let mut assignments = Vec::new();
+                loop {
+                    let astart = self
+                        .peek()
+                        .map(|t| t.span.start)
+                        .unwrap_or(self.source.len());
+                    let col = self.parse_identifier()?;
+                    self.expect_kind(TokenKind::Eq)?;
+                    let value = self.parse_expr()?;
+                    let aend = value.span().end;
+                    assignments.push(Assignment {
+                        column: col,
+                        value,
+                        span: Span::new(astart, aend),
+                    });
+                    if !self.eat_kind(TokenKind::Comma)? {
+                        break;
+                    }
+                }
+                UpsertAction::DoUpdate { assignments }
+            };
+            Some(UpsertClause {
+                conflict_columns,
+                action,
+            })
+        } else {
+            None
+        };
+
         let end = self.statement_end();
         let span = Span::new(start, end);
         Ok(AstStatement::Insert(InsertStatement {
@@ -580,6 +625,7 @@ impl<'a> Parser<'a> {
             columns,
             values: value_rows,
             conflict,
+            on_conflict,
             span,
             raw: self.slice(span).to_string(),
         }))
@@ -1176,6 +1222,10 @@ impl<'a> Parser<'a> {
     fn parse_not_expr(&mut self) -> Result<Expr> {
         if self.peek_keyword() == Some(Keyword::Not) {
             let start = self.bump().expect("peeked").span.start;
+            // NOT EXISTS (SELECT ...)
+            if self.peek_keyword() == Some(Keyword::Exists) {
+                return self.parse_exists_expr(true, start);
+            }
             let operand = self.parse_not_expr()?;
             let span = Span::new(start, operand.span().end);
             return Ok(Expr::UnaryOp {
@@ -1184,7 +1234,24 @@ impl<'a> Parser<'a> {
                 span,
             });
         }
+        // EXISTS (SELECT ...)
+        if self.peek_keyword() == Some(Keyword::Exists) {
+            let start = self.peek().unwrap().span.start;
+            return self.parse_exists_expr(false, start);
+        }
         self.parse_comparison_expr()
+    }
+
+    fn parse_exists_expr(&mut self, negated: bool, start: usize) -> Result<Expr> {
+        self.expect_keyword(Keyword::Exists)?;
+        self.expect_kind(TokenKind::LParen)?;
+        let query = self.parse_select_statement()?;
+        let end = self.expect_kind(TokenKind::RParen)?.span.end;
+        Ok(Expr::Exists {
+            query: Box::new(query),
+            negated,
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_comparison_expr(&mut self) -> Result<Expr> {
@@ -1575,6 +1642,7 @@ impl<'a> Parser<'a> {
                 span: case_token.span,
             },
             args,
+            distinct: false,
             window: None,
             span: Span::new(start, end),
         })
@@ -1586,6 +1654,7 @@ impl<'a> Parser<'a> {
         // Function call: name(args)
         if self.peek_kind() == Some(&TokenKind::LParen) {
             self.bump(); // consume (
+            let distinct = self.eat_keyword(Keyword::Distinct)?;
             let mut args = Vec::new();
             if !self.eat_kind(TokenKind::RParen)? {
                 loop {
@@ -1616,6 +1685,7 @@ impl<'a> Parser<'a> {
                 span: Span::new(ident.span.start, end),
                 name: ident,
                 args,
+                distinct,
                 window,
             });
         }
@@ -1831,6 +1901,21 @@ impl<'a> Parser<'a> {
             .unwrap_or(Span::empty(start))
             .join(tokens.last().expect("tokens not empty").span);
         Ok(TypeName { tokens, span })
+    }
+
+    fn parse_pragma(&mut self) -> Result<AstStatement> {
+        let token = self.expect_keyword(Keyword::Pragma)?;
+        let start = token.span.start;
+        // Consume everything until semicolon or end of input
+        let mut end = token.span.end;
+        while let Some(t) = self.peek() {
+            if t.kind == TokenKind::Semicolon {
+                break;
+            }
+            end = t.span.end;
+            self.bump();
+        }
+        Ok(AstStatement::Pragma(Span::new(start, end)))
     }
 
     fn parse_raw(&mut self, start: usize) -> AstStatement {
@@ -2075,6 +2160,7 @@ impl From<AstStatement> for Statement {
             AstStatement::Begin(_) => Statement::Begin,
             AstStatement::Commit(_) => Statement::Commit,
             AstStatement::Rollback(_) => Statement::Rollback,
+            AstStatement::Pragma(_) => Statement::Pragma,
             AstStatement::Raw(raw) => Statement::Raw(raw.sql),
         }
     }
@@ -2127,9 +2213,10 @@ fn statement_span(statement: &AstStatement) -> Span {
         AstStatement::DropIndex(s) => s.span,
         AstStatement::AlterTable(s) => s.span,
         AstStatement::With(s) => s.span,
-        AstStatement::Begin(span) | AstStatement::Commit(span) | AstStatement::Rollback(span) => {
-            *span
-        }
+        AstStatement::Begin(span)
+        | AstStatement::Commit(span)
+        | AstStatement::Rollback(span)
+        | AstStatement::Pragma(span) => *span,
         AstStatement::Raw(s) => s.span,
     }
 }
@@ -2886,6 +2973,73 @@ mod tests {
     }
 
     #[test]
+    fn parses_count_distinct() {
+        let sql = "SELECT COUNT(DISTINCT color) FROM items";
+        let program = parse_program(sql).unwrap();
+        let select = match &program.statements[0] {
+            AstStatement::Select(s) => s,
+            other => panic!("expected Select, got {other:?}"),
+        };
+        match &select.projection[0] {
+            SelectItem::Expr {
+                expr: Expr::FunctionCall {
+                    name, args, distinct, ..
+                },
+                ..
+            } => {
+                assert_eq!(name.value.to_ascii_lowercase(), "count");
+                assert!(*distinct, "expected distinct=true");
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected FunctionCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_on_conflict_do_nothing() {
+        use crate::ast::UpsertAction;
+        let sql = "INSERT INTO t (id, name) VALUES (1, 'a') ON CONFLICT (id) DO NOTHING";
+        let program = parse_program(sql).unwrap();
+        let insert = match &program.statements[0] {
+            AstStatement::Insert(i) => i,
+            other => panic!("expected Insert, got {other:?}"),
+        };
+        let uc = insert.on_conflict.as_ref().expect("expected on_conflict");
+        assert_eq!(uc.conflict_columns.len(), 1);
+        assert_eq!(uc.conflict_columns[0].value, "id");
+        assert!(matches!(uc.action, UpsertAction::DoNothing));
+    }
+
+    #[test]
+    fn parses_on_conflict_do_update() {
+        use crate::ast::UpsertAction;
+        let sql =
+            "INSERT INTO t (id, name) VALUES (1, 'a') ON CONFLICT (id) DO UPDATE SET name = excluded.name";
+        let program = parse_program(sql).unwrap();
+        let insert = match &program.statements[0] {
+            AstStatement::Insert(i) => i,
+            other => panic!("expected Insert, got {other:?}"),
+        };
+        let uc = insert.on_conflict.as_ref().expect("expected on_conflict");
+        assert_eq!(uc.conflict_columns.len(), 1);
+        assert_eq!(uc.conflict_columns[0].value, "id");
+        match &uc.action {
+            UpsertAction::DoUpdate { assignments } => {
+                assert_eq!(assignments.len(), 1);
+                assert_eq!(assignments[0].column.value, "name");
+            }
+            _ => panic!("expected DoUpdate"),
+        }
+    }
+
+    #[test]
+    fn parses_pragma_as_noop() {
+        let sql = "PRAGMA journal_mode = wal";
+        let program = parse_program(sql).unwrap();
+        assert!(matches!(program.statements[0], AstStatement::Pragma(_)));
+    }
+
+    #[test]
     fn parser_fuzz_random_inputs_do_not_panic() {
         const ALPHABET: &[u8] =
             b" \t\n(),;*+-/%=<>!|'\"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_\xe6\xb5\x8b\xe8\xaf\x95";
@@ -2904,5 +3058,50 @@ mod tests {
             let result = std::panic::catch_unwind(|| parse_program(&sql));
             assert!(result.is_ok(), "parser panicked on input {sql:?}");
         }
+    }
+
+    #[test]
+    fn parses_exists_in_where() {
+        let sql = "select * from orders where exists (select 1 from items where items.order_id = orders.id)";
+        let program = parse_program(sql).unwrap();
+        let select = match &program.statements[0] {
+            AstStatement::Select(s) => s,
+            other => panic!("unexpected: {other:?}"),
+        };
+        let where_clause = select.where_clause.as_ref().expect("expected WHERE");
+        match where_clause {
+            Expr::Exists { negated, .. } => {
+                assert!(!negated, "should not be negated");
+            }
+            other => panic!("expected Exists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_not_exists_in_where() {
+        let sql = "select * from orders where not exists (select 1 from items where items.order_id = orders.id)";
+        let program = parse_program(sql).unwrap();
+        let select = match &program.statements[0] {
+            AstStatement::Select(s) => s,
+            other => panic!("unexpected: {other:?}"),
+        };
+        let where_clause = select.where_clause.as_ref().expect("expected WHERE");
+        match where_clause {
+            Expr::Exists { negated, .. } => {
+                assert!(negated, "should be negated");
+            }
+            other => panic!("expected Exists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_exists_with_and() {
+        let sql = "select * from t where x = 1 and exists (select 1 from u)";
+        let program = parse_program(sql).unwrap();
+        let select = match &program.statements[0] {
+            AstStatement::Select(s) => s,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(select.where_clause.is_some());
     }
 }

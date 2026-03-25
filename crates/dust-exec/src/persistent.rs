@@ -4,7 +4,8 @@
 /// between invocations via B+tree storage.
 use dust_sql::{
     AlterTableAction, AstStatement, ColumnRef, DeleteStatement, Expr, IndexColumn,
-    InsertStatement, JoinClause, JoinType, SelectItem, SetOpKind, UpdateStatement, parse_program,
+    InsertStatement, JoinClause, JoinType, SelectItem, SetOpKind, UpdateStatement, UpsertAction,
+    parse_program,
 };
 use dust_store::{Datum, TableEngine};
 use dust_types::{DustError, Result};
@@ -42,16 +43,20 @@ fn attach_secondary_indexes(store: &mut TableEngine, schema: &PersistedSchema) -
                 def.name, def.table
             ))
         })?;
-        let col_idx = cols.iter().position(|c| c == &def.column).ok_or_else(|| {
-            DustError::InvalidInput(format!(
-                "cannot attach index `{}`: column `{}` not found on table `{}`",
-                def.name, def.column, def.table
-            ))
-        })?;
+        let mut col_indices = Vec::with_capacity(def.columns.len());
+        for col_name in &def.columns {
+            let idx = cols.iter().position(|c| c == col_name).ok_or_else(|| {
+                DustError::InvalidInput(format!(
+                    "cannot attach index `{}`: column `{}` not found on table `{}`",
+                    def.name, col_name, def.table
+                ))
+            })?;
+            col_indices.push(idx);
+        }
         store.register_secondary_index(
             def.name.clone(),
             def.table.clone(),
-            col_idx,
+            col_indices,
             def.root_page_id,
             def.unique,
         );
@@ -233,6 +238,147 @@ fn eval_unary_datum_agg(operand: &Datum, op: &dust_sql::UnaryOp) -> String {
     }
 }
 
+/// Returns true if the expression tree contains any subquery node.
+fn contains_subquery(expr: &Expr) -> bool {
+    match expr {
+        Expr::Subquery { .. } | Expr::InSubquery { .. } | Expr::Exists { .. } => true,
+        Expr::BinaryOp { left, right, .. } => contains_subquery(left) || contains_subquery(right),
+        Expr::UnaryOp { operand, .. } => contains_subquery(operand),
+        Expr::Parenthesized { expr: inner, .. } => contains_subquery(inner),
+        Expr::FunctionCall { args, .. } => args.iter().any(contains_subquery),
+        Expr::IsNull { expr: inner, .. } => contains_subquery(inner),
+        Expr::Cast { expr: inner, .. } => contains_subquery(inner),
+        Expr::InList { expr: inner, list, .. } => {
+            contains_subquery(inner) || list.iter().any(contains_subquery)
+        }
+        Expr::Between { expr: inner, low, high, .. } => {
+            contains_subquery(inner) || contains_subquery(low) || contains_subquery(high)
+        }
+        Expr::Like { expr: inner, pattern, .. } => {
+            contains_subquery(inner) || contains_subquery(pattern)
+        }
+        _ => false,
+    }
+}
+
+/// Substitute outer column references in a SELECT statement's WHERE clause.
+/// This is used for correlated subqueries: outer column refs that can't be
+/// resolved by the inner query's tables are replaced with literal values
+/// from the outer row.
+fn substitute_outer_refs_in_select(
+    select: &dust_sql::SelectStatement,
+    outer_columns: &[ColumnBinding],
+    outer_row: &[Datum],
+) -> dust_sql::SelectStatement {
+    if outer_columns.is_empty() || outer_row.is_empty() {
+        return select.clone();
+    }
+    let mut resolved = select.clone();
+    if let Some(w) = &resolved.where_clause {
+        resolved.where_clause = Some(substitute_outer_refs(w, outer_columns, outer_row));
+    }
+    resolved
+}
+
+/// Recursively substitute column references that match outer columns with literal values.
+fn substitute_outer_refs(
+    expr: &Expr,
+    outer_columns: &[ColumnBinding],
+    outer_row: &[Datum],
+) -> Expr {
+    match expr {
+        Expr::ColumnRef(cref) => {
+            // Try to resolve against outer columns
+            for (i, col) in outer_columns.iter().enumerate() {
+                let col_matches = cref.column.value.eq_ignore_ascii_case(&col.column_name);
+                let qualifier_matches = match &cref.table {
+                    Some(tbl) => col.matches_qualifier(&tbl.value),
+                    None => true, // no qualifier, match by column name only
+                };
+                if col_matches && qualifier_matches
+                    && let Some(datum) = outer_row.get(i)
+                {
+                    return datum_to_expr(datum, cref.span);
+                }
+            }
+            expr.clone()
+        }
+        Expr::BinaryOp {
+            left,
+            op,
+            right,
+            span,
+        } => Expr::BinaryOp {
+            left: Box::new(substitute_outer_refs(left, outer_columns, outer_row)),
+            op: *op,
+            right: Box::new(substitute_outer_refs(right, outer_columns, outer_row)),
+            span: *span,
+        },
+        Expr::UnaryOp { op, operand, span } => Expr::UnaryOp {
+            op: *op,
+            operand: Box::new(substitute_outer_refs(operand, outer_columns, outer_row)),
+            span: *span,
+        },
+        Expr::Parenthesized { expr: inner, span } => Expr::Parenthesized {
+            expr: Box::new(substitute_outer_refs(inner, outer_columns, outer_row)),
+            span: *span,
+        },
+        Expr::IsNull {
+            expr: inner,
+            negated,
+            span,
+        } => Expr::IsNull {
+            expr: Box::new(substitute_outer_refs(inner, outer_columns, outer_row)),
+            negated: *negated,
+            span: *span,
+        },
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+            window,
+            span,
+        } => Expr::FunctionCall {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| substitute_outer_refs(a, outer_columns, outer_row))
+                .collect(),
+            distinct: *distinct,
+            window: window.clone(),
+            span: *span,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Convert a Datum to an Expr literal.
+fn datum_to_expr(datum: &Datum, span: dust_sql::Span) -> Expr {
+    match datum {
+        Datum::Integer(n) => Expr::Integer(dust_sql::IntegerLiteral {
+            value: *n,
+            span,
+        }),
+        Datum::Real(f) => Expr::Float(dust_sql::FloatLiteral {
+            value: f.to_string(),
+            span,
+        }),
+        Datum::Text(s) => Expr::StringLit {
+            value: s.clone(),
+            span,
+        },
+        Datum::Boolean(b) => Expr::Boolean {
+            value: *b,
+            span,
+        },
+        Datum::Null => Expr::Null(span),
+        Datum::Blob(bytes) => Expr::StringLit {
+            value: format!("x'{}'", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            span,
+        },
+    }
+}
+
 impl PersistentEngine {
     pub fn open(db_path: &Path) -> Result<Self> {
         let store = TableEngine::open_or_create(db_path)?;
@@ -382,7 +528,7 @@ impl PersistentEngine {
                             .schema
                             .secondary_indexes
                             .iter()
-                            .filter(|d| d.table == *table_name && d.column == dropped)
+                            .filter(|d| d.table == *table_name && d.columns.contains(&dropped))
                             .map(|d| d.name.clone())
                             .collect();
                         for idx_name in &to_remove {
@@ -390,7 +536,7 @@ impl PersistentEngine {
                         }
                         self.schema
                             .secondary_indexes
-                            .retain(|d| !(d.table == *table_name && d.column == dropped));
+                            .retain(|d| !(d.table == *table_name && d.columns.contains(&dropped)));
 
                         self.store.drop_column(table_name, &name.value)?;
                         if let Some(schema) = self.schema.tables.get_mut(table_name) {
@@ -402,8 +548,12 @@ impl PersistentEngine {
                     }
                     AlterTableAction::RenameColumn { from, to } => {
                         for d in &mut self.schema.secondary_indexes {
-                            if d.table == *table_name && d.column == from.value {
-                                d.column = to.value.clone();
+                            if d.table == *table_name {
+                                for col in &mut d.columns {
+                                    if *col == from.value {
+                                        *col = to.value.clone();
+                                    }
+                                }
                             }
                         }
                         self.store
@@ -516,6 +666,7 @@ impl PersistentEngine {
                     ))),
                 }
             }
+            AstStatement::Pragma(_) => Ok(QueryOutput::Message("OK".to_string())),
             AstStatement::Raw(raw) => Err(DustError::UnsupportedQuery(format!(
                 "unsupported SQL: {}",
                 raw.sql
@@ -527,6 +678,18 @@ impl PersistentEngine {
     /// with materialized literal values. This allows eval_datum_expr to remain
     /// a pure function without engine access.
     fn materialize_subqueries(&mut self, expr: &Expr) -> Result<Expr> {
+        self.materialize_subqueries_with_outer(expr, &[], &[])
+    }
+
+    /// Like `materialize_subqueries` but with outer row context for correlated subqueries.
+    /// When a subquery's WHERE clause references columns not in the subquery's own tables,
+    /// they are resolved from `outer_columns`/`outer_row`.
+    fn materialize_subqueries_with_outer(
+        &mut self,
+        expr: &Expr,
+        outer_columns: &[ColumnBinding],
+        outer_row: &[Datum],
+    ) -> Result<Expr> {
         match expr {
             Expr::InSubquery {
                 expr: inner,
@@ -534,15 +697,14 @@ impl PersistentEngine {
                 negated,
                 span,
             } => {
-                let inner_rewritten = self.materialize_subqueries(inner)?;
-                // Execute the subquery to get values
-                let result = self.execute_select(query)?;
+                let inner_rewritten = self.materialize_subqueries_with_outer(inner, outer_columns, outer_row)?;
+                let resolved_query = substitute_outer_refs_in_select(query, outer_columns, outer_row);
+                let result = self.execute_select(&resolved_query)?;
                 let (_, string_rows) = result.into_string_rows();
                 let values: Vec<Expr> = string_rows
                     .into_iter()
                     .filter_map(|row| {
                         row.into_iter().next().map(|v| {
-                            // Try to parse as integer, otherwise treat as string
                             if v == "NULL" {
                                 Expr::Null(*span)
                             } else if let Ok(i) = v.parse::<i64>() {
@@ -568,7 +730,9 @@ impl PersistentEngine {
             }
             Expr::Subquery { query, span } => {
                 // Execute as scalar subquery — it must yield at most one row and one column.
-                let result = self.execute_select(query)?;
+                // Substitute outer column references for correlated subqueries.
+                let resolved_query = substitute_outer_refs_in_select(query, outer_columns, outer_row);
+                let result = self.execute_select(&resolved_query)?;
                 let (columns, string_rows) = result.into_string_rows();
                 if columns.len() > 1 {
                     return Err(DustError::InvalidInput(
@@ -612,20 +776,35 @@ impl PersistentEngine {
                 right,
                 span,
             } => Ok(Expr::BinaryOp {
-                left: Box::new(self.materialize_subqueries(left)?),
+                left: Box::new(self.materialize_subqueries_with_outer(left, outer_columns, outer_row)?),
                 op: *op,
-                right: Box::new(self.materialize_subqueries(right)?),
+                right: Box::new(self.materialize_subqueries_with_outer(right, outer_columns, outer_row)?),
                 span: *span,
             }),
             Expr::UnaryOp { op, operand, span } => Ok(Expr::UnaryOp {
                 op: *op,
-                operand: Box::new(self.materialize_subqueries(operand)?),
+                operand: Box::new(self.materialize_subqueries_with_outer(operand, outer_columns, outer_row)?),
                 span: *span,
             }),
             Expr::Parenthesized { expr: inner, span } => Ok(Expr::Parenthesized {
-                expr: Box::new(self.materialize_subqueries(inner)?),
+                expr: Box::new(self.materialize_subqueries_with_outer(inner, outer_columns, outer_row)?),
                 span: *span,
             }),
+            Expr::Exists {
+                query,
+                negated,
+                span,
+            } => {
+                let resolved_query = substitute_outer_refs_in_select(query, outer_columns, outer_row);
+                let result = self.execute_select(&resolved_query)?;
+                let (_, string_rows) = result.into_string_rows();
+                let has_rows = !string_rows.is_empty();
+                let val = if *negated { !has_rows } else { has_rows };
+                Ok(Expr::Boolean {
+                    value: val,
+                    span: *span,
+                })
+            }
             // Everything else is left as-is
             other => Ok(other.clone()),
         }
@@ -668,17 +847,29 @@ impl PersistentEngine {
         };
         validate_select_columns(select, &rowset.columns)?;
 
-        let materialized_where = if let Some(w) = &select.where_clause {
-            Some(self.materialize_subqueries(w)?)
-        } else {
-            None
-        };
-        let mut filtered: Vec<Vec<Datum>> = if let Some(w) = &materialized_where {
-            rowset
-                .rows
-                .into_iter()
-                .filter(|datums| eval_where_datums(w, &rowset.columns, datums))
-                .collect()
+        let where_has_subquery = select
+            .where_clause
+            .as_ref()
+            .is_some_and(contains_subquery);
+        let mut filtered: Vec<Vec<Datum>> = if let Some(w) = &select.where_clause {
+            if where_has_subquery {
+                // Per-row materialization for correlated subqueries in WHERE
+                let mut result = Vec::new();
+                for row in rowset.rows.iter() {
+                    let materialized = self.materialize_subqueries_with_outer(w, &rowset.columns, row)?;
+                    if eval_where_datums(&materialized, &rowset.columns, row) {
+                        result.push(row.clone());
+                    }
+                }
+                result
+            } else {
+                let materialized = self.materialize_subqueries(w)?;
+                rowset
+                    .rows
+                    .into_iter()
+                    .filter(|datums| eval_where_datums(&materialized, &rowset.columns, datums))
+                    .collect()
+            }
         } else {
             rowset.rows
         };
@@ -686,7 +877,8 @@ impl PersistentEngine {
         let has_aggregates = select.projection.iter().any(|item| match item {
             SelectItem::Expr { expr, .. } => is_aggregate_expr(expr) || contains_aggregate(expr),
             _ => false,
-        });
+        }) || !select.group_by.is_empty()
+            || select.having.is_some();
 
         let has_windows = select.projection.iter().any(|item| match item {
             SelectItem::Expr { expr, .. } => persistent_has_window_fn(expr),
@@ -1070,14 +1262,14 @@ impl PersistentEngine {
             .schema
             .secondary_indexes
             .iter()
-            .find(|d| d.table == base_table && d.column == col_name)
+            .find(|d| d.table == base_table && d.columns.len() == 1 && d.columns[0] == col_name)
         else {
             return Ok(None);
         };
 
         let rowids = self
             .store
-            .secondary_lookup_rowids(&idx.name, &value_datum)?;
+            .secondary_lookup_rowids(&idx.name, &[value_datum])?;
         let columns = self
             .store
             .table_columns(base_table)
@@ -1254,12 +1446,10 @@ impl PersistentEngine {
                 u.value
             )));
         }
-        if index.columns.len() != 1 {
-            return Err(DustError::InvalidInput(
-                "multi-column indexes are not supported yet".to_string(),
-            ));
+        let mut col_names = Vec::with_capacity(index.columns.len());
+        for ic in &index.columns {
+            col_names.push(simple_index_column_name(ic)?);
         }
-        let col_name = simple_index_column_name(&index.columns[0])?;
         let table_name = index.table.value.clone();
         let idx_name = index.name.value.clone();
         if self
@@ -1281,24 +1471,28 @@ impl PersistentEngine {
         let cols = self.store.table_columns(&table_name).ok_or_else(|| {
             DustError::InvalidInput(format!("table `{table_name}` does not exist"))
         })?;
-        let col_idx = cols.iter().position(|c| c == &col_name).ok_or_else(|| {
-            DustError::InvalidInput(format!(
-                "column `{col_name}` not found in table `{table_name}`"
-            ))
-        })?;
+        let mut col_indices = Vec::with_capacity(col_names.len());
+        for cn in &col_names {
+            let ci = cols.iter().position(|c| c == cn).ok_or_else(|| {
+                DustError::InvalidInput(format!(
+                    "column `{cn}` not found in table `{table_name}`"
+                ))
+            })?;
+            col_indices.push(ci);
+        }
 
         let root = self
             .store
-            .create_secondary_index(&table_name, col_idx, index.unique)?;
+            .create_secondary_index(&table_name, &col_indices, index.unique)?;
         self.schema.secondary_indexes.push(SecondaryIndexDef {
             name: idx_name.clone(),
             table: table_name.clone(),
-            column: col_name,
+            columns: col_names,
             root_page_id: root,
             unique: index.unique,
         });
         self.store
-            .register_secondary_index(idx_name, table_name, col_idx, root, index.unique);
+            .register_secondary_index(idx_name, table_name, col_indices, root, index.unique);
         Ok(QueryOutput::Message("CREATE INDEX".to_string()))
     }
 
@@ -1343,7 +1537,7 @@ impl PersistentEngine {
     }
 
     fn project_rows(
-        &self,
+        &mut self,
         select: &dust_sql::SelectStatement,
         all_columns: &[ColumnBinding],
         rows: &[Vec<Datum>],
@@ -1397,16 +1591,21 @@ impl PersistentEngine {
         }
 
         // General path: evaluate expressions and convert to strings.
-        let mut out_cols = Vec::new();
-        let mut col_evaluators: Vec<ColumnEvaluator> = Vec::new();
+        // Check if any projection item contains subqueries — if so, we need per-row
+        // materialization (for correlated subqueries).
+        let has_subqueries = select.projection.iter().any(|item| match item {
+            SelectItem::Expr { expr, .. } => contains_subquery(expr),
+            _ => false,
+        });
 
+        let mut out_cols = Vec::new();
+
+        // Build column names
         for item in &select.projection {
             match item {
                 SelectItem::Wildcard(_) => {
-                    for (i, col) in all_columns.iter().enumerate() {
+                    for col in all_columns.iter() {
                         out_cols.push(col.column_name.clone());
-                        let idx = i;
-                        col_evaluators.push(Box::new(move |row: &[Datum]| row[idx].to_string()));
                     }
                 }
                 SelectItem::Expr { expr, alias, .. } => {
@@ -1415,35 +1614,93 @@ impl PersistentEngine {
                         .map(|a| a.value.clone())
                         .unwrap_or_else(|| expr_display_name(expr));
                     out_cols.push(col_name);
-
-                    let cols = all_columns.to_vec();
-                    let expr_clone = expr.clone();
-                    col_evaluators.push(Box::new(move |row: &[Datum]| {
-                        eval_datum_expr(&expr_clone, &cols, row).to_string()
-                    }));
                 }
                 SelectItem::QualifiedWildcard { table, .. } => {
-                    for (i, col) in all_columns.iter().enumerate() {
-                        if !col.matches_qualifier(&table.value) {
-                            continue;
+                    for col in all_columns.iter() {
+                        if col.matches_qualifier(&table.value) {
+                            out_cols.push(col.column_name.clone());
                         }
-                        out_cols.push(col.column_name.clone());
-                        let idx = i;
-                        col_evaluators.push(Box::new(move |row: &[Datum]| row[idx].to_string()));
                     }
                 }
             }
         }
 
-        let out_rows: Vec<Vec<String>> = rows
-            .iter()
-            .map(|row| col_evaluators.iter().map(|eval| eval(row)).collect())
-            .collect();
+        if has_subqueries {
+            // Per-row materialization path for correlated subqueries.
+            let mut out_rows: Vec<Vec<String>> = Vec::with_capacity(rows.len());
+            for row in rows {
+                let mut row_vals = Vec::new();
+                for item in &select.projection {
+                    match item {
+                        SelectItem::Wildcard(_) => {
+                            for (i, _col) in all_columns.iter().enumerate() {
+                                row_vals.push(row[i].to_string());
+                            }
+                        }
+                        SelectItem::Expr { expr, .. } => {
+                            let materialized = self.materialize_subqueries_with_outer(
+                                expr,
+                                all_columns,
+                                row,
+                            )?;
+                            row_vals.push(eval_datum_expr(&materialized, all_columns, row).to_string());
+                        }
+                        SelectItem::QualifiedWildcard { table, .. } => {
+                            for (i, col) in all_columns.iter().enumerate() {
+                                if col.matches_qualifier(&table.value) {
+                                    row_vals.push(row[i].to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                out_rows.push(row_vals);
+            }
+            Ok(QueryOutput::Rows {
+                columns: out_cols,
+                rows: out_rows,
+            })
+        } else {
+            // Fast closure-based path (no subqueries).
+            let mut col_evaluators: Vec<ColumnEvaluator> = Vec::new();
+            let mut _col_idx = 0;
+            for item in &select.projection {
+                match item {
+                    SelectItem::Wildcard(_) => {
+                        for (i, _col) in all_columns.iter().enumerate() {
+                            let idx = i;
+                            col_evaluators.push(Box::new(move |row: &[Datum]| row[idx].to_string()));
+                        }
+                    }
+                    SelectItem::Expr { expr, .. } => {
+                        let cols = all_columns.to_vec();
+                        let expr_clone = expr.clone();
+                        col_evaluators.push(Box::new(move |row: &[Datum]| {
+                            eval_datum_expr(&expr_clone, &cols, row).to_string()
+                        }));
+                    }
+                    SelectItem::QualifiedWildcard { table, .. } => {
+                        for (i, col) in all_columns.iter().enumerate() {
+                            if !col.matches_qualifier(&table.value) {
+                                continue;
+                            }
+                            let idx = i;
+                            col_evaluators.push(Box::new(move |row: &[Datum]| row[idx].to_string()));
+                        }
+                    }
+                }
+            }
 
-        Ok(QueryOutput::Rows {
-            columns: out_cols,
-            rows: out_rows,
-        })
+            let out_rows: Vec<Vec<String>> = rows
+                .iter()
+                .map(|row| col_evaluators.iter().map(|eval| eval(row)).collect())
+                .collect();
+
+            Ok(QueryOutput::Rows {
+                columns: out_cols,
+                rows: out_rows,
+            })
+        }
     }
 
     fn execute_window_select(
@@ -1728,6 +1985,15 @@ impl PersistentEngine {
         let mut unique_index =
             self.build_unique_index(table_name, &table_schema, None)?;
 
+        // Resolve conflict column indices for ON CONFLICT support.
+        let conflict_col_indices: Option<Vec<usize>> =
+            insert.on_conflict.as_ref().map(|uc| {
+                uc.conflict_columns
+                    .iter()
+                    .filter_map(|col| columns.iter().position(|c| c == &col.value))
+                    .collect()
+            });
+
         for value_row in &insert.values {
             if value_row.len() != col_indices.len() {
                 return Err(DustError::InvalidInput(format!(
@@ -1761,18 +2027,124 @@ impl PersistentEngine {
                 let next_id = self.store.table_next_rowid(table_name).unwrap_or(1) as i64;
                 datums[ai_col] = Datum::Integer(next_id);
             }
-            // validate_row_constraints_with_index inserts the key into the index on
-            // success, so subsequent rows in this batch see it.
-            Self::validate_row_constraints_with_index(
-                table_name,
-                &table_schema,
-                &datums,
-                &mut unique_index,
-            )?;
+            // Handle ON CONFLICT
+            if let Some(ref upsert) = insert.on_conflict {
+                let constraint_result = Self::validate_row_constraints_with_index(
+                    table_name,
+                    &table_schema,
+                    &datums,
+                    &mut unique_index,
+                );
+                if constraint_result.is_err() {
+                    match &upsert.action {
+                        UpsertAction::DoNothing => {
+                            continue;
+                        }
+                        UpsertAction::DoUpdate { assignments } => {
+                            let empty_idxs = Vec::new();
+                            let conflict_idxs = conflict_col_indices.as_ref().unwrap_or(&empty_idxs);
+                            let mut found_rowid = None;
+                            for (rowid, existing_row) in self.store.scan_table(table_name)? {
+                                let matches = if conflict_idxs.is_empty() {
+                                    table_schema.unique_constraints.iter().any(|group| {
+                                        let idxs: Vec<usize> = group
+                                            .iter()
+                                            .filter_map(|col| table_schema.column_index(col))
+                                            .collect();
+                                        !idxs.is_empty()
+                                            && idxs.iter().all(|&i| {
+                                                existing_row.get(i).map(|d| d.to_string())
+                                                    == datums.get(i).map(|d| d.to_string())
+                                            })
+                                    })
+                                } else {
+                                    conflict_idxs.iter().all(|&i| {
+                                        existing_row.get(i).map(|d| d.to_string())
+                                            == datums.get(i).map(|d| d.to_string())
+                                    })
+                                };
+                                if matches {
+                                    found_rowid = Some(rowid);
+                                    break;
+                                }
+                            }
+                            if let Some(rowid) = found_rowid {
+                                let existing_row = self
+                                    .store
+                                    .scan_table(table_name)?
+                                    .into_iter()
+                                    .find(|(r, _)| *r == rowid)
+                                    .map(|(_, row)| row)
+                                    .unwrap_or_default();
+                                let mut updated = existing_row.clone();
+                                let col_bindings: Vec<ColumnBinding> = columns
+                                    .iter()
+                                    .map(|c| ColumnBinding {
+                                        table_name: table_name.to_string(),
+                                        alias: None,
+                                        column_name: c.clone(),
+                                    })
+                                    .collect();
+                                for assignment in assignments {
+                                    let col_name = &assignment.column.value;
+                                    if let Some(idx) = columns.iter().position(|c| c == col_name) {
+                                        let val = self.eval_upsert_expr(
+                                            &assignment.value,
+                                            &col_bindings,
+                                            &existing_row,
+                                            &datums,
+                                        );
+                                        updated[idx] = val;
+                                    }
+                                }
+                                self.store.update_row(table_name, rowid, updated)?;
+                            }
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                // validate_row_constraints_with_index inserts the key into the index on
+                // success, so subsequent rows in this batch see it.
+                Self::validate_row_constraints_with_index(
+                    table_name,
+                    &table_schema,
+                    &datums,
+                    &mut unique_index,
+                )?;
+            }
             self.store.insert_row(table_name, datums)?;
         }
 
         Ok(QueryOutput::Message(format!("INSERT 0 {row_count}")))
+    }
+
+    /// Evaluate an expression in an upsert context, resolving `excluded.col`
+    /// references to values from the row being inserted.
+    fn eval_upsert_expr(
+        &self,
+        expr: &Expr,
+        col_bindings: &[ColumnBinding],
+        existing_row: &[Datum],
+        excluded_row: &[Datum],
+    ) -> Datum {
+        match expr {
+            Expr::ColumnRef(cref) => {
+                if cref.table.as_ref().is_some_and(|t| {
+                    t.value.eq_ignore_ascii_case("excluded")
+                }) {
+                    let col_name = &cref.column.value;
+                    col_bindings
+                        .iter()
+                        .position(|b| b.column_name == *col_name)
+                        .and_then(|i| excluded_row.get(i).cloned())
+                        .unwrap_or(Datum::Null)
+                } else {
+                    eval_datum_expr(expr, col_bindings, existing_row)
+                }
+            }
+            _ => eval_datum_expr(expr, col_bindings, existing_row),
+        }
     }
 
     fn execute_update(&mut self, _source: &str, update: &UpdateStatement) -> Result<QueryOutput> {
@@ -3135,5 +3507,147 @@ mod tests {
         } else {
             panic!("expected Rows");
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Bug 1: HAVING clause with GROUP BY
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn having_filters_groups_correctly() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("create table trades (ticker text, volume integer)")
+            .unwrap();
+        engine
+            .query("insert into trades values ('AAPL', 10), ('AAPL', 20), ('GOOG', 5), ('AAPL', 30), ('GOOG', 15)")
+            .unwrap();
+
+        let output = engine
+            .query("select ticker, count(*) from trades group by ticker having count(*) > 2")
+            .unwrap();
+        match output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(columns[0], "ticker");
+                // AAPL has 3 rows (> 2), GOOG has 2 rows (not > 2)
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0], vec!["AAPL".to_string(), "3".to_string()]);
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn having_with_no_aggregates_in_projection() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("create table items (category text, price integer)")
+            .unwrap();
+        engine
+            .query("insert into items values ('A', 10), ('A', 20), ('B', 5), ('A', 30)")
+            .unwrap();
+
+        // GROUP BY + HAVING with no aggregates in the SELECT list
+        let output = engine
+            .query("select category from items group by category having count(*) > 2")
+            .unwrap();
+        match output {
+            QueryOutput::Rows { columns, rows } => {
+                assert_eq!(columns, vec!["category"]);
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0], vec!["A".to_string()]);
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Bug 2: Correlated scalar subqueries
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn correlated_scalar_subquery_in_projection() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("create table departments (id integer, name text)")
+            .unwrap();
+        engine
+            .query("insert into departments values (1, 'Engineering'), (2, 'Sales')")
+            .unwrap();
+        engine
+            .query("create table employees (id integer, dept_id integer, name text)")
+            .unwrap();
+        engine
+            .query("insert into employees values (1, 1, 'Alice'), (2, 1, 'Bob'), (3, 2, 'Carol')")
+            .unwrap();
+
+        let output = engine
+            .query("select d.name, (select count(*) from employees as e where e.dept_id = d.id) from departments as d")
+            .unwrap();
+        match output {
+            QueryOutput::Rows { rows, .. } => {
+                assert_eq!(rows.len(), 2);
+                // Engineering: 2 employees, Sales: 1 employee
+                assert_eq!(rows[0][0], "Engineering");
+                assert_eq!(rows[0][1], "2");
+                assert_eq!(rows[1][0], "Sales");
+                assert_eq!(rows[1][1], "1");
+            }
+            other => panic!("expected Rows, got {:?}", other),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Bug 3: EXISTS in WHERE
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn exists_in_where_clause() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("create table orders (id integer, customer text)")
+            .unwrap();
+        engine
+            .query("insert into orders values (1, 'Alice'), (2, 'Bob'), (3, 'Carol')")
+            .unwrap();
+        engine
+            .query("create table payments (order_id integer, amount integer)")
+            .unwrap();
+        engine
+            .query("insert into payments values (1, 100), (3, 200)")
+            .unwrap();
+
+        let output = engine
+            .query("select customer from orders where exists (select 1 from payments where payments.order_id = orders.id)")
+            .unwrap();
+        let (_, rows) = output.into_string_rows();
+        assert_eq!(rows.len(), 2);
+        let customers: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
+        assert!(customers.contains(&"Alice"));
+        assert!(customers.contains(&"Carol"));
+    }
+
+    #[test]
+    fn not_exists_in_where_clause() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .query("create table orders (id integer, customer text)")
+            .unwrap();
+        engine
+            .query("insert into orders values (1, 'Alice'), (2, 'Bob'), (3, 'Carol')")
+            .unwrap();
+        engine
+            .query("create table payments (order_id integer, amount integer)")
+            .unwrap();
+        engine
+            .query("insert into payments values (1, 100), (3, 200)")
+            .unwrap();
+
+        let output = engine
+            .query("select customer from orders where not exists (select 1 from payments where payments.order_id = orders.id)")
+            .unwrap();
+        let (_, rows) = output.into_string_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], "Bob");
     }
 }

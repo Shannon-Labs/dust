@@ -73,7 +73,7 @@ pub fn check_deterministic(expr: &Expr) -> Result<(), String> {
             check_deterministic(pattern)
         }
         Expr::Cast { expr: inner, .. } => check_deterministic(inner),
-        Expr::Subquery { .. } | Expr::InSubquery { .. } => Ok(()),
+        Expr::Subquery { .. } | Expr::InSubquery { .. } | Expr::Exists { .. } => Ok(()),
         Expr::VectorLiteral { elements, .. } => {
             for elem in elements {
                 check_deterministic(elem)?;
@@ -150,6 +150,7 @@ mod tests {
                 value: "HELLO".to_string(),
                 span: Span::empty(0),
             }],
+            distinct: false,
             window: None,
             span: Span::empty(0),
         };
@@ -161,6 +162,7 @@ mod tests {
                 span: Span::empty(0),
             },
             args: vec![],
+            distinct: false,
             window: None,
             span: Span::empty(0),
         };
@@ -186,6 +188,7 @@ mod tests {
                     },
                     span: Span::empty(0),
                 })],
+                distinct: false,
                 window: None,
                 span: Span::empty(0),
             }),
@@ -196,6 +199,7 @@ mod tests {
                     span: Span::empty(0),
                 },
                 args: vec![],
+                distinct: false,
                 window: None,
                 span: Span::empty(0),
             }),

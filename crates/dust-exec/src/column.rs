@@ -131,7 +131,7 @@ pub(crate) fn validate_expr_columns(columns: &[ColumnBinding], expr: &Expr) -> R
             }
             Ok(())
         }
-        Expr::Subquery { .. } => Ok(()), // subquery columns validated separately
+        Expr::Subquery { .. } | Expr::Exists { .. } => Ok(()), // subquery columns validated separately
         Expr::InSubquery { expr, .. } => validate_expr_columns(columns, expr),
         Expr::VectorLiteral { elements, .. } => {
             for elem in elements {

@@ -12,7 +12,8 @@ pub fn ingest_statement(builder: &mut CatalogBuilder, statement: &AstStatement) 
         | AstStatement::With(_)
         | AstStatement::Begin(_)
         | AstStatement::Commit(_)
-        | AstStatement::Rollback(_) => Ok(()),
+        | AstStatement::Rollback(_)
+        | AstStatement::Pragma(_) => Ok(()),
         AstStatement::CreateTable(table) => {
             builder.register_table_from_ast(table)?;
             Ok(())
@@ -50,6 +51,7 @@ pub fn is_supported_schema_statement(statement: &AstStatement) -> bool {
             | AstStatement::Begin(_)
             | AstStatement::Commit(_)
             | AstStatement::Rollback(_)
+            | AstStatement::Pragma(_)
     )
 }
 

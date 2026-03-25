@@ -304,7 +304,7 @@ pub(crate) fn eval_datum_expr(expr: &Expr, columns: &[ColumnBinding], row: &[Dat
             }
         }
         Expr::Star(_) => Datum::Null,
-        Expr::Subquery { .. } | Expr::InSubquery { .. } => {
+        Expr::Subquery { .. } | Expr::InSubquery { .. } | Expr::Exists { .. } => {
             // Handled at a higher level via materialize_subqueries.
             Datum::Null
         }

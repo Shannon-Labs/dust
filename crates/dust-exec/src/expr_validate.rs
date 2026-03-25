@@ -165,7 +165,7 @@ fn validate_expr(expr: &Expr, allow: AggAllow) -> Result<()> {
         }
         Expr::Cast { expr, .. } => validate_expr(expr, allow),
         Expr::Parenthesized { expr, .. } => validate_expr(expr, allow),
-        Expr::Subquery { query, .. } => validate_select(query),
+        Expr::Subquery { query, .. } | Expr::Exists { query, .. } => validate_select(query),
         Expr::InSubquery { expr, query, .. } => {
             validate_expr(expr, allow)?;
             validate_select(query)

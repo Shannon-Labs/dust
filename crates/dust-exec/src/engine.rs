@@ -344,6 +344,7 @@ impl ExecutionEngine {
             AstStatement::Begin(_) => Ok(QueryOutput::Message("BEGIN".to_string())),
             AstStatement::Commit(_) => Ok(QueryOutput::Message("COMMIT".to_string())),
             AstStatement::Rollback(_) => Ok(QueryOutput::Message("ROLLBACK".to_string())),
+            AstStatement::Pragma(_) => Ok(QueryOutput::Message("OK".to_string())),
             AstStatement::Raw(raw) => Err(DustError::UnsupportedQuery(format!(
                 "unsupported SQL: {}",
                 raw.sql
@@ -1230,7 +1231,7 @@ fn eval_window_fn(
                         sorted_indices.iter().map(|&i| &rows[i]).collect();
                     if let Some(arg) = args.first() {
                         result[row_idx] =
-                            eval_aggregate_fn(name, std::slice::from_ref(arg), columns, &group_refs);
+                            eval_aggregate_fn(name, std::slice::from_ref(arg), false, columns, &group_refs);
                     } else if name == "count" {
                         result[row_idx] = Value::Integer(group_refs.len() as i64);
                     }
@@ -1291,8 +1292,13 @@ fn eval_datum_expr_for_order(expr: &Expr, columns: &[String], row: &[Value]) -> 
 /// rows in the group.
 fn eval_expr_aggregate(expr: &Expr, columns: &[String], group: &[&Vec<Value>]) -> Value {
     match expr {
-        Expr::FunctionCall { name, args, .. } if is_aggregate_fn(&name.value) => {
-            eval_aggregate_fn(&name.value, args, columns, group)
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+            ..
+        } if is_aggregate_fn(&name.value) => {
+            eval_aggregate_fn(&name.value, args, *distinct, columns, group)
         }
         // For non-aggregate expressions, evaluate against the first row
         Expr::BinaryOp {
@@ -1318,6 +1324,7 @@ fn eval_expr_aggregate(expr: &Expr, columns: &[String], group: &[&Vec<Value>]) -
 fn eval_aggregate_fn(
     name: &str,
     args: &[Expr],
+    distinct: bool,
     columns: &[String],
     group: &[&Vec<Value>],
 ) -> Value {
@@ -1328,12 +1335,26 @@ fn eval_aggregate_fn(
                 // COUNT(*)
                 Value::Integer(group.len() as i64)
             } else if let Some(arg) = args.first() {
-                // COUNT(expr) — count non-NULL values
-                let count = group
-                    .iter()
-                    .filter(|row| !matches!(eval_expr_to_value(arg, columns, row), Value::Null))
-                    .count();
-                Value::Integer(count as i64)
+                if distinct {
+                    // COUNT(DISTINCT expr) — count unique non-NULL values
+                    let mut seen = std::collections::HashSet::new();
+                    for row in group {
+                        let val = eval_expr_to_value(arg, columns, row);
+                        if !matches!(val, Value::Null) {
+                            seen.insert(val.to_string());
+                        }
+                    }
+                    Value::Integer(seen.len() as i64)
+                } else {
+                    // COUNT(expr) — count non-NULL values
+                    let count = group
+                        .iter()
+                        .filter(|row| {
+                            !matches!(eval_expr_to_value(arg, columns, row), Value::Null)
+                        })
+                        .count();
+                    Value::Integer(count as i64)
+                }
             } else {
                 // COUNT() with no args — treat as COUNT(*)
                 Value::Integer(group.len() as i64)
@@ -1676,7 +1697,7 @@ fn eval_expr_to_value(expr: &Expr, columns: &[String], row: &[Value]) -> Value {
         }
         Expr::Cast { expr: inner, .. } => eval_expr_to_value(inner, columns, row),
         Expr::Star(_) => Value::Null,
-        Expr::Subquery { .. } | Expr::InSubquery { .. } => Value::Null,
+        Expr::Subquery { .. } | Expr::InSubquery { .. } | Expr::Exists { .. } => Value::Null,
         Expr::VectorLiteral { elements, .. } => {
             // Evaluate each element and build a vector string representation
             let mut vals = Vec::with_capacity(elements.len());
@@ -1977,7 +1998,10 @@ fn plan_statement(source: &str, statement: &AstStatement) -> PlannedStatement {
             // Plan the body statement
             plan_statement(source, &with.body)
         }
-        AstStatement::Begin(span) | AstStatement::Commit(span) | AstStatement::Rollback(span) => {
+        AstStatement::Begin(span)
+        | AstStatement::Commit(span)
+        | AstStatement::Rollback(span)
+        | AstStatement::Pragma(span) => {
             let sql = slice_source(source, *span);
             PlannedStatement::new(
                 sql.clone(),

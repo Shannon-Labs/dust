@@ -7,7 +7,7 @@ use crate::btree::BTree;
 use crate::pager::Pager;
 use crate::row::{
     decode_key_u64, decode_row, encode_key_u64, encode_row, rowid_from_secondary_key,
-    secondary_index_key, secondary_index_value_prefix, Datum,
+    secondary_index_value_prefix, Datum,
 };
 use dust_types::{DustError, Result};
 use std::collections::{HashMap, HashSet};
@@ -29,12 +29,12 @@ struct TableMeta {
     next_rowid: u64,
 }
 
-/// Secondary index on a single table column (B+tree in the same database file).
+/// Secondary index on one or more table columns (B+tree in the same database file).
 #[derive(Debug)]
 struct SecondaryIndexMeta {
     btree: BTree,
     table: String,
-    column_index: usize,
+    column_indices: Vec<usize>,
     unique: bool,
 }
 
@@ -213,12 +213,15 @@ impl TableEngine {
         meta.columns.remove(index);
         self.meta_dirty = true;
 
-        // Update stale column_index in secondary indexes for this table.
-        // Any index pointing at a column after the dropped one needs its
-        // column_index decremented.
+        // Update stale column_indices in secondary indexes for this table.
+        // Any index column pointing after the dropped one needs its index decremented.
         for idx_meta in self.secondary_indexes.values_mut() {
-            if idx_meta.table == table && idx_meta.column_index > index {
-                idx_meta.column_index -= 1;
+            if idx_meta.table == table {
+                for ci in &mut idx_meta.column_indices {
+                    if *ci > index {
+                        *ci -= 1;
+                    }
+                }
             }
         }
 
@@ -282,7 +285,7 @@ impl TableEngine {
         &mut self,
         name: String,
         table: String,
-        column_index: usize,
+        column_indices: Vec<usize>,
         root_page_id: u64,
         unique: bool,
     ) {
@@ -291,38 +294,41 @@ impl TableEngine {
             SecondaryIndexMeta {
                 btree: BTree::open(root_page_id),
                 table,
-                column_index,
+                column_indices,
                 unique,
             },
         );
     }
 
-    /// Build a new single-column secondary index over an existing table and return its root page.
+    /// Build a secondary index over one or more table columns and return its root page.
     pub fn create_secondary_index(
         &mut self,
         table: &str,
-        column_index: usize,
+        column_indices: &[usize],
         unique: bool,
     ) -> Result<u64> {
         let rows = self.scan_table(table)?;
         let mut btree = BTree::create(&mut self.pager)?;
         let mut seen_non_null: HashSet<Vec<u8>> = HashSet::new();
         for (rowid, row) in rows {
-            let d = row.get(column_index).cloned().unwrap_or(Datum::Null);
-            let prefix = secondary_index_value_prefix(&d);
-            if unique && !matches!(d, Datum::Null) && !seen_non_null.insert(prefix.clone()) {
+            let prefix = composite_prefix(&row, column_indices);
+            let all_null = column_indices
+                .iter()
+                .all(|&ci| matches!(row.get(ci).unwrap_or(&Datum::Null), Datum::Null));
+            if unique && !all_null && !seen_non_null.insert(prefix.clone()) {
                 return Err(DustError::InvalidInput(
                     "cannot create UNIQUE index: duplicate non-NULL values exist".to_string(),
                 ));
             }
-            let k = secondary_index_key(&d, rowid);
+            let mut k = prefix;
+            k.extend_from_slice(&rowid.to_be_bytes());
             btree.insert(&mut self.pager, &k, b"")?;
         }
         Ok(btree.root_page_id())
     }
 
-    /// Look up rowids matching an exact indexed value (point query on a single-column index).
-    pub fn secondary_lookup_rowids(&mut self, index_name: &str, datum: &Datum) -> Result<Vec<u64>> {
+    /// Look up rowids matching exact indexed value(s) (point query on a composite or single-column index).
+    pub fn secondary_lookup_rowids(&mut self, index_name: &str, datums: &[Datum]) -> Result<Vec<u64>> {
         let root = self
             .secondary_indexes
             .get(index_name)
@@ -330,7 +336,7 @@ impl TableEngine {
             .ok_or_else(|| {
                 DustError::InvalidInput(format!("secondary index `{index_name}` is not registered"))
             })?;
-        let prefix = secondary_index_value_prefix(datum);
+        let prefix = composite_prefix_from_datums(datums);
         let keys = BTree::open(root).scan_key_prefix(&mut self.pager, &prefix)?;
         let mut rowids = Vec::with_capacity(keys.len());
         for k in keys {
@@ -369,20 +375,19 @@ impl TableEngine {
     ) -> Result<()> {
         let names = self.secondary_index_names_for_table(table);
         for name in names {
-            let (needs_check, col_index) = {
+            let (needs_check, col_indices) = {
                 let meta = match self.secondary_indexes.get(&name) {
                     Some(m) => m,
                     None => continue,
                 };
-                let d = values
-                    .get(meta.column_index)
-                    .cloned()
-                    .unwrap_or(Datum::Null);
-                (meta.unique && !matches!(d, Datum::Null), meta.column_index)
+                let all_null = meta
+                    .column_indices
+                    .iter()
+                    .all(|&ci| matches!(values.get(ci).unwrap_or(&Datum::Null), Datum::Null));
+                (meta.unique && !all_null, meta.column_indices.clone())
             };
             if needs_check {
-                let d = values.get(col_index).cloned().unwrap_or(Datum::Null);
-                let prefix = secondary_index_value_prefix(&d);
+                let prefix = composite_prefix(values, &col_indices);
                 let root = self.secondary_indexes[&name].btree.root_page_id();
                 let existing = BTree::open(root).scan_key_prefix(&mut self.pager, &prefix)?;
                 // Filter out our own rowid — an existing entry for the same rowid is OK
@@ -415,11 +420,9 @@ impl TableEngine {
                 let meta = self.secondary_indexes.get(&name).ok_or_else(|| {
                     DustError::Message("secondary index disappeared during insert".to_string())
                 })?;
-                let d = values
-                    .get(meta.column_index)
-                    .cloned()
-                    .unwrap_or(Datum::Null);
-                secondary_index_key(&d, rowid)
+                let mut k = composite_prefix(values, &meta.column_indices);
+                k.extend_from_slice(&rowid.to_be_bytes());
+                k
             };
             let meta = self
                 .secondary_indexes
@@ -442,20 +445,20 @@ impl TableEngine {
                 let meta = self.secondary_indexes.get(&name).ok_or_else(|| {
                     DustError::Message("secondary index disappeared during insert".to_string())
                 })?;
-                let d = values
-                    .get(meta.column_index)
-                    .cloned()
-                    .unwrap_or(Datum::Null);
-                let unique = meta.unique && !matches!(d, Datum::Null);
-                (secondary_index_key(&d, rowid), unique)
+                let prefix = composite_prefix(values, &meta.column_indices);
+                let all_null = meta
+                    .column_indices
+                    .iter()
+                    .all(|&ci| matches!(values.get(ci).unwrap_or(&Datum::Null), Datum::Null));
+                let unique = meta.unique && !all_null;
+                let mut k = prefix;
+                k.extend_from_slice(&rowid.to_be_bytes());
+                (k, unique)
             };
             // Enforce UNIQUE constraint before inserting
             if needs_unique_check {
-                let d = values
-                    .get(self.secondary_indexes[&name].column_index)
-                    .cloned()
-                    .unwrap_or(Datum::Null);
-                let prefix = secondary_index_value_prefix(&d);
+                let col_indices = self.secondary_indexes[&name].column_indices.clone();
+                let prefix = composite_prefix(values, &col_indices);
                 let root = self.secondary_indexes[&name].btree.root_page_id();
                 let existing = BTree::open(root).scan_key_prefix(&mut self.pager, &prefix)?;
                 if !existing.is_empty() {
@@ -485,11 +488,9 @@ impl TableEngine {
                 let meta = self.secondary_indexes.get(&name).ok_or_else(|| {
                     DustError::Message("secondary index disappeared during delete".to_string())
                 })?;
-                let d = values
-                    .get(meta.column_index)
-                    .cloned()
-                    .unwrap_or(Datum::Null);
-                secondary_index_key(&d, rowid)
+                let mut k = composite_prefix(values, &meta.column_indices);
+                k.extend_from_slice(&rowid.to_be_bytes());
+                k
             };
             let meta = self.secondary_indexes.get_mut(&name).ok_or_else(|| {
                 DustError::Message("secondary index disappeared during delete".to_string())
@@ -817,6 +818,24 @@ fn write_meta_descriptors(pager: &mut Pager, tables: &HashMap<String, TableMeta>
     Ok(())
 }
 
+/// Build a composite key prefix from a row's values at the given column indices.
+fn composite_prefix(row: &[Datum], column_indices: &[usize]) -> Vec<u8> {
+    let datums: Vec<Datum> = column_indices
+        .iter()
+        .map(|&ci| row.get(ci).cloned().unwrap_or(Datum::Null))
+        .collect();
+    composite_prefix_from_datums(&datums)
+}
+
+/// Build a composite key prefix from a slice of datums (one per index column).
+fn composite_prefix_from_datums(datums: &[Datum]) -> Vec<u8> {
+    let mut prefix = Vec::new();
+    for d in datums {
+        prefix.extend(secondary_index_value_prefix(d));
+    }
+    prefix
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1064,8 +1083,8 @@ mod tests {
             .unwrap();
 
         // Build a UNIQUE secondary index on email
-        let root = engine.create_secondary_index("t", 1, true).unwrap();
-        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), 1, root, true);
+        let root = engine.create_secondary_index("t", &[1], true).unwrap();
+        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), vec![1], root, true);
 
         // Insert with same email value should fail
         let err = engine
@@ -1103,8 +1122,8 @@ mod tests {
             .insert_row("t", vec![Datum::Integer(2), Datum::Text("b@x".to_string())])
             .unwrap();
 
-        let root = engine.create_secondary_index("t", 1, true).unwrap();
-        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), 1, root, true);
+        let root = engine.create_secondary_index("t", &[1], true).unwrap();
+        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), vec![1], root, true);
 
         // Update row 2 to have same email as row 1 should fail
         let err = engine
@@ -1133,8 +1152,8 @@ mod tests {
             .insert_row("t", vec![Datum::Integer(2), Datum::Text("b@x".to_string())])
             .unwrap();
 
-        let root = engine.create_secondary_index("t", 1, true).unwrap();
-        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), 1, root, true);
+        let root = engine.create_secondary_index("t", &[1], true).unwrap();
+        engine.register_secondary_index("idx_email".to_string(), "t".to_string(), vec![1], root, true);
 
         // Attempt to update r2 to the same email as r1 — should fail with unique violation
         let err = engine
@@ -1151,7 +1170,7 @@ mod tests {
 
         // After the failed update, r2's secondary index entry should still be "b@x"
         let rowids = engine
-            .secondary_lookup_rowids("idx_email", &Datum::Text("b@x".to_string()))
+            .secondary_lookup_rowids("idx_email", &[Datum::Text("b@x".to_string())])
             .unwrap();
         assert_eq!(
             rowids.len(),
@@ -1187,20 +1206,171 @@ mod tests {
             .unwrap();
 
         // Index on column "c" (index 2)
-        let root = engine.create_secondary_index("t", 2, false).unwrap();
-        engine.register_secondary_index("idx_c".to_string(), "t".to_string(), 2, root, false);
+        let root = engine.create_secondary_index("t", &[2], false).unwrap();
+        engine.register_secondary_index("idx_c".to_string(), "t".to_string(), vec![2], root, false);
 
         // Drop column "b" (index 1). Column "c" shifts from index 2 to index 1.
         engine.drop_column("t", "b").unwrap();
 
         // Verify index still works for lookups on what was column "c"
         let rowids = engine
-            .secondary_lookup_rowids("idx_c", &Datum::Text("keep".to_string()))
+            .secondary_lookup_rowids("idx_c", &[Datum::Text("keep".to_string())])
             .unwrap();
         assert_eq!(
             rowids.len(),
             1,
             "index lookup should still work after drop_column"
         );
+    }
+
+    #[test]
+    fn composite_index_creation_and_lookup() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .create_table(
+                "t",
+                vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            )
+            .unwrap();
+        engine
+            .insert_row(
+                "t",
+                vec![
+                    Datum::Text("x".to_string()),
+                    Datum::Integer(1),
+                    Datum::Text("foo".to_string()),
+                ],
+            )
+            .unwrap();
+        engine
+            .insert_row(
+                "t",
+                vec![
+                    Datum::Text("x".to_string()),
+                    Datum::Integer(2),
+                    Datum::Text("bar".to_string()),
+                ],
+            )
+            .unwrap();
+        engine
+            .insert_row(
+                "t",
+                vec![
+                    Datum::Text("y".to_string()),
+                    Datum::Integer(1),
+                    Datum::Text("baz".to_string()),
+                ],
+            )
+            .unwrap();
+
+        // Build composite index on columns (a, b) — indices 0 and 1
+        let root = engine.create_secondary_index("t", &[0, 1], false).unwrap();
+        engine.register_secondary_index(
+            "idx_ab".to_string(),
+            "t".to_string(),
+            vec![0, 1],
+            root,
+            false,
+        );
+
+        // Lookup (x, 1) should return exactly 1 row
+        let rowids = engine
+            .secondary_lookup_rowids(
+                "idx_ab",
+                &[Datum::Text("x".to_string()), Datum::Integer(1)],
+            )
+            .unwrap();
+        assert_eq!(rowids.len(), 1, "composite lookup (x,1) should match 1 row");
+
+        // Lookup (x, 2) should return exactly 1 row
+        let rowids = engine
+            .secondary_lookup_rowids(
+                "idx_ab",
+                &[Datum::Text("x".to_string()), Datum::Integer(2)],
+            )
+            .unwrap();
+        assert_eq!(rowids.len(), 1, "composite lookup (x,2) should match 1 row");
+
+        // Lookup (y, 1) should return exactly 1 row
+        let rowids = engine
+            .secondary_lookup_rowids(
+                "idx_ab",
+                &[Datum::Text("y".to_string()), Datum::Integer(1)],
+            )
+            .unwrap();
+        assert_eq!(rowids.len(), 1, "composite lookup (y,1) should match 1 row");
+
+        // Lookup (y, 2) should return 0 rows
+        let rowids = engine
+            .secondary_lookup_rowids(
+                "idx_ab",
+                &[Datum::Text("y".to_string()), Datum::Integer(2)],
+            )
+            .unwrap();
+        assert_eq!(
+            rowids.len(),
+            0,
+            "composite lookup (y,2) should match no rows"
+        );
+    }
+
+    #[test]
+    fn composite_unique_index_rejects_duplicate() {
+        let (mut engine, _dir) = temp_engine();
+        engine
+            .create_table(
+                "t",
+                vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            )
+            .unwrap();
+        engine
+            .insert_row(
+                "t",
+                vec![
+                    Datum::Text("x".to_string()),
+                    Datum::Integer(1),
+                    Datum::Text("foo".to_string()),
+                ],
+            )
+            .unwrap();
+
+        let root = engine
+            .create_secondary_index("t", &[0, 1], true)
+            .unwrap();
+        engine.register_secondary_index(
+            "idx_ab_u".to_string(),
+            "t".to_string(),
+            vec![0, 1],
+            root,
+            true,
+        );
+
+        // Insert same (a, b) pair should fail
+        let err = engine
+            .insert_row(
+                "t",
+                vec![
+                    Datum::Text("x".to_string()),
+                    Datum::Integer(1),
+                    Datum::Text("bar".to_string()),
+                ],
+            )
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("unique index"),
+            "expected unique violation, got: {err}"
+        );
+
+        // Insert different (a, b) pair should succeed
+        engine
+            .insert_row(
+                "t",
+                vec![
+                    Datum::Text("x".to_string()),
+                    Datum::Integer(2),
+                    Datum::Text("bar".to_string()),
+                ],
+            )
+            .unwrap();
     }
 }

@@ -526,6 +526,30 @@ pub fn import_csv(
     Ok(format!("Imported {row_count} rows into `{table}`"))
 }
 
+pub fn import_sqlite(
+    project_path: &Path,
+    sqlite_path: &str,
+    table_filter: Option<&str>,
+    _incremental: bool,
+) -> Result<String> {
+    let mut cmd = std::process::Command::new("dust");
+    cmd.arg("import").arg("sqlite").arg(sqlite_path);
+    if let Some(t) = table_filter {
+        cmd.arg("--table").arg(t);
+    }
+    cmd.current_dir(project_path);
+    let output = cmd
+        .output()
+        .map_err(|e| DustError::Message(format!("failed to run dust import: {e}")))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(DustError::Message(
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        ))
+    }
+}
+
 fn sanitize_column_name(name: &str) -> String {
     let sanitized: String = name
         .chars()
