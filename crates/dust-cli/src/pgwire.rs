@@ -211,11 +211,14 @@ async fn send_row_description(
         body.extend_from_slice(&0i16.to_be_bytes());
     }
 
-    let mut msg = Vec::with_capacity(1 + 4 + body.len());
-    msg.push(b'T');
-    msg.extend_from_slice(&((4 + body.len()) as i32).to_be_bytes());
-    msg.extend_from_slice(&body);
-    stream.write_all(&msg).await?;
+    let header = {
+        let mut h = [0u8; 5];
+        h[0] = b'T';
+        h[1..5].copy_from_slice(&((4 + body.len()) as i32).to_be_bytes());
+        h
+    };
+    stream.write_all(&header).await?;
+    stream.write_all(&body).await?;
     Ok(())
 }
 
@@ -232,11 +235,14 @@ async fn send_data_row(stream: &mut tokio::net::TcpStream, values: &[String]) ->
         }
     }
 
-    let mut msg = Vec::with_capacity(1 + 4 + body.len());
-    msg.push(b'D');
-    msg.extend_from_slice(&((4 + body.len()) as i32).to_be_bytes());
-    msg.extend_from_slice(&body);
-    stream.write_all(&msg).await?;
+    let header = {
+        let mut h = [0u8; 5];
+        h[0] = b'D';
+        h[1..5].copy_from_slice(&((4 + body.len()) as i32).to_be_bytes());
+        h
+    };
+    stream.write_all(&header).await?;
+    stream.write_all(&body).await?;
     Ok(())
 }
 
@@ -267,11 +273,14 @@ async fn send_error(stream: &mut tokio::net::TcpStream, message: &str) -> PgResu
     body.push(0);
     body.push(0);
 
-    let mut msg = Vec::with_capacity(1 + 4 + body.len());
-    msg.push(b'E');
-    msg.extend_from_slice(&((4 + body.len()) as i32).to_be_bytes());
-    msg.extend_from_slice(&body);
-    stream.write_all(&msg).await?;
+    let header = {
+        let mut h = [0u8; 5];
+        h[0] = b'E';
+        h[1..5].copy_from_slice(&((4 + body.len()) as i32).to_be_bytes());
+        h
+    };
+    stream.write_all(&header).await?;
+    stream.write_all(&body).await?;
     Ok(())
 }
 
