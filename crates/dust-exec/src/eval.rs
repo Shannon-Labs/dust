@@ -305,8 +305,7 @@ pub(crate) fn eval_datum_expr(expr: &Expr, columns: &[ColumnBinding], row: &[Dat
         }
         Expr::Star(_) => Datum::Null,
         Expr::Subquery { .. } | Expr::InSubquery { .. } => {
-            // Subquery evaluation not yet implemented in this code path.
-            // Subquery execution is handled at a higher level.
+            // Handled at a higher level via materialize_subqueries.
             Datum::Null
         }
         Expr::VectorLiteral { elements, .. } => {

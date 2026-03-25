@@ -1,7 +1,40 @@
+use std::cmp::Ordering;
+
 use dust_sql::Expr;
 use dust_store::Datum;
 use dust_types::{DustError, Result};
 use crate::eval::{eval_datum_expr, cmp_datums, is_scalar_sql_fn, ColumnBinding};
+
+fn fold_extreme(
+    arg: Option<&Expr>,
+    target: Ordering,
+    columns: &[ColumnBinding],
+    rows: &[Vec<Datum>],
+) -> String {
+    let Some(arg) = arg else {
+        return "NULL".to_string();
+    };
+    let mut extreme: Option<Datum> = None;
+    for row in rows {
+        let val = eval_datum_expr(arg, columns, row);
+        if matches!(val, Datum::Null) {
+            continue;
+        }
+        extreme = Some(match extreme {
+            None => val,
+            Some(ref current) => {
+                if cmp_datums(&val, current) == target {
+                    val
+                } else {
+                    current.clone()
+                }
+            }
+        });
+    }
+    extreme
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| "NULL".to_string())
+}
 
 // ---------------------------------------------------------------------------
 // Aggregate functions
@@ -46,87 +79,43 @@ pub(crate) fn eval_aggregate(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec
                     rows.len().to_string()
                 }),
                 "sum" => Ok(if let Some(arg) = args.first() {
-                    let values: Vec<i64> = rows
-                        .iter()
-                        .filter_map(|row| match eval_datum_expr(arg, columns, row) {
-                            Datum::Integer(n) => Some(n),
-                            _ => None,
-                        })
-                        .collect();
-                    if values.is_empty() {
-                        "NULL".to_string()
-                    } else {
-                        values.iter().sum::<i64>().to_string()
+                    let mut sum: i64 = 0;
+                    let mut any = false;
+                    for row in rows {
+                        if let Datum::Integer(n) = eval_datum_expr(arg, columns, row) {
+                            sum += n;
+                            any = true;
+                        }
                     }
+                    if any { sum.to_string() } else { "NULL".to_string() }
                 } else {
                     "0".to_string()
                 }),
                 "avg" => Ok(if let Some(arg) = args.first() {
-                    let values: Vec<i64> = rows
-                        .iter()
-                        .filter_map(|row| match eval_datum_expr(arg, columns, row) {
-                            Datum::Integer(n) => Some(n),
-                            _ => None,
-                        })
-                        .collect();
-                    if values.is_empty() {
+                    let mut sum: i64 = 0;
+                    let mut count: usize = 0;
+                    for row in rows {
+                        if let Datum::Integer(n) = eval_datum_expr(arg, columns, row) {
+                            sum += n;
+                            count += 1;
+                        }
+                    }
+                    if count == 0 {
                         "NULL".to_string()
                     } else {
-                        let sum: i64 = values.iter().sum();
-                        let avg = sum as f64 / values.len() as f64;
-                        avg.to_string()
+                        (sum as f64 / count as f64).to_string()
                     }
                 } else {
                     "NULL".to_string()
                 }),
-                "min" => Ok(if let Some(arg) = args.first() {
-                    let mut min_val: Option<Datum> = None;
-                    for row in rows {
-                        let val = eval_datum_expr(arg, columns, row);
-                        if matches!(val, Datum::Null) {
-                            continue;
-                        }
-                        min_val = Some(match min_val {
-                            None => val,
-                            Some(ref current) => {
-                                if cmp_datums(&val, current) == std::cmp::Ordering::Less {
-                                    val
-                                } else {
-                                    current.clone()
-                                }
-                            }
-                        });
-                    }
-                    min_val
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "NULL".to_string())
-                } else {
-                    "NULL".to_string()
-                }),
-                "max" => Ok(if let Some(arg) = args.first() {
-                    let mut max_val: Option<Datum> = None;
-                    for row in rows {
-                        let val = eval_datum_expr(arg, columns, row);
-                        if matches!(val, Datum::Null) {
-                            continue;
-                        }
-                        max_val = Some(match max_val {
-                            None => val,
-                            Some(ref current) => {
-                                if cmp_datums(&val, current) == std::cmp::Ordering::Greater {
-                                    val
-                                } else {
-                                    current.clone()
-                                }
-                            }
-                        });
-                    }
-                    max_val
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "NULL".to_string())
-                } else {
-                    "NULL".to_string()
-                }),
+                "min" | "max" => {
+                    let target = if func == "min" {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    };
+                    Ok(fold_extreme(args.first(), target, columns, rows))
+                }
                 n if is_scalar_sql_fn(n) => Ok(rows
                     .first()
                     .map(|row| eval_datum_expr(expr, columns, row).to_string())
@@ -153,8 +142,6 @@ pub(crate) fn persistent_eval_window_fn(
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-
-    let _col_names: Vec<String> = columns.iter().map(|c| c.column_name.clone()).collect();
 
     // Partition rows
     let partitions: Vec<Vec<usize>> = if spec.partition_by.is_empty() {

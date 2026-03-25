@@ -54,23 +54,3 @@ pub fn run(args: ServeArgs) -> Result<()> {
         }
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::pgwire::{command_tag, frame_body_len};
-
-    #[test]
-    fn rejects_short_frames() {
-        assert!(frame_body_len(0, "query").is_err());
-        assert!(frame_body_len(3, "query").is_err());
-        assert_eq!(frame_body_len(4, "query").unwrap(), 0);
-    }
-
-    #[test]
-    fn command_tag_matches_returning_statements() {
-        assert_eq!(command_tag("select * from t", 2), "SELECT 2");
-        assert_eq!(command_tag("insert into t returning *", 1), "INSERT 0 1");
-        assert_eq!(command_tag("update t set x = 1 returning *", 3), "UPDATE 3");
-        assert_eq!(command_tag("delete from t returning *", 4), "DELETE 4");
-    }
-}

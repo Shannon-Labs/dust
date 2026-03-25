@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::binder::bind_statement;
+use crate::column::resolve_order_by_string_column;
 use crate::deterministic;
+use crate::eval::cmp_string_values;
 use crate::storage::{Storage, Value};
 use crate::udf::UdfRegistry;
 use crate::vector::{self, DistanceMetric, HnswRegistry};
@@ -878,7 +880,7 @@ impl ExecutionEngine {
         if !select.order_by.is_empty() {
             output_rows.sort_by(|a, b| {
                 for item in &select.order_by {
-                    let col_idx = resolve_order_by_column(&item.expr, &output_columns);
+                    let col_idx = resolve_order_by_string_column(&item.expr, &output_columns);
                     if let Some(idx) = col_idx {
                         let aval = a.get(idx).map(|s| s.as_str()).unwrap_or("");
                         let bval = b.get(idx).map(|s| s.as_str()).unwrap_or("");
@@ -942,7 +944,7 @@ impl ExecutionEngine {
         if !select.order_by.is_empty() {
             final_rows.sort_by(|a, b| {
                 for item in &select.order_by {
-                    let col_idx = resolve_order_by_column(&item.expr, &output_columns);
+                    let col_idx = resolve_order_by_string_column(&item.expr, &output_columns);
                     if let Some(idx) = col_idx {
                         let aval = a.get(idx).map(|s| s.as_str()).unwrap_or("");
                         let bval = b.get(idx).map(|s| s.as_str()).unwrap_or("");
@@ -1010,18 +1012,6 @@ fn expr_display_name(expr: &Expr) -> String {
     }
 }
 
-/// Resolve an ORDER BY expression to a column index in the output.
-/// Tries: (1) column ref name, (2) expression display name (e.g. `sum(...)`).
-fn resolve_order_by_column(expr: &Expr, output_columns: &[String]) -> Option<usize> {
-    match expr {
-        Expr::ColumnRef(cref) => output_columns.iter().position(|c| c == &cref.column.value),
-        other => {
-            let display = expr_display_name(other);
-            output_columns.iter().position(|c| c == &display)
-        }
-    }
-}
-
 /// Returns true if the expression is an aggregate function call (COUNT, SUM, AVG, MIN, MAX).
 fn is_aggregate_fn(name: &str) -> bool {
     matches!(
@@ -1059,15 +1049,6 @@ fn collect_column_refs(expr: &Expr) -> Vec<String> {
         Expr::UnaryOp { operand, .. } => collect_column_refs(operand),
         Expr::Parenthesized { expr, .. } => collect_column_refs(expr),
         _ => Vec::new(),
-    }
-}
-
-/// Compare two string values numerically if both parse as numbers, else lexicographically.
-fn cmp_string_values(a: &str, b: &str) -> std::cmp::Ordering {
-    if let (Ok(a), Ok(b)) = (a.parse::<f64>(), b.parse::<f64>()) {
-        a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
-    } else {
-        a.cmp(b)
     }
 }
 

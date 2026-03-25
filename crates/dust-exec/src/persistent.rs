@@ -1225,7 +1225,6 @@ impl PersistentEngine {
         columns: &[ColumnBinding],
         rows: &[Vec<Datum>],
     ) -> Result<QueryOutput> {
-        let col_names: Vec<String> = columns.iter().map(|c| c.column_name.clone()).collect();
         let mut output_columns: Vec<String> = Vec::new();
         let mut output_rows: Vec<Vec<String>> = vec![Vec::new(); rows.len()];
 
@@ -1259,8 +1258,8 @@ impl PersistentEngine {
                     }
                 }
                 SelectItem::Wildcard(_) => {
-                    for (ci, col) in col_names.iter().enumerate() {
-                        output_columns.push(col.clone());
+                    for (ci, col) in columns.iter().enumerate() {
+                        output_columns.push(col.column_name.clone());
                         for (row_idx, row) in rows.iter().enumerate() {
                             output_rows[row_idx]
                                 .push(row.get(ci).map(|d| d.to_string()).unwrap_or_default());
