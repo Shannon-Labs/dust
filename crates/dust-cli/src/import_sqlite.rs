@@ -285,9 +285,9 @@ mod tests {
 
     #[test]
     fn test_quote_ident() {
-        assert_eq!(quote_ident("simple"), "\"simple\"");
+        assert_eq!(quote_ident("simple"), "simple");
         assert_eq!(quote_ident("with space"), "\"with space\"");
-        assert_eq!(quote_ident("select"), "\"select\"");
+        assert_eq!(quote_ident("select"), "select");
         assert_eq!(quote_ident("has\"quote"), "\"has\"\"quote\"");
         assert_eq!(quote_ident("123start"), "\"123start\"");
     }

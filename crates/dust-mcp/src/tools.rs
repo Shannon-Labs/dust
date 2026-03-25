@@ -92,18 +92,7 @@ fn branch_db_path(root: &Path, branch: &BranchName) -> PathBuf {
     }
 }
 
-fn quote_ident(name: &str) -> String {
-    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !name
-            .chars()
-            .next()
-            .is_none_or(|c| c.is_ascii_digit())
-    {
-        name.to_string()
-    } else {
-        format!("\"{}\"", name.replace('"', "\"\""))
-    }
-}
+use dust_sql::quote::quote_ident;
 
 // ---------------------------------------------------------------------------
 // Output formatting

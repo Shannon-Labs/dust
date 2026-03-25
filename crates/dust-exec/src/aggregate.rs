@@ -40,12 +40,31 @@ fn fold_extreme(
 // Aggregate functions
 // ---------------------------------------------------------------------------
 
+/// Returns true if the function name is a recognized aggregate.
+pub(crate) fn is_aggregate_fn(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "count" | "sum" | "avg" | "min" | "max"
+    )
+}
+
+/// Returns true if the outermost expression is an aggregate function call.
 pub(crate) fn is_aggregate_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::FunctionCall { name, .. } if is_aggregate_fn(&name.value))
+}
+
+/// Returns true if the expression tree contains any aggregate function call.
+pub(crate) fn contains_aggregate(expr: &Expr) -> bool {
     match expr {
-        Expr::FunctionCall { name, .. } => matches!(
-            name.value.to_ascii_lowercase().as_str(),
-            "count" | "sum" | "avg" | "min" | "max"
-        ),
+        Expr::FunctionCall { name, args, .. } => {
+            if is_aggregate_fn(&name.value) {
+                return true;
+            }
+            args.iter().any(contains_aggregate)
+        }
+        Expr::BinaryOp { left, right, .. } => contains_aggregate(left) || contains_aggregate(right),
+        Expr::UnaryOp { operand, .. } => contains_aggregate(operand),
+        Expr::Parenthesized { expr, .. } => contains_aggregate(expr),
         _ => false,
     }
 }

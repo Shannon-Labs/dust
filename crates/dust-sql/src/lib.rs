@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod lexer;
 pub mod parser;
+pub mod quote;
 
 pub use ast::{
     AlterTableAction, AlterTableStatement, Assignment, AstStatement, BinOp, ColumnConstraint,

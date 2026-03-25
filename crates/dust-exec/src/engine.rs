@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::aggregate::{contains_aggregate, is_aggregate_fn};
 use crate::binder::bind_statement;
 use crate::column::resolve_order_by_string_column;
 use crate::deterministic;
@@ -796,7 +797,7 @@ impl ExecutionEngine {
         // Validate: non-aggregate SELECT columns must appear in GROUP BY
         for item in &select.projection {
             if let SelectItem::Expr { expr, .. } = item
-                && !is_aggregate_expr(expr) {
+                && !contains_aggregate(expr) {
                     for col_ref in collect_column_refs(expr) {
                         if !select.group_by.iter().any(|g| {
                             collect_column_refs(g).len() == 1
@@ -1009,30 +1010,6 @@ fn expr_display_name(expr: &Expr) -> String {
         Expr::StringLit { value, .. } => format!("'{value}'"),
         Expr::Parenthesized { expr: inner, .. } => expr_display_name(inner),
         _ => "?column?".to_string(),
-    }
-}
-
-/// Returns true if the expression is an aggregate function call (COUNT, SUM, AVG, MIN, MAX).
-fn is_aggregate_fn(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "count" | "sum" | "avg" | "min" | "max"
-    )
-}
-
-/// Returns true if the expression tree contains an aggregate function call.
-fn is_aggregate_expr(expr: &Expr) -> bool {
-    match expr {
-        Expr::FunctionCall { name, args, .. } => {
-            if is_aggregate_fn(&name.value) {
-                return true;
-            }
-            args.iter().any(is_aggregate_expr)
-        }
-        Expr::BinaryOp { left, right, .. } => is_aggregate_expr(left) || is_aggregate_expr(right),
-        Expr::UnaryOp { operand, .. } => is_aggregate_expr(operand),
-        Expr::Parenthesized { expr, .. } => is_aggregate_expr(expr),
-        _ => false,
     }
 }
 

@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 dust-core = { path = "../dust-core" }
 dust-exec = { path = "../dust-exec" }
+dust-sql = { path = "../dust-sql" }
 dust-store = { path = "../dust-store" }
 dust-types = { path = "../dust-types" }
 serde = { workspace = true }

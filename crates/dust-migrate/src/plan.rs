@@ -349,15 +349,7 @@ fn generate_alter_table(before: &TableDesc, after: &TableDesc) -> String {
     statements.join("\n")
 }
 
-fn quote(name: &str) -> String {
-    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !name.chars().next().is_none_or(|c| c.is_ascii_digit())
-    {
-        name.to_string()
-    } else {
-        format!("\"{}\"", name.replace('"', "\"\""))
-    }
-}
+use dust_sql::quote::quote_ident as quote;
 
 fn generated_unique_index_name(table: &str, columns: &[String]) -> String {
     let raw = format!("{table}_{}_unique", columns.join("_"));

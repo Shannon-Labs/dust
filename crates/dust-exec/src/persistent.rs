@@ -31,6 +31,7 @@ use crate::persistent_schema::{
 };
 
 type ColumnEvaluator = Box<dyn Fn(&[Datum]) -> String>;
+type UniqueIndex = Vec<(Vec<usize>, std::collections::HashSet<Vec<String>>)>;
 
 fn attach_secondary_indexes(store: &mut TableEngine, schema: &PersistedSchema) -> Result<()> {
     for def in &schema.secondary_indexes {
@@ -674,33 +675,74 @@ impl PersistentEngine {
         }
     }
 
-    fn validate_existing_rows(
+    /// For each unique constraint group on `table_schema`, scan the table once and
+    /// build a `HashSet<Vec<String>>` of existing key combinations.  Returns one set
+    /// per constraint group (in the same order as `table_schema.unique_constraints`).
+    /// Rows whose key contains a NULL are excluded (NULLs never conflict).
+    /// If `exclude_rowid` is `Some(id)`, that row is omitted from the index (used
+    /// during UPDATE so the row being replaced does not block itself).
+    fn build_unique_index(
         &mut self,
         table_name: &str,
         table_schema: &TableSchema,
-    ) -> Result<()> {
-        let existing_rows = self.store.scan_table(table_name)?;
-        for (rowid, row) in existing_rows {
-            self.validate_row_constraints(table_name, table_schema, Some(rowid), &row)?;
-        }
-        Ok(())
-    }
+        exclude_rowid: Option<u64>,
+    ) -> Result<UniqueIndex> {
+        use std::collections::HashSet;
 
-    fn validate_row_constraints(
-        &mut self,
-        table_name: &str,
-        table_schema: &TableSchema,
-        current_rowid: Option<u64>,
-        row: &[Datum],
-    ) -> Result<()> {
-        // Fast path: skip if no constraints exist
-        if table_schema.unique_constraints.is_empty() {
-            // Still check NOT NULL but skip if all columns are nullable
-            if !table_schema.columns.iter().any(|c| !c.nullable) {
-                return Ok(());
+        // Resolve column indices for each constraint group once.
+        let groups: Vec<(Vec<usize>, HashSet<Vec<String>>)> = table_schema
+            .unique_constraints
+            .iter()
+            .filter_map(|group| {
+                group
+                    .iter()
+                    .map(|col| table_schema.column_index(col))
+                    .collect::<Option<Vec<_>>>()
+                    .map(|idxs| (idxs, HashSet::new()))
+            })
+            .collect();
+
+        if groups.is_empty() {
+            return Ok(groups);
+        }
+
+        let mut groups = groups;
+        for (rowid, row) in self.store.scan_table(table_name)? {
+            if exclude_rowid == Some(rowid) {
+                continue;
+            }
+            for (col_idxs, seen) in &mut groups {
+                // Skip rows with any NULL in the key.
+                if col_idxs
+                    .iter()
+                    .any(|&i| matches!(row.get(i), Some(Datum::Null) | None))
+                {
+                    continue;
+                }
+                let key: Vec<String> = col_idxs
+                    .iter()
+                    .map(|&i| row.get(i).map(|d| d.to_string()).unwrap_or_default())
+                    .collect();
+                seen.insert(key);
             }
         }
 
+        Ok(groups)
+    }
+
+    /// Check `row` against NOT NULL constraints and a pre-built unique index.
+    ///
+    /// `unique_index` must have been produced by `build_unique_index` for the same
+    /// `table_schema`.  Pass the mutable reference so the caller can insert the new
+    /// key after a successful check (enabling multi-row INSERT batches to catch
+    /// intra-batch duplicates).
+    fn validate_row_constraints_with_index(
+        table_name: &str,
+        table_schema: &TableSchema,
+        row: &[Datum],
+        unique_index: &mut [(Vec<usize>, std::collections::HashSet<Vec<String>>)],
+    ) -> Result<()> {
+        // NOT NULL checks.
         for (index, column) in table_schema.columns.iter().enumerate() {
             if !column.nullable && matches!(row.get(index), Some(Datum::Null) | None) {
                 return Err(DustError::InvalidInput(format!(
@@ -710,40 +752,77 @@ impl PersistentEngine {
             }
         }
 
-        if table_schema.unique_constraints.is_empty() {
-            return Ok(());
-        }
-
-        for unique_group in &table_schema.unique_constraints {
-            let Some(candidate_indexes) = unique_group
+        // Unique constraint checks against the pre-built index.
+        for (col_idxs, seen) in unique_index.iter_mut() {
+            // NULL in any part of the key → no conflict possible.
+            if col_idxs
                 .iter()
-                .map(|column| table_schema.column_index(column))
-                .collect::<Option<Vec<_>>>()
-            else {
-                continue;
-            };
-
-            if candidate_indexes
-                .iter()
-                .any(|index| matches!(row.get(*index), Some(Datum::Null) | None))
+                .any(|&i| matches!(row.get(i), Some(Datum::Null) | None))
             {
                 continue;
             }
-
-            for (existing_rowid, existing_row) in self.store.scan_table(table_name)? {
-                if current_rowid == Some(existing_rowid) {
-                    continue;
-                }
-                let conflicts = candidate_indexes
+            let key: Vec<String> = col_idxs
+                .iter()
+                .map(|&i| row.get(i).map(|d| d.to_string()).unwrap_or_default())
+                .collect();
+            if seen.contains(&key) {
+                // Reconstruct constraint column names for the error message.
+                let col_names: Vec<&str> = col_idxs
                     .iter()
-                    .all(|index| row.get(*index) == existing_row.get(*index));
-                if conflicts {
-                    return Err(DustError::InvalidInput(format!(
-                        "duplicate key violates unique constraint on `{table_name}` ({})",
-                        unique_group.join(", ")
-                    )));
-                }
+                    .filter_map(|&i| table_schema.columns.get(i).map(|c| c.name.as_str()))
+                    .collect();
+                return Err(DustError::InvalidInput(format!(
+                    "duplicate key violates unique constraint on `{table_name}` ({})",
+                    col_names.join(", ")
+                )));
             }
+            // Insert so subsequent rows in the same batch see this key.
+            seen.insert(key);
+        }
+
+        Ok(())
+    }
+
+    fn validate_existing_rows(
+        &mut self,
+        table_name: &str,
+        table_schema: &TableSchema,
+    ) -> Result<()> {
+        // Fast path: no constraints to validate.
+        if table_schema.unique_constraints.is_empty()
+            && table_schema.columns.iter().all(|c| c.nullable)
+        {
+            return Ok(());
+        }
+
+        // Build the unique index incrementally: start empty, then add each row as
+        // we validate it.  This catches duplicates among existing rows in O(N) time
+        // rather than the previous O(N²).
+        let col_index_groups: Vec<Vec<usize>> = table_schema
+            .unique_constraints
+            .iter()
+            .filter_map(|group| {
+                group
+                    .iter()
+                    .map(|col| table_schema.column_index(col))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .collect();
+
+        let mut unique_index: Vec<(Vec<usize>, std::collections::HashSet<Vec<String>>)> =
+            col_index_groups
+                .into_iter()
+                .map(|idxs| (idxs, std::collections::HashSet::new()))
+                .collect();
+
+        let existing_rows = self.store.scan_table(table_name)?;
+        for (_rowid, row) in existing_rows {
+            Self::validate_row_constraints_with_index(
+                table_name,
+                table_schema,
+                &row,
+                &mut unique_index,
+            )?;
         }
 
         Ok(())
@@ -1492,6 +1571,12 @@ impl PersistentEngine {
         // Find autoincrement column index if any
         let autoincrement_col = table_schema.columns.iter().position(|c| c.autoincrement);
 
+        // Build a unique constraint index from the existing table contents ONCE.
+        // Each new row's key is added to the index after validation, so intra-batch
+        // duplicates (e.g. INSERT ... VALUES (1),(1)) are also caught.
+        let mut unique_index =
+            self.build_unique_index(table_name, &table_schema, None)?;
+
         for value_row in &insert.values {
             if value_row.len() != col_indices.len() {
                 return Err(DustError::InvalidInput(format!(
@@ -1525,7 +1610,14 @@ impl PersistentEngine {
                 let next_id = self.store.table_next_rowid(table_name).unwrap_or(1) as i64;
                 datums[ai_col] = Datum::Integer(next_id);
             }
-            self.validate_row_constraints(table_name, &table_schema, None, &datums)?;
+            // validate_row_constraints_with_index inserts the key into the index on
+            // success, so subsequent rows in this batch see it.
+            Self::validate_row_constraints_with_index(
+                table_name,
+                &table_schema,
+                &datums,
+                &mut unique_index,
+            )?;
             self.store.insert_row(table_name, datums)?;
         }
 
@@ -1571,16 +1663,44 @@ impl PersistentEngine {
         let all_rows = self.store.scan_table(table_name)?;
         let mut count = 0usize;
 
+        // Build the unique constraint index from all existing rows in one scan.
+        // For each updated row we will remove its old key, validate (and insert) the
+        // new key, keeping the index consistent across the entire UPDATE batch.
+        let mut unique_index =
+            self.build_unique_index(table_name, &table_schema, None)?;
+
         for (rowid, mut datums) in all_rows {
             let matches = update
                 .where_clause
                 .as_ref()
                 .is_none_or(|expr| eval_where_datums(expr, &columns, &datums));
             if matches {
+                // Remove the current row's old keys from the index so the row
+                // does not conflict with its own updated values.
+                for (col_idxs, seen) in &mut unique_index {
+                    if !col_idxs
+                        .iter()
+                        .any(|&i| matches!(datums.get(i), Some(Datum::Null) | None))
+                    {
+                        let old_key: Vec<String> = col_idxs
+                            .iter()
+                            .map(|&i| datums.get(i).map(|d| d.to_string()).unwrap_or_default())
+                            .collect();
+                        seen.remove(&old_key);
+                    }
+                }
+
                 for &(col_idx, value_expr) in &assignment_indices {
                     datums[col_idx] = eval_datum_expr(value_expr, &columns, &datums);
                 }
-                self.validate_row_constraints(table_name, &table_schema, Some(rowid), &datums)?;
+                // validate_row_constraints_with_index also inserts the new key into
+                // the index, so subsequent updated rows in the same statement see it.
+                Self::validate_row_constraints_with_index(
+                    table_name,
+                    &table_schema,
+                    &datums,
+                    &mut unique_index,
+                )?;
                 self.store.update_row(table_name, rowid, datums)?;
                 count += 1;
             }
