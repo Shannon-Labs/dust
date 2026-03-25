@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="site/logo.png" alt="Dust logo" width="420">
+  <img src="assets/readme/logo.png" alt="Dust logo" width="420">
 </p>
 
 <h1 align="center">dust</h1>
@@ -18,7 +18,7 @@ An extremely fast branchable SQL runtime and database toolchain, written in Rust
 
 > *Dust* — the fundamental particle that connects everything (His Dark Materials), and also **d**(atabase) + (r)**ust**.
 
-> `v0.1.0-alpha.1` is the public alpha release. Dust is aimed at local development, testing, and schema experimentation first.
+> `v0.1.1` is the latest release. Dust is aimed at local development, testing, and schema experimentation first.
 
 ## Demo
 
@@ -64,7 +64,7 @@ Dust initializes in milliseconds, creates branches in under a millisecond, and s
 ## Install
 
 ```sh
-curl -fsSL https://dustdb.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Shannon-Labs/dust/main/install.sh | sh
 ```
 
 Or with Cargo:

@@ -33,7 +33,7 @@ pub async fn handle_connection(
     }
 
     send_auth_ok(&mut stream).await?;
-    send_parameter_status(&mut stream, "server_version", "0.1.0").await?;
+    send_parameter_status(&mut stream, "server_version", "0.1.1").await?;
     send_parameter_status(&mut stream, "server_encoding", "UTF8").await?;
     send_parameter_status(&mut stream, "client_encoding", "UTF8").await?;
     send_parameter_status(&mut stream, "DateStyle", "ISO, MDY").await?;
@@ -67,7 +67,7 @@ pub async fn handle_connection(
                 if lower.starts_with("show ") {
                     let param = sql[5..].trim().trim_end_matches(';');
                     let value = match param.to_lowercase().as_str() {
-                        "server_version" => "0.1.0",
+                        "server_version" => "0.1.1",
                         "server_encoding" => "UTF8",
                         "client_encoding" => "UTF8",
                         _ => "on",

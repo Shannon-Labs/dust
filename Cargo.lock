@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "dust-catalog"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dust-sql",
  "dust-types",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "dust-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "calamine",
  "clap",
@@ -706,7 +706,7 @@ dependencies = [
 
 [[package]]
 name = "dust-codegen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dust-catalog",
  "dust-sql",
@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "dust-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dust-catalog",
  "dust-exec",
@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "dust-exec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dust-catalog",
  "dust-plan",
@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "dust-lsp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dust-catalog",
  "dust-sql",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "dust-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "csv",
  "dust-core",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "dust-migrate"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dust-catalog",
  "dust-sql",
@@ -786,18 +786,18 @@ dependencies = [
 
 [[package]]
 name = "dust-plan"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "dust-sql"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dust-types",
 ]
 
 [[package]]
 name = "dust-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "dust-types",
@@ -810,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "dust-testing"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "csv",
  "dust-core",
@@ -823,7 +823,7 @@ dependencies = [
 
 [[package]]
 name = "dust-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "serde",
@@ -3485,7 +3485,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "tempfile",

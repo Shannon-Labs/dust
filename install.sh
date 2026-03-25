@@ -1,6 +1,6 @@
 #!/bin/sh
 # Dust installer
-# Usage: curl -fsSL https://dustdb.dev/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/Shannon-Labs/dust/main/install.sh | sh
 set -eu
 
 REPO="shannon-labs/dust"

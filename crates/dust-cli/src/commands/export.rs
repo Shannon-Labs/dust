@@ -146,7 +146,7 @@ fn export_dustpack(output_path: &Path) -> Result<()> {
     let manifest = format!(
         r#"[package]
 name = "dust-export"
-version = "0.1.0"
+version = "0.1.1"
 
 [metadata]
 timestamp = "{}"

@@ -5,5 +5,7 @@
 /.DS_Store
 **/*.rs.bk
 /.dust
-.dust/workspace/data.db
 *.db
+*.cast
+claude_desktop_config.json
+opencode.json

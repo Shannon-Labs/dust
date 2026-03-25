@@ -1,7 +1,7 @@
 class Dust < Formula
   desc "Branchable local-first SQL database for AI agents"
-  homepage "https://dust.dev"
-  version "0.1.0"
+  homepage "https://github.com/Shannon-Labs/dust"
+  version "0.1.1"
   license "MIT"
 
   on_macos do

@@ -144,7 +144,7 @@ impl LspServer {
                 "capabilities": capabilities,
                 "serverInfo": {
                     "name": "dust-lsp",
-                    "version": "0.1.0"
+                    "version": "0.1.1"
                 }
             }),
         )
