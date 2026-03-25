@@ -635,6 +635,9 @@ pub(crate) fn eval_datum_binop(op: BinOp, left: &Datum, right: &Datum) -> Datum 
             };
             match (lb, rb) {
                 (Some(l), Some(r)) => Datum::Boolean(l && r),
+                // NULL AND FALSE = FALSE, FALSE AND NULL = FALSE
+                (Some(false), None) | (None, Some(false)) => Datum::Boolean(false),
+                // NULL AND TRUE = NULL, NULL AND NULL = NULL
                 _ => Datum::Null,
             }
         }
@@ -651,27 +654,45 @@ pub(crate) fn eval_datum_binop(op: BinOp, left: &Datum, right: &Datum) -> Datum 
             };
             match (lb, rb) {
                 (Some(l), Some(r)) => Datum::Boolean(l || r),
+                // NULL OR TRUE = TRUE, TRUE OR NULL = TRUE
+                (Some(true), None) | (None, Some(true)) => Datum::Boolean(true),
+                // NULL OR FALSE = NULL, NULL OR NULL = NULL
                 _ => Datum::Null,
             }
         }
         BinOp::Add => match (left, right) {
             (Datum::Integer(a), Datum::Integer(b)) => Datum::Integer(a + b),
+            (Datum::Real(a), Datum::Real(b)) => Datum::Real(a + b),
+            (Datum::Integer(a), Datum::Real(b)) => Datum::Real(*a as f64 + b),
+            (Datum::Real(a), Datum::Integer(b)) => Datum::Real(a + *b as f64),
             _ => Datum::Null,
         },
         BinOp::Sub => match (left, right) {
             (Datum::Integer(a), Datum::Integer(b)) => Datum::Integer(a - b),
+            (Datum::Real(a), Datum::Real(b)) => Datum::Real(a - b),
+            (Datum::Integer(a), Datum::Real(b)) => Datum::Real(*a as f64 - b),
+            (Datum::Real(a), Datum::Integer(b)) => Datum::Real(a - *b as f64),
             _ => Datum::Null,
         },
         BinOp::Mul => match (left, right) {
             (Datum::Integer(a), Datum::Integer(b)) => Datum::Integer(a * b),
+            (Datum::Real(a), Datum::Real(b)) => Datum::Real(a * b),
+            (Datum::Integer(a), Datum::Real(b)) => Datum::Real(*a as f64 * b),
+            (Datum::Real(a), Datum::Integer(b)) => Datum::Real(a * *b as f64),
             _ => Datum::Null,
         },
         BinOp::Div => match (left, right) {
             (Datum::Integer(a), Datum::Integer(b)) if *b != 0 => Datum::Integer(a / b),
+            (Datum::Real(a), Datum::Real(b)) if *b != 0.0 => Datum::Real(a / b),
+            (Datum::Integer(a), Datum::Real(b)) if *b != 0.0 => Datum::Real(*a as f64 / b),
+            (Datum::Real(a), Datum::Integer(b)) if *b != 0 => Datum::Real(a / *b as f64),
             _ => Datum::Null,
         },
         BinOp::Mod => match (left, right) {
             (Datum::Integer(a), Datum::Integer(b)) if *b != 0 => Datum::Integer(a % b),
+            (Datum::Real(a), Datum::Real(b)) if *b != 0.0 => Datum::Real(a % b),
+            (Datum::Integer(a), Datum::Real(b)) if *b != 0.0 => Datum::Real(*a as f64 % b),
+            (Datum::Real(a), Datum::Integer(b)) if *b != 0 => Datum::Real(a % *b as f64),
             _ => Datum::Null,
         },
         BinOp::Concat => match (left, right) {

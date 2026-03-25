@@ -12,7 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::aggregate::{
-    eval_aggregate, is_aggregate_expr, persistent_eval_window_fn, persistent_has_window_fn,
+    contains_aggregate, eval_aggregate, is_aggregate_expr, persistent_eval_window_fn,
+    persistent_has_window_fn,
 };
 use crate::column::{
     expr_display_name, resolve_column_index, resolve_order_by_string_column,
@@ -83,6 +84,153 @@ pub struct PersistentEngine {
     store: TableEngine,
     schema: PersistedSchema,
     transaction: Option<TransactionSnapshot>,
+}
+
+/// Evaluate an expression in an aggregate context (inside `execute_aggregate_select`).
+///
+/// - If the expression is a bare aggregate function, delegates to `eval_aggregate`.
+/// - If the expression contains an aggregate (e.g. `count(*) + 1`), recursively evaluates
+///   each sub-expression the same way, combining arithmetic on the resolved Datums.
+/// - Otherwise, falls back to a scalar evaluation against the first row of the group.
+fn eval_agg_expr(
+    expr: &Expr,
+    columns: &[ColumnBinding],
+    rows: &[Vec<Datum>],
+) -> Result<String> {
+    if is_aggregate_expr(expr) {
+        // Bare aggregate: e.g. count(*), sum(x)
+        return eval_aggregate(expr, columns, rows);
+    }
+    match expr {
+        Expr::BinaryOp { left, op, right, .. } => {
+            if contains_aggregate(left) || contains_aggregate(right) {
+                let lval = eval_agg_expr(left, columns, rows)?;
+                let rval = eval_agg_expr(right, columns, rows)?;
+                let l_datum = parse_scalar_string(&lval);
+                let r_datum = parse_scalar_string(&rval);
+                Ok(eval_binary_datums_agg(&l_datum, op, &r_datum))
+            } else {
+                Ok(rows
+                    .first()
+                    .map(|row| eval_datum_expr(expr, columns, row).to_string())
+                    .unwrap_or_else(|| "NULL".to_string()))
+            }
+        }
+        Expr::UnaryOp { op, operand, .. } => {
+            if contains_aggregate(operand) {
+                let val = eval_agg_expr(operand, columns, rows)?;
+                let datum = parse_scalar_string(&val);
+                Ok(eval_unary_datum_agg(&datum, op))
+            } else {
+                Ok(rows
+                    .first()
+                    .map(|row| eval_datum_expr(expr, columns, row).to_string())
+                    .unwrap_or_else(|| "NULL".to_string()))
+            }
+        }
+        Expr::Parenthesized { expr: inner, .. } => eval_agg_expr(inner, columns, rows),
+        _ => {
+            // Scalar expression: evaluate against first row of the group
+            Ok(rows
+                .first()
+                .map(|row| eval_datum_expr(expr, columns, row).to_string())
+                .unwrap_or_else(|| "NULL".to_string()))
+        }
+    }
+}
+
+/// Parse a string value back into a Datum for arithmetic in aggregate expressions.
+fn parse_scalar_string(s: &str) -> Datum {
+    if s == "NULL" {
+        return Datum::Null;
+    }
+    if let Ok(n) = s.parse::<i64>() {
+        return Datum::Integer(n);
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        return Datum::Real(f);
+    }
+    Datum::Text(s.to_string())
+}
+
+/// Apply a binary operator to two Datums in an aggregate context.
+fn eval_binary_datums_agg(
+    left: &Datum,
+    op: &dust_sql::BinOp,
+    right: &Datum,
+) -> String {
+    use dust_sql::BinOp as Op;
+    match (left, right) {
+        (Datum::Integer(l), Datum::Integer(r)) => match op {
+            Op::Add => (l + r).to_string(),
+            Op::Sub => (l - r).to_string(),
+            Op::Mul => (l * r).to_string(),
+            Op::Div => {
+                if *r == 0 {
+                    "NULL".to_string()
+                } else {
+                    (l / r).to_string()
+                }
+            }
+            Op::Mod => {
+                if *r == 0 {
+                    "NULL".to_string()
+                } else {
+                    (l % r).to_string()
+                }
+            }
+            Op::Eq => if l == r { "true" } else { "false" }.to_string(),
+            Op::NotEq => if l != r { "true" } else { "false" }.to_string(),
+            Op::Lt => if l < r { "true" } else { "false" }.to_string(),
+            Op::LtEq => if l <= r { "true" } else { "false" }.to_string(),
+            Op::Gt => if l > r { "true" } else { "false" }.to_string(),
+            Op::GtEq => if l >= r { "true" } else { "false" }.to_string(),
+            _ => "NULL".to_string(),
+        },
+        (Datum::Real(l), Datum::Real(r)) => match op {
+            Op::Add => (l + r).to_string(),
+            Op::Sub => (l - r).to_string(),
+            Op::Mul => (l * r).to_string(),
+            Op::Div => {
+                if *r == 0.0 {
+                    "NULL".to_string()
+                } else {
+                    (l / r).to_string()
+                }
+            }
+            Op::Eq => if l == r { "true" } else { "false" }.to_string(),
+            Op::NotEq => if l != r { "true" } else { "false" }.to_string(),
+            Op::Lt => if l < r { "true" } else { "false" }.to_string(),
+            Op::LtEq => if l <= r { "true" } else { "false" }.to_string(),
+            Op::Gt => if l > r { "true" } else { "false" }.to_string(),
+            Op::GtEq => if l >= r { "true" } else { "false" }.to_string(),
+            _ => "NULL".to_string(),
+        },
+        (Datum::Integer(l), Datum::Real(r)) => {
+            eval_binary_datums_agg(&Datum::Real(*l as f64), op, &Datum::Real(*r))
+        }
+        (Datum::Real(_), Datum::Integer(r)) => {
+            eval_binary_datums_agg(left, op, &Datum::Real(*r as f64))
+        }
+        _ => "NULL".to_string(),
+    }
+}
+
+/// Apply a unary operator to a Datum in an aggregate context.
+fn eval_unary_datum_agg(operand: &Datum, op: &dust_sql::UnaryOp) -> String {
+    use dust_sql::UnaryOp as Op;
+    match op {
+        Op::Neg => match operand {
+            Datum::Integer(n) => (-n).to_string(),
+            Datum::Real(f) => (-f).to_string(),
+            _ => "NULL".to_string(),
+        },
+        Op::Not => match operand {
+            Datum::Integer(0) => "true".to_string(),
+            Datum::Integer(_) => "false".to_string(),
+            _ => "NULL".to_string(),
+        },
+    }
 }
 
 impl PersistentEngine {
@@ -536,7 +684,7 @@ impl PersistentEngine {
         };
 
         let has_aggregates = select.projection.iter().any(|item| match item {
-            SelectItem::Expr { expr, .. } => is_aggregate_expr(expr),
+            SelectItem::Expr { expr, .. } => is_aggregate_expr(expr) || contains_aggregate(expr),
             _ => false,
         });
 
@@ -1423,8 +1571,18 @@ impl PersistentEngine {
             let mut out_vals = Vec::new();
             for item in &select.projection {
                 if let SelectItem::Expr { expr, .. } = item {
-                    let val = eval_aggregate(expr, all_columns, rows)?;
+                    let val = eval_agg_expr(expr, all_columns, rows)?;
                     out_vals.push(val);
+                }
+            }
+            // Apply HAVING filter to the single global aggregate row (Bug 1 fix)
+            if let Some(having_expr) = &select.having {
+                let having_val = eval_agg_expr(having_expr, all_columns, rows)?;
+                if having_val != "true" && having_val != "1" {
+                    return Ok(QueryOutput::Rows {
+                        columns: out_cols,
+                        rows: vec![],
+                    });
                 }
             }
             return Ok(QueryOutput::Rows {
@@ -1462,28 +1620,21 @@ impl PersistentEngine {
                 .iter()
                 .filter_map(|item| {
                     if let SelectItem::Expr { expr, .. } = item {
-                        Some(if is_aggregate_expr(expr) {
-                            eval_aggregate(expr, all_columns, group_rows)
-                                .unwrap_or_else(|_| "NULL".to_string())
-                        } else {
-                            // Non-aggregate: evaluate against first row of group
-                            // (all rows in a group share the same GROUP BY values)
-                            eval_datum_expr(expr, all_columns, &group_rows[0]).to_string()
-                        })
+                        // Use eval_agg_expr so compound expressions like count(*)+1 work (Bug 2 fix)
+                        Some(
+                            eval_agg_expr(expr, all_columns, group_rows)
+                                .unwrap_or_else(|_| "NULL".to_string()),
+                        )
                     } else {
                         None
                     }
                 })
                 .collect();
 
-            // Apply HAVING filter if present
+            // Apply HAVING filter if present (also handles compound expressions via eval_agg_expr)
             if let Some(having_expr) = &select.having {
-                let having_val = if is_aggregate_expr(having_expr) {
-                    eval_aggregate(having_expr, all_columns, group_rows)
-                        .unwrap_or_else(|_| "NULL".to_string())
-                } else {
-                    eval_datum_expr(having_expr, all_columns, &group_rows[0]).to_string()
-                };
+                let having_val = eval_agg_expr(having_expr, all_columns, group_rows)
+                    .unwrap_or_else(|_| "NULL".to_string());
                 match having_val.as_str() {
                     "true" => {}
                     "1" => {}
@@ -2926,5 +3077,63 @@ mod tests {
                 rows: vec![vec!["meeting".to_string()]],
             }
         );
+    }
+
+    #[test]
+    fn three_valued_null_logic_for_or_and_and() {
+        let (mut engine, _dir) = temp_engine();
+
+        // NULL OR TRUE should return true
+        let result = engine.query("SELECT NULL OR TRUE").unwrap();
+        if let QueryOutput::Rows { rows, .. } = result {
+            assert_eq!(rows, vec![vec!["true".to_string()]]);
+        } else {
+            panic!("expected Rows");
+        }
+
+        // NULL AND FALSE should return false
+        let result = engine.query("SELECT NULL AND FALSE").unwrap();
+        if let QueryOutput::Rows { rows, .. } = result {
+            assert_eq!(rows, vec![vec!["false".to_string()]]);
+        } else {
+            panic!("expected Rows");
+        }
+
+        // TRUE OR NULL should return true
+        let result = engine.query("SELECT TRUE OR NULL").unwrap();
+        if let QueryOutput::Rows { rows, .. } = result {
+            assert_eq!(rows, vec![vec!["true".to_string()]]);
+        } else {
+            panic!("expected Rows");
+        }
+
+        // FALSE AND NULL should return false
+        let result = engine.query("SELECT FALSE AND NULL").unwrap();
+        if let QueryOutput::Rows { rows, .. } = result {
+            assert_eq!(rows, vec![vec!["false".to_string()]]);
+        } else {
+            panic!("expected Rows");
+        }
+    }
+
+    #[test]
+    fn float_arithmetic_operations() {
+        let (mut engine, _dir) = temp_engine();
+
+        // SELECT 1.5 + 2.5 should return 4.0
+        let result = engine.query("SELECT 1.5 + 2.5").unwrap();
+        if let QueryOutput::Rows { rows, .. } = result {
+            assert_eq!(rows, vec![vec!["4".to_string()]]);
+        } else {
+            panic!("expected Rows");
+        }
+
+        // SELECT 1 + 2.5 should return 3.5
+        let result = engine.query("SELECT 1 + 2.5").unwrap();
+        if let QueryOutput::Rows { rows, .. } = result {
+            assert_eq!(rows, vec![vec!["3.5".to_string()]]);
+        } else {
+            panic!("expected Rows");
+        }
     }
 }
