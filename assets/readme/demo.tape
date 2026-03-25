@@ -6,7 +6,7 @@ Set Width 1400
 Set Height 1040
 Set Padding 24
 Set Framerate 24
-Set PlaybackSpeed 1.1
+Set PlaybackSpeed 0.8
 Set TypingSpeed 40ms
 Set BorderRadius 12
 Set WindowBar Colorful
@@ -23,4 +23,4 @@ Type "clear" Enter
 Show
 
 Type "dust demo --delay-ms 500 /tmp/dust-readme-demo" Enter
-Sleep 2s
+Sleep 8s
