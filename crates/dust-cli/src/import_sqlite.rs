@@ -77,13 +77,13 @@ pub fn run(
                 Ok(_) => {
                     // Table exists — use row count as the offset.
                     // We'll skip that many rows from the source.
-                    match engine.query(&format!("SELECT COUNT(*) FROM {}", quote_ident(table_name))) {
-                        Ok(dust_exec::QueryOutput::Rows { rows, .. }) => {
-                            rows.first()
-                                .and_then(|r| r.first())
-                                .and_then(|s| s.parse::<i64>().ok())
-                                .unwrap_or(0)
-                        }
+                    match engine.query(&format!("SELECT COUNT(*) FROM {}", quote_ident(table_name)))
+                    {
+                        Ok(dust_exec::QueryOutput::Rows { rows, .. }) => rows
+                            .first()
+                            .and_then(|r| r.first())
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .unwrap_or(0),
                         _ => 0,
                     }
                 }
@@ -95,7 +95,10 @@ pub fn run(
 
         // Create the table if it doesn't already exist
         let table_exists_already = engine
-            .query(&format!("SELECT 1 FROM {} LIMIT 0", quote_ident(table_name)))
+            .query(&format!(
+                "SELECT 1 FROM {} LIMIT 0",
+                quote_ident(table_name)
+            ))
             .is_ok();
 
         if !table_exists_already {
@@ -179,9 +182,14 @@ pub fn run(
         }
 
         if incremental && existing_max_rowid > 0 {
-            println!("  Imported `{table_name}` ({table_rows} new rows, {existing_max_rowid} skipped)");
+            println!(
+                "  Imported `{table_name}` ({table_rows} new rows, {existing_max_rowid} skipped)"
+            );
         } else {
-            println!("  Imported `{table_name}` ({table_rows} rows, {} columns)", col_names.len());
+            println!(
+                "  Imported `{table_name}` ({table_rows} rows, {} columns)",
+                col_names.len()
+            );
         }
         total_rows += table_rows;
     }
@@ -321,6 +329,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::CwdGuard;
 
     #[test]
     fn test_convert_sqlite_create_strips_autoincrement() {
@@ -441,10 +450,8 @@ mod tests {
         project.init(false).unwrap();
 
         // Run the import from within the project directory
-        let original_dir = env::current_dir().unwrap();
-        env::set_current_dir(&project_dir).unwrap();
+        let _cwd = CwdGuard::enter(&project_dir);
         let result = run(&sqlite_path, None, false, false);
-        env::set_current_dir(&original_dir).unwrap();
 
         assert!(
             result.is_ok(),
@@ -490,10 +497,8 @@ mod tests {
             .init(false)
             .unwrap();
 
-        let original_dir = env::current_dir().unwrap();
-        env::set_current_dir(&project_dir).unwrap();
+        let _cwd = CwdGuard::enter(&project_dir);
         let result = run(&sqlite_path, None, false, false);
-        env::set_current_dir(&original_dir).unwrap();
 
         assert!(
             result.is_ok(),

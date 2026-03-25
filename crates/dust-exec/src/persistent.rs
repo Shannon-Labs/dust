@@ -3,12 +3,12 @@
 /// Unlike the in-memory ExecutionEngine, this engine persists data to disk
 /// between invocations via B+tree storage.
 use dust_sql::{
-    AlterTableAction, AstStatement, ColumnRef, DeleteStatement, Expr, IndexColumn,
-    InsertStatement, JoinClause, JoinType, SelectItem, SetOpKind, UpdateStatement, UpsertAction,
-    parse_program,
+    AlterTableAction, AstStatement, ColumnRef, DeleteStatement, Expr, IndexColumn, InsertStatement,
+    JoinClause, JoinType, SelectItem, SetOpKind, UpdateStatement, UpsertAction, parse_program,
 };
 use dust_store::{Datum, TableEngine};
 use dust_types::{DustError, Result};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,19 +17,18 @@ use crate::aggregate::{
     persistent_has_window_fn,
 };
 use crate::column::{
-    expr_display_name, resolve_column_index, resolve_order_by_string_column,
-    validate_expr_columns, validate_select_columns,
+    expr_display_name, resolve_column_index, resolve_order_by_string_column, validate_expr_columns,
+    validate_select_columns,
 };
 use crate::engine::QueryOutput;
 use crate::eval::{
-    cmp_datums, cmp_string_values, coerce_by_affinity, eval_datum_expr, eval_where_datums,
-    parse_eq_where_column_literal,
-    resolve_column_index_runtime, ColumnBinding, RowSet,
+    ColumnBinding, RowSet, cmp_datums, cmp_string_values, coerce_by_affinity, eval_datum_expr,
+    eval_where_datums, parse_eq_where_column_literal, resolve_column_index_runtime,
 };
 use crate::expr_validate::validate_ast_statement;
 use crate::persistent_schema::{
-    ColumnSchema, PersistedSchema, SecondaryIndexDef, TableSchema,
-    column_schema_from_def, parse_default_expression, table_schema_from_ast,
+    ColumnSchema, PersistedSchema, SecondaryIndexDef, TableSchema, column_schema_from_def,
+    parse_default_expression, table_schema_from_ast,
 };
 
 type ColumnEvaluator = Box<dyn Fn(&[Datum]) -> String>;
@@ -83,6 +82,11 @@ struct TransactionSnapshot {
     schema: PersistedSchema,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedTransactionState {
+    active: bool,
+}
+
 pub struct PersistentEngine {
     db_path: PathBuf,
     schema_path: PathBuf,
@@ -97,17 +101,15 @@ pub struct PersistentEngine {
 /// - If the expression contains an aggregate (e.g. `count(*) + 1`), recursively evaluates
 ///   each sub-expression the same way, combining arithmetic on the resolved Datums.
 /// - Otherwise, falls back to a scalar evaluation against the first row of the group.
-fn eval_agg_expr(
-    expr: &Expr,
-    columns: &[ColumnBinding],
-    rows: &[Vec<Datum>],
-) -> Result<String> {
+fn eval_agg_expr(expr: &Expr, columns: &[ColumnBinding], rows: &[Vec<Datum>]) -> Result<String> {
     if is_aggregate_expr(expr) {
         // Bare aggregate: e.g. count(*), sum(x)
         return eval_aggregate(expr, columns, rows);
     }
     match expr {
-        Expr::BinaryOp { left, op, right, .. } => {
+        Expr::BinaryOp {
+            left, op, right, ..
+        } => {
             if contains_aggregate(left) || contains_aggregate(right) {
                 let lval = eval_agg_expr(left, columns, rows)?;
                 let rval = eval_agg_expr(right, columns, rows)?;
@@ -159,11 +161,7 @@ fn parse_scalar_string(s: &str) -> Datum {
 }
 
 /// Apply a binary operator to two Datums in an aggregate context.
-fn eval_binary_datums_agg(
-    left: &Datum,
-    op: &dust_sql::BinOp,
-    right: &Datum,
-) -> String {
+fn eval_binary_datums_agg(left: &Datum, op: &dust_sql::BinOp, right: &Datum) -> String {
     use dust_sql::BinOp as Op;
     match (left, right) {
         (Datum::Integer(l), Datum::Integer(r)) => match op {
@@ -248,15 +246,20 @@ fn contains_subquery(expr: &Expr) -> bool {
         Expr::FunctionCall { args, .. } => args.iter().any(contains_subquery),
         Expr::IsNull { expr: inner, .. } => contains_subquery(inner),
         Expr::Cast { expr: inner, .. } => contains_subquery(inner),
-        Expr::InList { expr: inner, list, .. } => {
-            contains_subquery(inner) || list.iter().any(contains_subquery)
-        }
-        Expr::Between { expr: inner, low, high, .. } => {
-            contains_subquery(inner) || contains_subquery(low) || contains_subquery(high)
-        }
-        Expr::Like { expr: inner, pattern, .. } => {
-            contains_subquery(inner) || contains_subquery(pattern)
-        }
+        Expr::InList {
+            expr: inner, list, ..
+        } => contains_subquery(inner) || list.iter().any(contains_subquery),
+        Expr::Between {
+            expr: inner,
+            low,
+            high,
+            ..
+        } => contains_subquery(inner) || contains_subquery(low) || contains_subquery(high),
+        Expr::Like {
+            expr: inner,
+            pattern,
+            ..
+        } => contains_subquery(inner) || contains_subquery(pattern),
         _ => false,
     }
 }
@@ -295,7 +298,8 @@ fn substitute_outer_refs(
                     Some(tbl) => col.matches_qualifier(&tbl.value),
                     None => true, // no qualifier, match by column name only
                 };
-                if col_matches && qualifier_matches
+                if col_matches
+                    && qualifier_matches
                     && let Some(datum) = outer_row.get(i)
                 {
                     return datum_to_expr(datum, cref.span);
@@ -355,10 +359,7 @@ fn substitute_outer_refs(
 /// Convert a Datum to an Expr literal.
 fn datum_to_expr(datum: &Datum, span: dust_sql::Span) -> Expr {
     match datum {
-        Datum::Integer(n) => Expr::Integer(dust_sql::IntegerLiteral {
-            value: *n,
-            span,
-        }),
+        Datum::Integer(n) => Expr::Integer(dust_sql::IntegerLiteral { value: *n, span }),
         Datum::Real(f) => Expr::Float(dust_sql::FloatLiteral {
             value: f.to_string(),
             span,
@@ -367,13 +368,13 @@ fn datum_to_expr(datum: &Datum, span: dust_sql::Span) -> Expr {
             value: s.clone(),
             span,
         },
-        Datum::Boolean(b) => Expr::Boolean {
-            value: *b,
-            span,
-        },
+        Datum::Boolean(b) => Expr::Boolean { value: *b, span },
         Datum::Null => Expr::Null(span),
         Datum::Blob(bytes) => Expr::StringLit {
-            value: format!("x'{}'", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            value: format!(
+                "x'{}'",
+                bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            ),
             span,
         },
     }
@@ -410,12 +411,13 @@ impl PersistentEngine {
             );
         }
 
+        let transaction = load_transaction_snapshot(db_path, &schema_path)?;
         let mut engine = Self {
             db_path: db_path.to_path_buf(),
             schema_path,
             store,
             schema,
-            transaction: None,
+            transaction,
         };
         attach_secondary_indexes(&mut engine.store, &engine.schema)?;
         Ok(engine)
@@ -560,9 +562,7 @@ impl PersistentEngine {
                         unique_constraints: Vec::new(),
                     };
                     self.store.create_table(name, col_names.clone())?;
-                    self.schema
-                        .tables
-                        .insert(name.to_string(), table_schema);
+                    self.schema.tables.insert(name.to_string(), table_schema);
 
                     // Insert all rows from the SELECT result
                     for row in datum_rows {
@@ -804,8 +804,10 @@ impl PersistentEngine {
                 negated,
                 span,
             } => {
-                let inner_rewritten = self.materialize_subqueries_with_outer(inner, outer_columns, outer_row)?;
-                let resolved_query = substitute_outer_refs_in_select(query, outer_columns, outer_row);
+                let inner_rewritten =
+                    self.materialize_subqueries_with_outer(inner, outer_columns, outer_row)?;
+                let resolved_query =
+                    substitute_outer_refs_in_select(query, outer_columns, outer_row);
                 let result = self.execute_select(&resolved_query)?;
                 let (_, string_rows) = result.into_string_rows();
                 let values: Vec<Expr> = string_rows
@@ -838,7 +840,8 @@ impl PersistentEngine {
             Expr::Subquery { query, span } => {
                 // Execute as scalar subquery — it must yield at most one row and one column.
                 // Substitute outer column references for correlated subqueries.
-                let resolved_query = substitute_outer_refs_in_select(query, outer_columns, outer_row);
+                let resolved_query =
+                    substitute_outer_refs_in_select(query, outer_columns, outer_row);
                 let result = self.execute_select(&resolved_query)?;
                 let (columns, string_rows) = result.into_string_rows();
                 if columns.len() > 1 {
@@ -883,18 +886,34 @@ impl PersistentEngine {
                 right,
                 span,
             } => Ok(Expr::BinaryOp {
-                left: Box::new(self.materialize_subqueries_with_outer(left, outer_columns, outer_row)?),
+                left: Box::new(self.materialize_subqueries_with_outer(
+                    left,
+                    outer_columns,
+                    outer_row,
+                )?),
                 op: *op,
-                right: Box::new(self.materialize_subqueries_with_outer(right, outer_columns, outer_row)?),
+                right: Box::new(self.materialize_subqueries_with_outer(
+                    right,
+                    outer_columns,
+                    outer_row,
+                )?),
                 span: *span,
             }),
             Expr::UnaryOp { op, operand, span } => Ok(Expr::UnaryOp {
                 op: *op,
-                operand: Box::new(self.materialize_subqueries_with_outer(operand, outer_columns, outer_row)?),
+                operand: Box::new(self.materialize_subqueries_with_outer(
+                    operand,
+                    outer_columns,
+                    outer_row,
+                )?),
                 span: *span,
             }),
             Expr::Parenthesized { expr: inner, span } => Ok(Expr::Parenthesized {
-                expr: Box::new(self.materialize_subqueries_with_outer(inner, outer_columns, outer_row)?),
+                expr: Box::new(self.materialize_subqueries_with_outer(
+                    inner,
+                    outer_columns,
+                    outer_row,
+                )?),
                 span: *span,
             }),
             Expr::Exists {
@@ -902,7 +921,8 @@ impl PersistentEngine {
                 negated,
                 span,
             } => {
-                let resolved_query = substitute_outer_refs_in_select(query, outer_columns, outer_row);
+                let resolved_query =
+                    substitute_outer_refs_in_select(query, outer_columns, outer_row);
                 let result = self.execute_select(&resolved_query)?;
                 let (_, string_rows) = result.into_string_rows();
                 let has_rows = !string_rows.is_empty();
@@ -954,16 +974,14 @@ impl PersistentEngine {
         };
         validate_select_columns(select, &rowset.columns)?;
 
-        let where_has_subquery = select
-            .where_clause
-            .as_ref()
-            .is_some_and(contains_subquery);
+        let where_has_subquery = select.where_clause.as_ref().is_some_and(contains_subquery);
         let mut filtered: Vec<Vec<Datum>> = if let Some(w) = &select.where_clause {
             if where_has_subquery {
                 // Per-row materialization for correlated subqueries in WHERE
                 let mut result = Vec::new();
                 for row in rowset.rows.iter() {
-                    let materialized = self.materialize_subqueries_with_outer(w, &rowset.columns, row)?;
+                    let materialized =
+                        self.materialize_subqueries_with_outer(w, &rowset.columns, row)?;
                     if eval_where_datums(&materialized, &rowset.columns, row) {
                         result.push(row.clone());
                     }
@@ -1365,11 +1383,10 @@ impl PersistentEngine {
             }
         }
 
-        let Some(idx) = self
-            .schema
-            .secondary_indexes
-            .iter()
-            .find(|d| d.table == base_table && d.columns.len() == 1 && d.columns[0] == col_name)
+        let Some(idx) =
+            self.schema.secondary_indexes.iter().find(|d| {
+                d.table == base_table && d.columns.len() == 1 && d.columns[0] == col_name
+            })
         else {
             return Ok(None);
         };
@@ -1508,6 +1525,13 @@ impl PersistentEngine {
                 .transpose()?,
             schema: self.schema.clone(),
         });
+        persist_transaction_snapshot(
+            &self.db_path,
+            &self.schema_path,
+            self.transaction
+                .as_ref()
+                .expect("transaction snapshot is set"),
+        )?;
         Ok(())
     }
 
@@ -1515,6 +1539,7 @@ impl PersistentEngine {
         self.store.sync()?;
         self.schema.save(&self.schema_path)?;
         self.transaction = None;
+        clear_transaction_snapshot(&self.db_path)?;
         Ok(())
     }
 
@@ -1538,6 +1563,7 @@ impl PersistentEngine {
         self.store = TableEngine::open_or_create(&self.db_path)?;
         self.schema = snapshot.schema;
         attach_secondary_indexes(&mut self.store, &self.schema)?;
+        clear_transaction_snapshot(&self.db_path)?;
         Ok(())
     }
 
@@ -1581,9 +1607,7 @@ impl PersistentEngine {
         let mut col_indices = Vec::with_capacity(col_names.len());
         for cn in &col_names {
             let ci = cols.iter().position(|c| c == cn).ok_or_else(|| {
-                DustError::InvalidInput(format!(
-                    "column `{cn}` not found in table `{table_name}`"
-                ))
+                DustError::InvalidInput(format!("column `{cn}` not found in table `{table_name}`"))
             })?;
             col_indices.push(ci);
         }
@@ -1745,12 +1769,10 @@ impl PersistentEngine {
                             }
                         }
                         SelectItem::Expr { expr, .. } => {
-                            let materialized = self.materialize_subqueries_with_outer(
-                                expr,
-                                all_columns,
-                                row,
-                            )?;
-                            row_vals.push(eval_datum_expr(&materialized, all_columns, row).to_string());
+                            let materialized =
+                                self.materialize_subqueries_with_outer(expr, all_columns, row)?;
+                            row_vals
+                                .push(eval_datum_expr(&materialized, all_columns, row).to_string());
                         }
                         SelectItem::QualifiedWildcard { table, .. } => {
                             for (i, col) in all_columns.iter().enumerate() {
@@ -1776,7 +1798,8 @@ impl PersistentEngine {
                     SelectItem::Wildcard(_) => {
                         for (i, _col) in all_columns.iter().enumerate() {
                             let idx = i;
-                            col_evaluators.push(Box::new(move |row: &[Datum]| row[idx].to_string()));
+                            col_evaluators
+                                .push(Box::new(move |row: &[Datum]| row[idx].to_string()));
                         }
                     }
                     SelectItem::Expr { expr, .. } => {
@@ -1792,7 +1815,8 @@ impl PersistentEngine {
                                 continue;
                             }
                             let idx = i;
-                            col_evaluators.push(Box::new(move |row: &[Datum]| row[idx].to_string()));
+                            col_evaluators
+                                .push(Box::new(move |row: &[Datum]| row[idx].to_string()));
                         }
                     }
                 }
@@ -2089,17 +2113,15 @@ impl PersistentEngine {
         // Build a unique constraint index from the existing table contents ONCE.
         // Each new row's key is added to the index after validation, so intra-batch
         // duplicates (e.g. INSERT ... VALUES (1),(1)) are also caught.
-        let mut unique_index =
-            self.build_unique_index(table_name, &table_schema, None)?;
+        let mut unique_index = self.build_unique_index(table_name, &table_schema, None)?;
 
         // Resolve conflict column indices for ON CONFLICT support.
-        let conflict_col_indices: Option<Vec<usize>> =
-            insert.on_conflict.as_ref().map(|uc| {
-                uc.conflict_columns
-                    .iter()
-                    .filter_map(|col| columns.iter().position(|c| c == &col.value))
-                    .collect()
-            });
+        let conflict_col_indices: Option<Vec<usize>> = insert.on_conflict.as_ref().map(|uc| {
+            uc.conflict_columns
+                .iter()
+                .filter_map(|col| columns.iter().position(|c| c == &col.value))
+                .collect()
+        });
 
         for value_row in &insert.values {
             if value_row.len() != col_indices.len() {
@@ -2149,7 +2171,8 @@ impl PersistentEngine {
                         }
                         UpsertAction::DoUpdate { assignments } => {
                             let empty_idxs = Vec::new();
-                            let conflict_idxs = conflict_col_indices.as_ref().unwrap_or(&empty_idxs);
+                            let conflict_idxs =
+                                conflict_col_indices.as_ref().unwrap_or(&empty_idxs);
                             let mut found_rowid = None;
                             for (rowid, existing_row) in self.store.scan_table(table_name)? {
                                 let matches = if conflict_idxs.is_empty() {
@@ -2237,9 +2260,11 @@ impl PersistentEngine {
     ) -> Datum {
         match expr {
             Expr::ColumnRef(cref) => {
-                if cref.table.as_ref().is_some_and(|t| {
-                    t.value.eq_ignore_ascii_case("excluded")
-                }) {
+                if cref
+                    .table
+                    .as_ref()
+                    .is_some_and(|t| t.value.eq_ignore_ascii_case("excluded"))
+                {
                     let col_name = &cref.column.value;
                     col_bindings
                         .iter()
@@ -2296,8 +2321,7 @@ impl PersistentEngine {
         // Build the unique constraint index from all existing rows in one scan.
         // For each updated row we will remove its old key, validate (and insert) the
         // new key, keeping the index consistent across the entire UPDATE batch.
-        let mut unique_index =
-            self.build_unique_index(table_name, &table_schema, None)?;
+        let mut unique_index = self.build_unique_index(table_name, &table_schema, None)?;
 
         for (rowid, mut datums) in all_rows {
             let matches = update
@@ -2432,12 +2456,126 @@ fn schema_path_for_db(db_path: &Path) -> PathBuf {
     db_path.with_extension("schema.toml")
 }
 
+fn transaction_state_path_for_db(db_path: &Path) -> PathBuf {
+    sibling_path_with_suffix(db_path, "tx.toml")
+}
+
+fn transaction_db_backup_path_for_db(db_path: &Path) -> PathBuf {
+    sibling_path_with_suffix(db_path, "tx.db.bak")
+}
+
+fn transaction_schema_backup_path_for_db(db_path: &Path) -> PathBuf {
+    sibling_path_with_suffix(db_path, "tx.schema.bak")
+}
+
+fn sibling_path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|name| format!("{}.{}", name.to_string_lossy(), suffix))
+        .unwrap_or_else(|| suffix.to_string());
+    path.with_file_name(file_name)
+}
+
+fn load_transaction_snapshot(
+    db_path: &Path,
+    schema_path: &Path,
+) -> Result<Option<TransactionSnapshot>> {
+    let state_path = transaction_state_path_for_db(db_path);
+    if !state_path.exists() {
+        return Ok(None);
+    }
+
+    let state_raw = fs::read_to_string(&state_path)?;
+    let state: PersistedTransactionState = toml::from_str(&state_raw).map_err(|error| {
+        DustError::Message(format!("failed to parse transaction state: {error}"))
+    })?;
+    if !state.active {
+        return Ok(None);
+    }
+
+    let db_backup_path = transaction_db_backup_path_for_db(db_path);
+    let schema_backup_path = transaction_schema_backup_path_for_db(db_path);
+    let db_bytes = db_backup_path
+        .exists()
+        .then(|| fs::read(&db_backup_path))
+        .transpose()?;
+    let schema_bytes = schema_backup_path
+        .exists()
+        .then(|| fs::read(&schema_backup_path))
+        .transpose()?;
+
+    let schema = match &schema_bytes {
+        Some(bytes) => {
+            toml::from_str::<PersistedSchema>(&String::from_utf8_lossy(bytes)).map_err(|error| {
+                DustError::Message(format!(
+                    "failed to parse transaction schema snapshot: {error}"
+                ))
+            })?
+        }
+        None if schema_path.exists() => PersistedSchema::load(schema_path)?,
+        None => PersistedSchema::default(),
+    };
+
+    Ok(Some(TransactionSnapshot {
+        db_bytes,
+        schema_bytes,
+        schema,
+    }))
+}
+
+fn persist_transaction_snapshot(
+    db_path: &Path,
+    _schema_path: &Path,
+    snapshot: &TransactionSnapshot,
+) -> Result<()> {
+    if let Some(bytes) = &snapshot.db_bytes {
+        fs::write(transaction_db_backup_path_for_db(db_path), bytes)?;
+    } else {
+        let backup_path = transaction_db_backup_path_for_db(db_path);
+        if backup_path.exists() {
+            fs::remove_file(backup_path)?;
+        }
+    }
+
+    if let Some(bytes) = &snapshot.schema_bytes {
+        fs::write(transaction_schema_backup_path_for_db(db_path), bytes)?;
+    } else {
+        let backup_path = transaction_schema_backup_path_for_db(db_path);
+        if backup_path.exists() {
+            fs::remove_file(backup_path)?;
+        }
+    }
+
+    let state = PersistedTransactionState { active: true };
+    let serialized = toml::to_string(&state).map_err(|error| {
+        DustError::Message(format!("failed to serialize transaction state: {error}"))
+    })?;
+    fs::write(transaction_state_path_for_db(db_path), serialized)?;
+    Ok(())
+}
+
+fn clear_transaction_snapshot(db_path: &Path) -> Result<()> {
+    for path in [
+        transaction_state_path_for_db(db_path),
+        transaction_db_backup_path_for_db(db_path),
+        transaction_schema_backup_path_for_db(db_path),
+    ] {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
 fn combine_outputs(outputs: Vec<QueryOutput>) -> Result<QueryOutput> {
     match outputs.len() {
         0 => Err(DustError::InvalidInput(
             "no statements to execute".to_string(),
         )),
-        1 => Ok(outputs.into_iter().next().expect("length is 1 — next() always returns Some")),
+        1 => Ok(outputs
+            .into_iter()
+            .next()
+            .expect("length is 1 — next() always returns Some")),
         _ => Ok(QueryOutput::Message(
             outputs
                 .into_iter()
@@ -2941,6 +3079,39 @@ mod tests {
             reopened
                 .query("INSERT INTO users (id, email, name) VALUES (2, 'dup@example.com', 'Dup')")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn transaction_snapshot_survives_process_reopen() {
+        let (mut engine, dir) = temp_engine();
+        engine
+            .query("CREATE TABLE kv (k TEXT PRIMARY KEY, v INTEGER)")
+            .unwrap();
+        engine.query("INSERT INTO kv VALUES ('stable', 1)").unwrap();
+        engine.query("BEGIN").unwrap();
+        engine.query("INSERT INTO kv VALUES ('temp', 2)").unwrap();
+        engine.sync().unwrap();
+
+        let db_path = dir.path().join("test.db");
+        let mut reopened = PersistentEngine::open(&db_path).unwrap();
+        reopened.query("ROLLBACK").unwrap();
+
+        assert_eq!(
+            reopened.query("SELECT k, v FROM kv ORDER BY k").unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["k".to_string(), "v".to_string()],
+                rows: vec![vec!["stable".to_string(), "1".to_string()]],
+            }
+        );
+
+        let mut reopened_again = PersistentEngine::open(&db_path).unwrap();
+        assert_eq!(
+            reopened_again.query("SELECT count(*) FROM kv").unwrap(),
+            QueryOutput::Rows {
+                columns: vec!["count(...)".to_string()],
+                rows: vec![vec!["1".to_string()]],
+            }
         );
     }
 

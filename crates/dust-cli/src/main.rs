@@ -7,6 +7,8 @@ mod pgwire;
 pub(crate) mod project;
 mod sql_quote;
 mod style;
+#[cfg(test)]
+mod test_support;
 
 use clap::{Parser, Subcommand};
 use miette::IntoDiagnostic;

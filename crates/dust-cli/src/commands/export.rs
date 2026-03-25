@@ -9,12 +9,17 @@ use dust_store::Datum;
 use dust_types::{DustError, Result};
 
 use crate::project::find_db_path;
+use crate::sql_quote::quote_ident;
 
 #[derive(Debug, Args)]
 pub struct ExportArgs {
-    /// Output format: dustdb or dustpack
-    #[arg(long, value_parser = ["dustdb", "dustpack"])]
+    /// Output format: csv, dustdb, or dustpack
+    #[arg(long, value_parser = ["csv", "dustdb", "dustpack"])]
     pub format: String,
+
+    /// Table to export when using --format csv
+    #[arg(long)]
+    pub table: Option<String>,
 
     /// Output file path
     #[arg(long)]
@@ -22,18 +27,71 @@ pub struct ExportArgs {
 }
 
 pub fn run(args: ExportArgs) -> Result<()> {
+    let db_path = find_db_path(&env::current_dir()?)?;
     match args.format.as_str() {
-        "dustdb" => export_dustdb(&args.output),
-        "dustpack" => export_dustpack(&args.output),
+        "csv" => {
+            let table = args.table.ok_or_else(|| {
+                DustError::InvalidInput(
+                    "`dust export --format csv` requires `--table <name>`".to_string(),
+                )
+            })?;
+            export_csv_table(&db_path, &table, &args.output)
+        }
+        "dustdb" => {
+            reject_table_arg(&args.table, "dustdb")?;
+            export_dustdb(&db_path, &args.output)
+        }
+        "dustpack" => {
+            reject_table_arg(&args.table, "dustpack")?;
+            export_dustpack(&db_path, &args.output)
+        }
         other => Err(DustError::InvalidInput(format!(
-            "unknown format: {other}. Use `dustdb` or `dustpack`."
+            "unknown format: {other}. Use `csv`, `dustdb`, or `dustpack`."
         ))),
     }
 }
 
-fn export_dustdb(output_path: &Path) -> Result<()> {
-    let db_path = find_db_path(&env::current_dir()?)?;
-    let mut engine = PersistentEngine::open(&db_path)?;
+fn reject_table_arg(table: &Option<String>, format: &str) -> Result<()> {
+    if let Some(table) = table {
+        return Err(DustError::InvalidInput(format!(
+            "`--table {table}` is only supported with `dust export --format csv` (not `{format}`)"
+        )));
+    }
+    Ok(())
+}
+
+fn export_csv_table(db_path: &Path, table: &str, output_path: &Path) -> Result<()> {
+    let mut engine = PersistentEngine::open(db_path)?;
+    let query = format!("SELECT * FROM {}", quote_ident(table));
+    let output = engine.query(&query)?;
+    let (columns, rows) = query_output_to_strings(output)?;
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = File::create(output_path).map_err(DustError::Io)?;
+    let mut writer = csv::Writer::from_writer(file);
+    writer
+        .write_record(&columns)
+        .map_err(|error| DustError::Message(format!("failed to write CSV header: {error}")))?;
+    for row in &rows {
+        writer
+            .write_record(row)
+            .map_err(|error| DustError::Message(format!("failed to write CSV row: {error}")))?;
+    }
+    writer.flush().map_err(DustError::Io)?;
+
+    println!(
+        "Exported {} rows from `{}` to {}",
+        rows.len(),
+        table,
+        output_path.display()
+    );
+    Ok(())
+}
+
+fn export_dustdb(db_path: &Path, output_path: &Path) -> Result<()> {
+    let mut engine = PersistentEngine::open(db_path)?;
 
     let tables = engine.table_names();
     if tables.is_empty() {
@@ -102,9 +160,8 @@ fn export_dustdb(output_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn export_dustpack(output_path: &Path) -> Result<()> {
-    let db_path = find_db_path(&env::current_dir()?)?;
-    let mut engine = PersistentEngine::open(&db_path)?;
+fn export_dustpack(db_path: &Path, output_path: &Path) -> Result<()> {
+    let mut engine = PersistentEngine::open(db_path)?;
 
     let tables = engine.table_names();
     if tables.is_empty() {
@@ -246,6 +303,23 @@ fn export_dustdb_to_path(
     Ok(())
 }
 
+fn query_output_to_strings(
+    output: dust_exec::QueryOutput,
+) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+    match output {
+        dust_exec::QueryOutput::Rows { columns, rows } => Ok((columns, rows)),
+        dust_exec::QueryOutput::RowsTyped { columns, rows } => Ok((
+            columns,
+            rows.into_iter()
+                .map(|row| row.into_iter().map(|datum| datum.to_string()).collect())
+                .collect(),
+        )),
+        dust_exec::QueryOutput::Message(message) => Err(DustError::InvalidInput(format!(
+            "query did not return rows: {message}"
+        ))),
+    }
+}
+
 const TAG_NULL: u8 = 0;
 const TAG_INTEGER: u8 = 1;
 const TAG_TEXT: u8 = 2;
@@ -299,7 +373,9 @@ fn parse_output_value(val_str: &str, _columns: &[String], _col_idx: usize) -> Da
         return Datum::Boolean(false);
     }
     // Blob in hex format: x'deadbeef'
-    if let Some(hex_body) = val_str.strip_prefix("x'").and_then(|s| s.strip_suffix('\''))
+    if let Some(hex_body) = val_str
+        .strip_prefix("x'")
+        .and_then(|s| s.strip_suffix('\''))
         && let Some(bytes) = hex_decode(hex_body)
     {
         return Datum::Blob(bytes);
@@ -357,6 +433,7 @@ fn chrono_free_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dust_exec::PersistentEngine;
 
     #[test]
     fn test_parse_output_value_null() {
@@ -446,5 +523,25 @@ mod tests {
         assert_eq!(hex_decode("deadbeef"), Some(vec![0xDE, 0xAD, 0xBE, 0xEF]));
         assert_eq!(hex_decode(""), Some(vec![]));
         assert_eq!(hex_decode("0"), None); // odd length
+    }
+
+    #[test]
+    fn test_export_csv_table_writes_requested_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let output_path = tmp.path().join("users.csv");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO users VALUES (1, 'alice'), (2, 'bob')")
+            .unwrap();
+
+        export_csv_table(&db_path, "users", &output_path).unwrap();
+
+        let csv = fs::read_to_string(output_path).unwrap();
+        assert_eq!(csv, "id,name\n1,alice\n2,bob\n");
     }
 }
