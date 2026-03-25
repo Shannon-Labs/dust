@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use clap::Args;
 use dust_core::{ProjectPaths, Result};
 use dust_exec::PersistentEngine;
+use dust_sql::quote::quote_ident;
 use dust_types::SchemaFingerprint;
 
 #[derive(Debug, Args)]
@@ -47,7 +48,7 @@ pub fn run(args: DeployArgs) -> Result<()> {
         let mut engine = PersistentEngine::open(&active_db_path)?;
         let tables = engine.table_names();
         for table_name in &tables {
-            let count = match engine.query(&format!("SELECT count(*) FROM {table_name}")) {
+            let count = match engine.query(&format!("SELECT count(*) FROM {}", quote_ident(table_name))) {
                 Ok(dust_exec::QueryOutput::Rows { rows, .. }) => rows
                     .first()
                     .and_then(|r| r.first())

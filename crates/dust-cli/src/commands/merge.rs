@@ -396,7 +396,7 @@ fn execute_merge_with_resolutions(
             match winner.map(|w| w.as_str()) {
                 Some("source") => {
                     // Replace target table contents with source.
-                    let _ = target_engine.query(&format!("DELETE FROM {}", quote_ident(table)));
+                    target_engine.query(&format!("DELETE FROM {}", quote_ident(table)))?;
                     let (columns, rows) = select_all_rows(&mut source_engine, table)?;
                     insert_rows(&mut target_engine, table, &columns, &rows)?;
                 }

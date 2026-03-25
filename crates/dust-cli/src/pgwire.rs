@@ -80,9 +80,7 @@ pub async fn handle_connection(
                 }
 
                 let result = {
-                    let mut eng = engine
-                        .lock()
-                        .map_err(|_| std::io::Error::other("engine lock poisoned"))?;
+                    let mut eng = engine.lock().unwrap_or_else(|e| e.into_inner());
                     eng.query(&sql)
                 };
 
@@ -120,6 +118,9 @@ pub async fn handle_connection(
     Ok(())
 }
 
+/// Maximum pgwire message body size (16 MB). Prevents OOM from malicious clients.
+const MAX_FRAME_BODY: usize = 16 * 1024 * 1024;
+
 pub(crate) fn frame_body_len(len: i32, context: &str) -> std::io::Result<usize> {
     if len < 4 {
         return Err(std::io::Error::new(
@@ -127,7 +128,14 @@ pub(crate) fn frame_body_len(len: i32, context: &str) -> std::io::Result<usize> 
             format!("{context} frame length {len} is invalid"),
         ));
     }
-    Ok(len as usize - 4)
+    let body = len as usize - 4;
+    if body > MAX_FRAME_BODY {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{context} frame body too large ({body} bytes, max {MAX_FRAME_BODY})"),
+        ));
+    }
+    Ok(body)
 }
 
 pub(crate) fn command_tag(sql_lower: &str, row_count: usize) -> String {

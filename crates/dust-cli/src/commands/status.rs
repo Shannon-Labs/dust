@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 use dust_exec::PersistentEngine;
+use dust_sql::quote::quote_ident;
 use dust_types::{Result, SchemaFingerprint};
 
 use crate::project::{find_db_path, find_project_root, read_current_branch, refs_dir};
@@ -53,7 +54,7 @@ pub fn run(args: StatusArgs) -> Result<()> {
         schema_desc.push(':');
         // Get column names
         if let Ok(dust_exec::QueryOutput::Rows { columns, .. }) =
-            engine.query(&format!("SELECT * FROM {name} WHERE 1=0"))
+            engine.query(&format!("SELECT * FROM {} WHERE 1=0", quote_ident(name)))
         {
             schema_desc.push_str(&columns.join(","));
         }
@@ -64,7 +65,7 @@ pub fn run(args: StatusArgs) -> Result<()> {
 
     println!("\n{}", ui.header("Tables"));
     for name in &tables {
-        let count = match engine.query(&format!("SELECT count(*) FROM {name}")) {
+        let count = match engine.query(&format!("SELECT count(*) FROM {}", quote_ident(name))) {
             Ok(dust_exec::QueryOutput::Rows { rows, .. }) => rows
                 .first()
                 .and_then(|r| r.first())
