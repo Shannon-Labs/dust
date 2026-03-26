@@ -538,9 +538,7 @@ impl PersistentEngine {
                             Some("TEXT".to_string())
                         } else if seen_real {
                             Some("REAL".to_string())
-                        } else if seen_int {
-                            Some("INTEGER".to_string())
-                        } else if seen_bool {
+                        } else if seen_int || seen_bool {
                             Some("INTEGER".to_string())
                         } else {
                             None // all NULL

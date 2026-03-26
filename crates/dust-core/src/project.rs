@@ -207,9 +207,7 @@ impl ProjectPaths {
         fs::write(self.schema_path(), SCHEMA_TEMPLATE)?;
 
         let catalog = Catalog::from_sql(SCHEMA_TEMPLATE)?;
-        let mut lock =
-            DustLock::from_schema_with_objects(SCHEMA_TEMPLATE, schema_object_records(&catalog));
-        lock.schema_fingerprint = catalog.fingerprint().0.clone();
+        let lock = build_lockfile_from_schema(SCHEMA_TEMPLATE)?;
         lock.write_to_path(self.lock_path())?;
 
         let head = BranchHead {
@@ -358,6 +356,13 @@ impl ProjectPaths {
         DustLock::read_from_path(self.lock_path())
             .map_err(|error| DustError::Message(format!("failed to parse dust.lock: {error}")))
     }
+}
+
+pub fn build_lockfile_from_schema(schema: &str) -> Result<DustLock> {
+    let catalog = Catalog::from_sql(schema)?;
+    let mut lock = DustLock::from_schema_with_objects(schema, schema_object_records(&catalog));
+    lock.schema_fingerprint = catalog.fingerprint().0.clone();
+    Ok(lock)
 }
 
 fn is_dir_empty(path: &Path) -> Result<bool> {

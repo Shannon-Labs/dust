@@ -2,6 +2,7 @@ use crate::branch::{BranchHead, BranchName, BranchRef};
 use crate::workspace::WorkspaceLayout;
 use dust_types::{DustError, Result};
 use serde::{Deserialize, Serialize};
+use std::fs;
 
 /// A named snapshot captures a branch's state at a point in time.
 ///
@@ -13,6 +14,8 @@ pub struct NamedSnapshot {
     pub branch_name: String,
     pub manifest_id: String,
     pub catalog_version: u64,
+    #[serde(default)]
+    pub head: Option<BranchHead>,
 }
 
 impl NamedSnapshot {
@@ -25,6 +28,7 @@ impl NamedSnapshot {
             branch_name: branch_ref.name.as_str().to_string(),
             manifest_id: branch_ref.head.manifest_id.clone(),
             catalog_version: branch_ref.head.catalog_version,
+            head: Some(branch_ref.head.clone()),
         };
 
         let path = snapshot_path(name, workspace);
@@ -40,7 +44,15 @@ impl NamedSnapshot {
 
         let content =
             toml::to_string_pretty(&snap).map_err(|e| DustError::Message(e.to_string()))?;
-        std::fs::write(&path, content)?;
+        fs::write(&path, content)?;
+
+        let source_db_path = workspace.branch_data_db_path(&branch_ref.name);
+        let snapshot_db_path = snapshot_db_path(name, workspace);
+        copy_optional_file(&source_db_path, &snapshot_db_path)?;
+
+        let source_schema_path = source_db_path.with_extension("schema.toml");
+        let snapshot_schema_path = snapshot_schema_path(name, workspace);
+        copy_optional_file(&source_schema_path, &snapshot_schema_path)?;
 
         Ok(snap)
     }
@@ -98,15 +110,23 @@ impl NamedSnapshot {
     pub fn checkout(&self, workspace: &WorkspaceLayout) -> Result<BranchName> {
         let branch_name = BranchName::new(format!("snapshot/{}", self.name))?;
 
-        let head = BranchHead {
+        let head = self.head.clone().unwrap_or_else(|| BranchHead {
             manifest_id: self.manifest_id.clone(),
             catalog_version: self.catalog_version,
             ..BranchHead::default()
-        };
+        });
 
         let branch_ref = BranchRef::new(branch_name.clone(), head);
         let ref_path = workspace.branch_ref_path(&branch_name);
         branch_ref.write(&ref_path)?;
+
+        let target_db_path = workspace.branch_data_db_path(&branch_name);
+        let snapshot_db_path = snapshot_db_path(&self.name, workspace);
+        copy_optional_file(&snapshot_db_path, &target_db_path)?;
+
+        let target_schema_path = target_db_path.with_extension("schema.toml");
+        let snapshot_schema_path = snapshot_schema_path(&self.name, workspace);
+        copy_optional_file(&snapshot_schema_path, &target_schema_path)?;
 
         Ok(branch_name)
     }
@@ -114,6 +134,29 @@ impl NamedSnapshot {
 
 fn snapshot_path(name: &str, workspace: &WorkspaceLayout) -> std::path::PathBuf {
     workspace.snapshots_dir().join(format!("{name}.toml"))
+}
+
+fn snapshot_db_path(name: &str, workspace: &WorkspaceLayout) -> std::path::PathBuf {
+    workspace.snapshots_dir().join(format!("{name}.db"))
+}
+
+fn snapshot_schema_path(name: &str, workspace: &WorkspaceLayout) -> std::path::PathBuf {
+    workspace
+        .snapshots_dir()
+        .join(format!("{name}.schema.toml"))
+}
+
+fn copy_optional_file(source: &std::path::Path, target: &std::path::Path) -> Result<()> {
+    if target.exists() {
+        fs::remove_file(target)?;
+    }
+    if source.exists() {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, target)?;
+    }
+    Ok(())
 }
 
 fn validate_snapshot_name(name: &str) -> Result<()> {
@@ -163,10 +206,12 @@ mod tests {
         assert_eq!(snap.branch_name, "main");
         assert_eq!(snap.manifest_id, "m_snap_test");
         assert_eq!(snap.catalog_version, 42);
+        assert_eq!(snap.head, Some(branch_ref.head.clone()));
 
         let read_back = NamedSnapshot::read("v1", &ws).unwrap();
         assert_eq!(read_back.name, snap.name);
         assert_eq!(read_back.manifest_id, snap.manifest_id);
+        assert_eq!(read_back.head, snap.head);
     }
 
     #[test]
@@ -237,6 +282,31 @@ mod tests {
         let read_ref = BranchRef::read(&ref_path).unwrap();
         assert_eq!(read_ref.head.manifest_id, "m_snap_test");
         assert_eq!(read_ref.head.catalog_version, 42);
+        assert_eq!(read_ref.head, branch_ref.head);
+    }
+
+    #[test]
+    fn create_and_checkout_snapshot_round_trips_branch_database() {
+        let (_dir, ws) = make_workspace();
+        let branch_ref = make_branch_ref();
+        let source_db = ws.branch_data_db_path(&branch_ref.name);
+        std::fs::create_dir_all(source_db.parent().unwrap()).unwrap();
+        std::fs::write(&source_db, b"snapshot-db-bytes").unwrap();
+        std::fs::write(
+            source_db.with_extension("schema.toml"),
+            b"title = 'schema'\n",
+        )
+        .unwrap();
+
+        let snap = NamedSnapshot::create("release-2", &branch_ref, &ws).unwrap();
+        let branch_name = snap.checkout(&ws).unwrap();
+
+        let target_db = ws.branch_data_db_path(&branch_name);
+        assert_eq!(std::fs::read(&target_db).unwrap(), b"snapshot-db-bytes");
+        assert_eq!(
+            std::fs::read_to_string(target_db.with_extension("schema.toml")).unwrap(),
+            "title = 'schema'\n"
+        );
     }
 
     #[test]

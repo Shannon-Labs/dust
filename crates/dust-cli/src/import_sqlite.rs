@@ -59,10 +59,10 @@ pub fn run(
 
     for (table_name, create_sql) in &tables {
         // --table filter: skip tables not in the list
-        if let Some(filter) = table_filter {
-            if !filter.iter().any(|f| f.eq_ignore_ascii_case(table_name)) {
-                continue;
-            }
+        if let Some(filter) = table_filter
+            && !filter.iter().any(|f| f.eq_ignore_ascii_case(table_name))
+        {
+            continue;
         }
 
         // --replace: drop existing table first

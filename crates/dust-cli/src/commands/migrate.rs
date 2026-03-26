@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
-use dust_core::{ProjectPaths, Result};
+use dust_core::{ProjectPaths, Result, build_lockfile_from_schema};
 use dust_exec::PersistentEngine;
 use dust_migrate::{
     DustLock, MigrationExecutor, apply_migrations, migration_status, plan_migration,
@@ -121,23 +121,53 @@ fn run_apply(path: Option<PathBuf>) -> Result<()> {
     let db_path = project.active_data_db_path();
 
     let mut engine = SqliteExecutor::new(&db_path)?;
+    let bootstrapped = bootstrap_live_database_if_needed(&lock, &mut engine)?;
     let applied = apply_migrations(&migrations_dir, &mut lock, &mut engine)?;
 
     if applied.is_empty() {
-        println!("No pending migrations.");
+        if bootstrapped {
+            refresh_lockfile_from_schema(&project, &mut lock)?;
+            lock.write_to_path(project.lock_path())?;
+            println!("Bootstrapped live database from lockfile schema.");
+            println!("No pending migrations.");
+        } else {
+            println!("No pending migrations.");
+        }
     } else {
+        if bootstrapped {
+            println!("Bootstrapped live database from lockfile schema.");
+        }
         for id in &applied {
             println!("Applied: {id}");
         }
-        // Update stored schema SQL to the current schema.sql file
-        let current_schema = fs::read_to_string(project.schema_path()).unwrap_or_default();
-        if !current_schema.is_empty() {
-            lock.schema_sql = current_schema;
-        }
+        refresh_lockfile_from_schema(&project, &mut lock)?;
         lock.write_to_path(project.lock_path())?;
         println!("Lockfile updated.");
     }
 
+    Ok(())
+}
+
+fn bootstrap_live_database_if_needed(lock: &DustLock, engine: &mut SqliteExecutor) -> Result<bool> {
+    if lock.schema_sql.trim().is_empty() {
+        return Ok(false);
+    }
+
+    let live_schema = engine.schema_sql()?;
+    if !live_schema.trim().is_empty() {
+        return Ok(false);
+    }
+
+    engine.execute_ddl(&lock.schema_sql)?;
+    Ok(true)
+}
+
+fn refresh_lockfile_from_schema(project: &ProjectPaths, lock: &mut DustLock) -> Result<()> {
+    let current_schema = fs::read_to_string(project.schema_path())?;
+    let refreshed = build_lockfile_from_schema(&current_schema)?;
+    lock.schema_fingerprint = refreshed.schema_fingerprint;
+    lock.schema_sql = refreshed.schema_sql;
+    lock.schema_objects = refreshed.schema_objects;
     Ok(())
 }
 
@@ -379,5 +409,100 @@ impl MigrationExecutor for SqliteExecutor {
             sql.push_str(");\n");
         }
         Ok(sql)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dust_exec::QueryOutput;
+    use tempfile::TempDir;
+
+    fn expanded_schema() -> &'static str {
+        r#"CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    name TEXT
+);
+
+CREATE INDEX users_created_at_idx
+ON users (created_at);
+"#
+    }
+
+    fn project_root(project: &ProjectPaths) -> PathBuf {
+        project.root.clone()
+    }
+
+    fn query_columns(output: QueryOutput) -> Vec<String> {
+        match output {
+            QueryOutput::Rows { columns, .. } => columns,
+            QueryOutput::RowsTyped { columns, .. } => columns,
+            QueryOutput::Message(message) => panic!("expected row output, got {message}"),
+        }
+    }
+
+    #[test]
+    fn apply_bootstraps_empty_live_db_before_running_migrations() {
+        let temp = TempDir::new().expect("temp dir");
+        let project = ProjectPaths::new(temp.path());
+        project.init(true).expect("init");
+
+        fs::write(project.schema_path(), expanded_schema()).expect("write updated schema");
+
+        run_plan(Some(project_root(&project))).expect("plan");
+        run_apply(Some(project_root(&project))).expect("apply");
+
+        let report = project.doctor().expect("doctor");
+        assert!(!report.lockfile_drift, "doctor reported drift after apply");
+        assert!(
+            report.live_warnings.is_empty(),
+            "unexpected live warnings: {:?}",
+            report.live_warnings
+        );
+
+        let mut engine = PersistentEngine::open(&project.active_data_db_path()).expect("open db");
+        let columns = query_columns(
+            engine
+                .query("SELECT * FROM users LIMIT 0")
+                .expect("query bootstrapped table"),
+        );
+        assert!(
+            columns.iter().any(|column| column == "name"),
+            "expected migrated column in {:?}",
+            columns
+        );
+    }
+
+    #[test]
+    fn apply_refreshes_lockfile_metadata_after_manual_bootstrap() {
+        let temp = TempDir::new().expect("temp dir");
+        let project = ProjectPaths::new(temp.path());
+        project.init(true).expect("init");
+
+        let initial_schema = fs::read_to_string(project.schema_path()).expect("read schema");
+        let mut bootstrap_engine =
+            SqliteExecutor::new(&project.active_data_db_path()).expect("bootstrap engine");
+        bootstrap_engine
+            .execute_ddl(&initial_schema)
+            .expect("seed live database");
+
+        fs::write(project.schema_path(), expanded_schema()).expect("write updated schema");
+
+        run_plan(Some(project_root(&project))).expect("plan");
+        run_apply(Some(project_root(&project))).expect("apply");
+
+        let report = project.doctor().expect("doctor");
+        assert!(!report.lockfile_drift, "doctor reported drift after apply");
+        assert_eq!(report.schema_fingerprint, report.lockfile_fingerprint);
+
+        let lock = project.read_lockfile().expect("lockfile");
+        assert!(
+            lock.schema_objects
+                .iter()
+                .any(|obj| obj.name == "users.name"),
+            "expected refreshed schema objects in lockfile"
+        );
     }
 }

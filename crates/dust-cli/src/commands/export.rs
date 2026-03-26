@@ -111,42 +111,28 @@ fn export_dustdb(db_path: &Path, output_path: &Path) -> Result<()> {
         .map_err(DustError::Io)?;
 
     for table_name in &tables {
-        let columns = engine
-            .query(&format!("SELECT * FROM \"{table_name}\" LIMIT 0"))
-            .ok()
-            .and_then(|output| match output {
-                dust_exec::QueryOutput::Rows { columns, .. } => Some(columns),
-                dust_exec::QueryOutput::RowsTyped { columns, .. } => Some(columns),
-                _ => None,
-            })
-            .unwrap_or_default();
-
-        let schema_toml = format_table_schema(table_name, &columns);
+        let column_defs = table_column_defs(&mut engine, table_name)?;
+        let schema_toml = format_table_schema(table_name, &column_defs);
         let schema_bytes = schema_toml.as_bytes();
         writer
             .write_all(&(schema_bytes.len() as u64).to_le_bytes())
             .map_err(DustError::Io)?;
         writer.write_all(schema_bytes).map_err(DustError::Io)?;
 
-        let rows_output = engine.query(&format!("SELECT * FROM \"{table_name}\""))?;
-        let row_count = match &rows_output {
-            dust_exec::QueryOutput::Rows { rows, .. } => rows.len(),
-            _ => 0,
-        };
+        let (_columns, rows) =
+            query_output_to_datums(engine.query(&format!("SELECT * FROM \"{table_name}\""))?)?;
+        let row_count = rows.len();
 
         writer
-            .write_all(&(columns.len() as u32).to_le_bytes())
+            .write_all(&(column_defs.len() as u32).to_le_bytes())
             .map_err(DustError::Io)?;
         writer
             .write_all(&(row_count as u64).to_le_bytes())
             .map_err(DustError::Io)?;
 
-        if let dust_exec::QueryOutput::Rows { rows, .. } = rows_output {
-            for row_strs in &rows {
-                for (col_idx, val_str) in row_strs.iter().enumerate() {
-                    let datum = parse_output_value(val_str, &columns, col_idx);
-                    write_datum(&mut writer, &datum)?;
-                }
+        for row in &rows {
+            for datum in row {
+                write_datum(&mut writer, datum)?;
             }
         }
     }
@@ -175,29 +161,19 @@ fn export_dustpack(db_path: &Path, output_path: &Path) -> Result<()> {
     let mut schema_ddl = String::new();
 
     for table_name in &tables {
-        let columns = engine
-            .query(&format!("SELECT * FROM \"{table_name}\" LIMIT 0"))
-            .ok()
-            .and_then(|output| match output {
-                dust_exec::QueryOutput::Rows { columns, .. } => Some(columns),
-                dust_exec::QueryOutput::RowsTyped { columns, .. } => Some(columns),
-                _ => None,
-            })
-            .unwrap_or_default();
-
-        let col_defs = columns
+        let column_defs = table_column_defs(&mut engine, table_name)?;
+        let col_defs = column_defs
             .iter()
-            .map(|c| format!("{c} TEXT"))
+            .map(|(name, ty)| format!("{} {}", quote_ident(name), ty))
             .collect::<Vec<_>>()
             .join(", ");
         schema_ddl.push_str(&format!(
             "CREATE TABLE IF NOT EXISTS \"{table_name}\" ({col_defs});\n"
         ));
 
-        let rows_output = engine.query(&format!("SELECT * FROM \"{table_name}\""))?;
-        if let dust_exec::QueryOutput::Rows { rows, .. } = &rows_output {
-            total_rows += rows.len();
-        }
+        total_rows += engine
+            .query(&format!("SELECT * FROM \"{table_name}\""))?
+            .row_count();
     }
 
     let manifest = format!(
@@ -260,41 +236,29 @@ fn export_dustdb_to_path(
         .map_err(DustError::Io)?;
 
     for table_name in tables {
-        let columns = engine
-            .query(&format!("SELECT * FROM \"{table_name}\" LIMIT 0"))
-            .ok()
-            .and_then(|output| match output {
-                dust_exec::QueryOutput::Rows { columns, .. } => Some(columns),
-                _ => None,
-            })
-            .unwrap_or_default();
+        let column_defs = table_column_defs(engine, table_name)?;
+        let (_columns, rows) =
+            query_output_to_datums(engine.query(&format!("SELECT * FROM \"{table_name}\""))?)?;
 
-        let schema_toml = format_table_schema(table_name, &columns);
+        let schema_toml = format_table_schema(table_name, &column_defs);
         let schema_bytes = schema_toml.as_bytes();
         writer
             .write_all(&(schema_bytes.len() as u64).to_le_bytes())
             .map_err(DustError::Io)?;
         writer.write_all(schema_bytes).map_err(DustError::Io)?;
 
-        let rows_output = engine.query(&format!("SELECT * FROM \"{table_name}\""))?;
-        let row_count = match &rows_output {
-            dust_exec::QueryOutput::Rows { rows, .. } => rows.len(),
-            _ => 0,
-        };
+        let row_count = rows.len();
 
         writer
-            .write_all(&(columns.len() as u32).to_le_bytes())
+            .write_all(&(column_defs.len() as u32).to_le_bytes())
             .map_err(DustError::Io)?;
         writer
             .write_all(&(row_count as u64).to_le_bytes())
             .map_err(DustError::Io)?;
 
-        if let dust_exec::QueryOutput::Rows { rows, .. } = rows_output {
-            for row_strs in &rows {
-                for (col_idx, val_str) in row_strs.iter().enumerate() {
-                    let datum = parse_output_value(val_str, &columns, col_idx);
-                    write_datum(&mut writer, &datum)?;
-                }
+        for row in &rows {
+            for datum in row {
+                write_datum(&mut writer, datum)?;
             }
         }
     }
@@ -314,6 +278,28 @@ fn query_output_to_strings(
                 .map(|row| row.into_iter().map(|datum| datum.to_string()).collect())
                 .collect(),
         )),
+        dust_exec::QueryOutput::Message(message) => Err(DustError::InvalidInput(format!(
+            "query did not return rows: {message}"
+        ))),
+    }
+}
+
+fn query_output_to_datums(
+    output: dust_exec::QueryOutput,
+) -> Result<(Vec<String>, Vec<Vec<Datum>>)> {
+    match output {
+        dust_exec::QueryOutput::Rows { columns, rows } => Ok((
+            columns.clone(),
+            rows.into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .enumerate()
+                        .map(|(col_idx, value)| parse_output_value(&value, &columns, col_idx))
+                        .collect()
+                })
+                .collect(),
+        )),
+        dust_exec::QueryOutput::RowsTyped { columns, rows } => Ok((columns, rows)),
         dust_exec::QueryOutput::Message(message) => Err(DustError::InvalidInput(format!(
             "query did not return rows: {message}"
         ))),
@@ -375,6 +361,7 @@ fn parse_output_value(val_str: &str, _columns: &[String], _col_idx: usize) -> Da
     // Blob in hex format: x'deadbeef'
     if let Some(hex_body) = val_str
         .strip_prefix("x'")
+        .or_else(|| val_str.strip_prefix("X'"))
         .and_then(|s| s.strip_suffix('\''))
         && let Some(bytes) = hex_decode(hex_body)
     {
@@ -403,13 +390,38 @@ fn hex_decode(hex: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-fn format_table_schema(table_name: &str, columns: &[String]) -> String {
+fn table_column_defs(
+    engine: &mut PersistentEngine,
+    table_name: &str,
+) -> Result<Vec<(String, String)>> {
+    let schema = engine
+        .get_table_schema(table_name)
+        .ok_or_else(|| DustError::InvalidInput(format!("table `{table_name}` does not exist")))?;
+
+    Ok(schema
+        .columns
+        .into_iter()
+        .map(|column| {
+            (
+                column.name,
+                column.type_name.unwrap_or_else(|| "TEXT".to_string()),
+            )
+        })
+        .collect())
+}
+
+fn format_table_schema(table_name: &str, columns: &[(String, String)]) -> String {
+    let column_order = columns
+        .iter()
+        .map(|(name, _)| format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
     let cols = columns
         .iter()
-        .map(|c| format!("\"{c}\" = \"TEXT\""))
+        .map(|(name, ty)| format!("\"{name}\" = \"{ty}\""))
         .collect::<Vec<_>>()
         .join("\n");
-    format!("[tables.{table_name}]\n{cols}\n")
+    format!("[tables.{table_name}]\n__columns = [{column_order}]\n{cols}\n")
 }
 
 fn chrono_free_timestamp() -> String {
@@ -433,7 +445,7 @@ fn chrono_free_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dust_exec::PersistentEngine;
+    use dust_exec::{PersistentEngine, QueryOutput};
 
     #[test]
     fn test_parse_output_value_null() {
@@ -499,9 +511,16 @@ mod tests {
 
     #[test]
     fn test_format_table_schema() {
-        let schema = format_table_schema("users", &["id".to_string(), "name".to_string()]);
+        let schema = format_table_schema(
+            "users",
+            &[
+                ("id".to_string(), "INTEGER".to_string()),
+                ("name".to_string(), "TEXT".to_string()),
+            ],
+        );
         assert!(schema.contains("[tables.users]"));
-        assert!(schema.contains("\"id\" = \"TEXT\""));
+        assert!(schema.contains("__columns = [\"id\", \"name\"]"));
+        assert!(schema.contains("\"id\" = \"INTEGER\""));
         assert!(schema.contains("\"name\" = \"TEXT\""));
     }
 
@@ -526,6 +545,18 @@ mod tests {
     }
 
     #[test]
+    fn test_query_output_to_datums_preserves_typed_blob_rows() {
+        let (columns, rows) = query_output_to_datums(dust_exec::QueryOutput::RowsTyped {
+            columns: vec!["payload".to_string()],
+            rows: vec![vec![Datum::Blob(vec![0xDE, 0xAD, 0xBE, 0xEF])]],
+        })
+        .unwrap();
+
+        assert_eq!(columns, vec!["payload"]);
+        assert_eq!(rows, vec![vec![Datum::Blob(vec![0xDE, 0xAD, 0xBE, 0xEF])]]);
+    }
+
+    #[test]
     fn test_export_csv_table_writes_requested_rows() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
@@ -543,5 +574,95 @@ mod tests {
 
         let csv = fs::read_to_string(output_path).unwrap();
         assert_eq!(csv, "id,name\n1,alice\n2,bob\n");
+    }
+
+    fn read_u16_le(bytes: &[u8], offset: &mut usize) -> u16 {
+        let value = u16::from_le_bytes(bytes[*offset..*offset + 2].try_into().unwrap());
+        *offset += 2;
+        value
+    }
+
+    fn read_u32_le(bytes: &[u8], offset: &mut usize) -> u32 {
+        let value = u32::from_le_bytes(bytes[*offset..*offset + 4].try_into().unwrap());
+        *offset += 4;
+        value
+    }
+
+    fn read_u64_le(bytes: &[u8], offset: &mut usize) -> u64 {
+        let value = u64::from_le_bytes(bytes[*offset..*offset + 8].try_into().unwrap());
+        *offset += 8;
+        value
+    }
+
+    fn first_table_row_count(bytes: &[u8]) -> u64 {
+        let mut offset = 0usize;
+        assert_eq!(&bytes[offset..offset + 6], b"DUSTDB");
+        offset += 6;
+        let _version = read_u16_le(bytes, &mut offset);
+        let table_count = read_u32_le(bytes, &mut offset);
+        assert_eq!(table_count, 1);
+        let schema_len = read_u64_le(bytes, &mut offset) as usize;
+        offset += schema_len;
+        let _column_count = read_u32_le(bytes, &mut offset);
+        read_u64_le(bytes, &mut offset)
+    }
+
+    #[test]
+    fn test_export_dustdb_preserves_typed_row_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let output_path = tmp.path().join("users.dustdb");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE users (id INTEGER, active BOOLEAN)")
+            .unwrap();
+        engine
+            .query("INSERT INTO users VALUES (1, TRUE), (2, FALSE)")
+            .unwrap();
+        engine.sync().unwrap();
+
+        let output = engine.query("SELECT * FROM users ORDER BY id").unwrap();
+        assert!(matches!(output, QueryOutput::RowsTyped { .. }));
+
+        export_dustdb_to_path(&mut engine, &["users".to_string()], &output_path).unwrap();
+
+        let bytes = fs::read(output_path).unwrap();
+        assert_eq!(first_table_row_count(&bytes), 2);
+    }
+
+    #[test]
+    fn test_export_dustpack_manifest_counts_typed_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let output_path = tmp.path().join("users.dustpack");
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+
+        engine
+            .query("CREATE TABLE users (id INTEGER, active BOOLEAN)")
+            .unwrap();
+        engine
+            .query("INSERT INTO users VALUES (1, TRUE), (2, FALSE)")
+            .unwrap();
+        engine.sync().unwrap();
+        drop(engine);
+
+        export_dustpack(&db_path, &output_path).unwrap();
+
+        let archive_file = File::open(output_path).unwrap();
+        let gz = flate2::read::GzDecoder::new(archive_file);
+        let mut archive = tar::Archive::new(gz);
+        let mut manifest = String::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            if entry.path().unwrap().as_ref() == Path::new("manifest.toml") {
+                use std::io::Read;
+                entry.read_to_string(&mut manifest).unwrap();
+                break;
+            }
+        }
+
+        let manifest: toml::Value = toml::from_str(&manifest).unwrap();
+        assert_eq!(manifest["metadata"]["row_count"].as_integer(), Some(2));
     }
 }

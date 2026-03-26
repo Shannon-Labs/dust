@@ -3,4 +3,4 @@ pub mod project;
 
 pub use database::Database;
 pub use dust_types::{DustError, Result};
-pub use project::{BranchDiff, DoctorReport, ProjectPaths, TableDiff};
+pub use project::{BranchDiff, DoctorReport, ProjectPaths, TableDiff, build_lockfile_from_schema};

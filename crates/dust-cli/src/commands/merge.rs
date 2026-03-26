@@ -104,25 +104,7 @@ pub fn run(args: MergeArgs) -> Result<()> {
         // dust merge preview <source>
         // -----------------------------------------------------------------
         MergeCommand::Preview { source_branch } => {
-            let source_db = paths.branch_data_db_path(&source_branch);
-            let target_db = paths.branch_data_db_path(&current_branch);
-
-            // Use main as a rudimentary common-ancestor when both branches
-            // diverge from it. When source or target IS main, base == main.
-            let base_db_path = paths.branch_data_db_path("main");
-            let base_db = if source_branch != "main" && current_branch != "main" {
-                Some(base_db_path.as_path())
-            } else {
-                None
-            };
-
-            let preview = preview_merge_from_paths(
-                &source_branch,
-                &current_branch,
-                &source_db,
-                &target_db,
-                base_db,
-            )?;
+            let preview = load_merge_preview(&paths, &current_branch, &source_branch)?;
 
             println!("{}", preview.format_report());
 
@@ -150,21 +132,7 @@ pub fn run(args: MergeArgs) -> Result<()> {
         MergeCommand::Execute { source_branch } => {
             let source_db_path = paths.branch_data_db_path(&source_branch);
             let target_db_path = paths.branch_data_db_path(&current_branch);
-
-            let base_db_path = paths.branch_data_db_path("main");
-            let base_db = if source_branch != "main" && current_branch != "main" {
-                Some(base_db_path.as_path())
-            } else {
-                None
-            };
-
-            let preview = preview_merge_from_paths(
-                &source_branch,
-                &current_branch,
-                &source_db_path,
-                &target_db_path,
-                base_db,
-            )?;
+            let preview = load_merge_preview(&paths, &current_branch, &source_branch)?;
 
             if preview.has_conflicts() {
                 // Check if all conflicts have been resolved via the persisted
@@ -234,6 +202,29 @@ pub fn run(args: MergeArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn load_merge_preview(
+    paths: &ProjectPaths,
+    current_branch: &str,
+    source_branch: &str,
+) -> Result<dust_store::MergePreview> {
+    let source_db = paths.branch_data_db_path(source_branch);
+    let target_db = paths.branch_data_db_path(current_branch);
+    let base_db = merge_base_db(paths);
+
+    preview_merge_from_paths(
+        source_branch,
+        current_branch,
+        &source_db,
+        &target_db,
+        base_db.as_deref(),
+    )
+}
+
+fn merge_base_db(paths: &ProjectPaths) -> Option<PathBuf> {
+    let base_db = paths.branch_data_db_path("main");
+    base_db.exists().then_some(base_db)
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +416,8 @@ fn execute_merge_with_resolutions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn merge_resolution_arg_converts() {
@@ -435,6 +428,63 @@ mod tests {
         assert_eq!(
             MergeResolution::from(MergeResolutionArg::Target),
             MergeResolution::Target
+        );
+    }
+
+    #[test]
+    fn preview_into_main_uses_main_as_merge_base() {
+        let temp = TempDir::new().expect("temp dir");
+        let project = ProjectPaths::new(temp.path());
+        project.init(true).expect("init");
+
+        let main_db = project.branch_data_db_path("main");
+        let mut main_engine = PersistentEngine::open(&main_db).expect("open main db");
+        main_engine
+            .query("CREATE TABLE users (id TEXT, email TEXT)")
+            .expect("create users");
+        main_engine
+            .query("INSERT INTO users VALUES ('1', 'a@example.com')")
+            .expect("seed users");
+        main_engine.sync().expect("sync main db");
+
+        let feature_db = project.branch_data_db_path("feat");
+        fs::create_dir_all(feature_db.parent().expect("feature parent")).expect("feature dir");
+        fs::copy(&main_db, &feature_db).expect("copy feature db");
+
+        let mut feature_engine = PersistentEngine::open(&feature_db).expect("open feature db");
+        feature_engine
+            .query("CREATE TABLE widgets (id INTEGER, name TEXT)")
+            .expect("create widgets");
+        feature_engine.sync().expect("sync feature db");
+
+        let preview = load_merge_preview(&project, "main", "feat").expect("preview merge");
+
+        assert!(preview.can_auto_merge, "{preview:#?}");
+        assert!(preview.conflicts.is_empty(), "{preview:#?}");
+        assert!(
+            preview
+                .schema_merge
+                .changes
+                .iter()
+                .any(|change| change.object_name == "widgets"),
+            "{preview:#?}"
+        );
+        let users_merge = preview
+            .data_merge
+            .table_merges
+            .iter()
+            .find(|table| table.table_name == "users")
+            .expect("users merge summary");
+        assert_eq!(users_merge.rows_conflicting, 0, "{preview:#?}");
+        assert_eq!(users_merge.rows_only_in_source, 0, "{preview:#?}");
+        assert_eq!(users_merge.rows_only_in_target, 0, "{preview:#?}");
+
+        execute_clean_merge(&feature_db, &main_db).expect("execute clean merge");
+        let merged_engine = PersistentEngine::open(&main_db).expect("reopen main db");
+        let merged_tables = merged_engine.table_names();
+        assert!(
+            merged_tables.iter().any(|table| table == "widgets"),
+            "expected widgets table after merge, got {merged_tables:?}"
         );
     }
 }

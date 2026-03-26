@@ -1281,6 +1281,7 @@ fn read_datum(reader: &mut impl IoRead) -> Result<Datum> {
     }
 }
 
+#[cfg(test)]
 fn datum_to_sql_literal(datum: &Datum) -> String {
     match datum {
         Datum::Null => "NULL".to_string(),
@@ -1293,7 +1294,7 @@ fn datum_to_sql_literal(datum: &Datum) -> String {
         }
         Datum::Blob(b) => {
             let hex: String = b.iter().map(|byte| format!("{byte:02X}")).collect();
-            format!("X'{hex}'")
+            format!("x'{hex}'")
         }
     }
 }
@@ -1321,7 +1322,7 @@ fn import_dustdb_from_reader_into(
     let _version = read_u16_le(reader)?;
     let table_count = read_u32_le(reader)? as usize;
 
-    let mut engine = PersistentEngine::open(db_path)?;
+    let mut store = dust_store::TableEngine::open_or_create(db_path)?;
 
     let mut table_names = Vec::new();
     let mut total_rows = 0usize;
@@ -1334,78 +1335,48 @@ fn import_dustdb_from_reader_into(
         let schema_str = String::from_utf8(schema_buf)
             .map_err(|e| DustError::InvalidInput(format!("invalid UTF-8 in dustdb schema: {e}")))?;
 
-        // Parse table name and column names from the TOML schema
+        // Parse table name and ordered column definitions from the TOML schema.
         let (tbl_name, columns) = parse_dustdb_schema(&schema_str)?;
 
         let col_count = read_u32_le(reader)? as usize;
         let row_count = read_u64_le(reader)? as usize;
 
-        // Create the table (use double-quote identifiers for the dust SQL parser)
-        let escaped_tbl = tbl_name.replace('"', "\"\"");
-        let col_defs = columns
-            .iter()
-            .map(|c| {
-                let escaped = c.replace('"', "\"\"");
-                format!("\"{escaped}\" TEXT")
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let create_sql = format!("CREATE TABLE IF NOT EXISTS \"{escaped_tbl}\" ({col_defs})");
-        engine.query(&create_sql)?;
+        if col_count != columns.len() {
+            return Err(DustError::InvalidInput(format!(
+                "dustdb column metadata mismatch for `{tbl_name}`: schema has {} columns, payload says {col_count}",
+                columns.len()
+            )));
+        }
+
+        if !store.has_table(&tbl_name) {
+            store.create_table(
+                &tbl_name,
+                columns.iter().map(|(name, _)| name.clone()).collect(),
+            )?;
+        }
 
         if col_count == 0 {
             for _ in 0..row_count {
-                engine.query(&format!("INSERT INTO \"{escaped_tbl}\" DEFAULT VALUES"))?;
+                store.insert_row(&tbl_name, Vec::new())?;
                 total_rows += 1;
             }
             table_names.push(tbl_name);
             continue;
         }
 
-        // Read and insert rows in batches
-        let batch_size = 100;
-        let mut insert_parts = Vec::with_capacity(batch_size);
-        let col_list = columns
-            .iter()
-            .map(|c| {
-                let escaped = c.replace('"', "\"\"");
-                format!("\"{escaped}\"")
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-
         for _ in 0..row_count {
             let mut values = Vec::with_capacity(col_count);
             for _ in 0..col_count {
-                let datum = read_datum(reader)?;
-                values.push(datum_to_sql_literal(&datum));
+                values.push(read_datum(reader)?);
             }
-            insert_parts.push(format!("({})", values.join(", ")));
-
-            if insert_parts.len() >= batch_size {
-                let sql = format!(
-                    "INSERT INTO \"{escaped_tbl}\" ({col_list}) VALUES {}",
-                    insert_parts.join(", ")
-                );
-                engine.query(&sql)?;
-                total_rows += insert_parts.len();
-                insert_parts.clear();
-            }
-        }
-
-        if !insert_parts.is_empty() {
-            let sql = format!(
-                "INSERT INTO \"{escaped_tbl}\" ({col_list}) VALUES {}",
-                insert_parts.join(", ")
-            );
-            engine.query(&sql)?;
-            total_rows += insert_parts.len();
+            store.insert_row(&tbl_name, values)?;
+            total_rows += 1;
         }
 
         table_names.push(tbl_name);
     }
 
-    engine.sync()?;
+    store.sync()?;
     Ok((table_names, total_rows))
 }
 
@@ -1436,8 +1407,12 @@ fn run_dustdb_import(path: &Path) -> Result<()> {
 }
 
 /// Parse the TOML schema block from a dustdb file.
-/// Format: `[tables.<name>]\n"col" = "TEXT"\n...`
-fn parse_dustdb_schema(toml_str: &str) -> Result<(String, Vec<String>)> {
+/// Format:
+/// `[tables.<name>]`
+/// `__columns = ["id", "name"]`
+/// `"id" = "INTEGER"`
+/// `"name" = "TEXT"`
+fn parse_dustdb_schema(toml_str: &str) -> Result<(String, Vec<(String, String)>)> {
     // Parse the TOML to extract table name and column names
     let parsed: toml::Value = toml::from_str(toml_str)
         .map_err(|e| DustError::InvalidInput(format!("invalid schema TOML in dustdb: {e}")))?;
@@ -1458,7 +1433,39 @@ fn parse_dustdb_schema(toml_str: &str) -> Result<(String, Vec<String>)> {
         DustError::InvalidInput("dustdb schema table entry is not a table".to_string())
     })?;
 
-    let columns: Vec<String> = cols_table.keys().cloned().collect();
+    let column_order = if let Some(order) = cols_table
+        .get("__columns")
+        .and_then(|value| value.as_array())
+    {
+        order
+            .iter()
+            .map(|value| {
+                value.as_str().map(|name| name.to_string()).ok_or_else(|| {
+                    DustError::InvalidInput(
+                        "dustdb schema __columns must be an array of strings".to_string(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        cols_table
+            .keys()
+            .filter(|key| key.as_str() != "__columns")
+            .cloned()
+            .collect()
+    };
+
+    let columns = column_order
+        .into_iter()
+        .map(|name| {
+            let ty = cols_table
+                .get(&name)
+                .and_then(|value| value.as_str())
+                .unwrap_or("TEXT")
+                .to_string();
+            (name, ty)
+        })
+        .collect();
 
     Ok((table_name.clone(), columns))
 }
@@ -1524,15 +1531,31 @@ fn run_dustpack_import(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::export::{self, ExportArgs};
     use crate::test_support::CwdGuard;
 
     #[test]
     fn test_parse_dustdb_schema() {
+        let toml = "[tables.users]\n__columns = [\"id\", \"name\"]\n\"id\" = \"TEXT\"\n\"name\" = \"TEXT\"\n";
+        let (name, cols) = parse_dustdb_schema(toml).unwrap();
+        assert_eq!(name, "users");
+        assert_eq!(
+            cols,
+            vec![
+                ("id".to_string(), "TEXT".to_string()),
+                ("name".to_string(), "TEXT".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_dustdb_schema_falls_back_to_table_keys_without_column_order() {
         let toml = "[tables.users]\n\"id\" = \"TEXT\"\n\"name\" = \"TEXT\"\n";
         let (name, cols) = parse_dustdb_schema(toml).unwrap();
         assert_eq!(name, "users");
-        assert!(cols.contains(&"id".to_string()));
-        assert!(cols.contains(&"name".to_string()));
+        assert_eq!(cols.len(), 2);
+        assert!(cols.iter().any(|(name, ty)| name == "id" && ty == "TEXT"));
+        assert!(cols.iter().any(|(name, ty)| name == "name" && ty == "TEXT"));
     }
 
     #[test]
@@ -1559,7 +1582,7 @@ mod tests {
         );
         assert_eq!(
             datum_to_sql_literal(&Datum::Blob(vec![0xDE, 0xAD])),
-            "X'DEAD'"
+            "x'DEAD'"
         );
     }
 
@@ -1632,18 +1655,27 @@ mod tests {
     }
 
     /// Build a minimal dustdb binary in memory.
-    fn build_dustdb_bytes(table_name: &str, columns: &[&str], rows: &[Vec<Datum>]) -> Vec<u8> {
+    fn build_dustdb_bytes(
+        table_name: &str,
+        columns: &[(&str, &str)],
+        rows: &[Vec<Datum>],
+    ) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(b"DUSTDB");
         buf.extend_from_slice(&1u16.to_le_bytes());
         buf.extend_from_slice(&1u32.to_le_bytes());
 
+        let column_order = columns
+            .iter()
+            .map(|(name, _)| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
         let col_defs = columns
             .iter()
-            .map(|c| format!("\"{c}\" = \"TEXT\""))
+            .map(|(name, ty)| format!("\"{name}\" = \"{ty}\""))
             .collect::<Vec<_>>()
             .join("\n");
-        let schema = format!("[tables.{table_name}]\n{col_defs}\n");
+        let schema = format!("[tables.{table_name}]\n__columns = [{column_order}]\n{col_defs}\n");
         let schema_bytes = schema.as_bytes();
         buf.extend_from_slice(&(schema_bytes.len() as u64).to_le_bytes());
         buf.extend_from_slice(schema_bytes);
@@ -1696,13 +1728,100 @@ mod tests {
         (tmp, db_path)
     }
 
+    fn query_typed_rows(engine: &mut PersistentEngine, sql: &str) -> Vec<Vec<Datum>> {
+        match engine.query(sql).unwrap() {
+            dust_exec::QueryOutput::RowsTyped { rows, .. } => rows,
+            dust_exec::QueryOutput::Rows { rows, .. } => rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .enumerate()
+                        .map(|(_, value)| datum_from_string_output(&value))
+                        .collect()
+                })
+                .collect(),
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    fn datum_from_string_output(value: &str) -> Datum {
+        if value == "NULL" {
+            Datum::Null
+        } else if value == "true" || value == "TRUE" {
+            Datum::Boolean(true)
+        } else if value == "false" || value == "FALSE" {
+            Datum::Boolean(false)
+        } else if let Ok(int_value) = value.parse::<i64>() {
+            Datum::Integer(int_value)
+        } else if let Ok(real_value) = value.parse::<f64>() {
+            Datum::Real(real_value)
+        } else {
+            Datum::Text(value.to_string())
+        }
+    }
+
+    fn export_project(project_dir: &Path, format: &str, output: &Path) {
+        let _cwd = CwdGuard::enter(project_dir);
+        export::run(ExportArgs {
+            format: format.to_string(),
+            table: None,
+            output: output.to_path_buf(),
+        })
+        .unwrap();
+    }
+
+    fn import_archive(project_dir: &Path, format: &str, path: &Path) {
+        let _cwd = CwdGuard::enter(project_dir);
+        match format {
+            "dustdb" => run_dustdb_import(path).unwrap(),
+            "dustpack" => run_dustpack_import(path).unwrap(),
+            other => panic!("unsupported import format in test: {other}"),
+        }
+    }
+
+    fn write_snappy_parquet(path: &Path, values: &[i32]) {
+        use parquet::basic::Compression;
+        use parquet::data_type::Int32Type;
+        use parquet::file::properties::WriterProperties;
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+        use std::sync::Arc;
+
+        let schema = Arc::new(
+            parse_message_type(
+                "
+                message schema {
+                    REQUIRED INT32 value;
+                }
+                ",
+            )
+            .unwrap(),
+        );
+        let props = Arc::new(
+            WriterProperties::builder()
+                .set_compression(Compression::SNAPPY)
+                .build(),
+        );
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
+        let mut row_group = writer.next_row_group().unwrap();
+        let mut col_writer = row_group.next_column().unwrap().unwrap();
+        col_writer
+            .typed::<Int32Type>()
+            .write_batch(values, None, None)
+            .unwrap();
+        col_writer.close().unwrap();
+        row_group.close().unwrap();
+        writer.close().unwrap();
+    }
+
     #[test]
     fn test_dustdb_import_roundtrip() {
         let (_tmp, db_path) = temp_project();
 
         let dustdb_bytes = build_dustdb_bytes(
             "products",
-            &["name", "price"],
+            &[("name", "TEXT"), ("price", "TEXT")],
             &[
                 vec![
                     Datum::Text("Widget".to_string()),
@@ -1777,139 +1896,156 @@ mod tests {
 
     #[test]
     fn test_dustdb_export_import_roundtrip() {
-        // Create data in one database, export to dustdb, import into another, verify.
-        let (_tmp1, db_path1) = temp_project();
-        let (_tmp2, db_path2) = temp_project();
-
-        // Populate database 1
-        let mut engine1 = PersistentEngine::open(&db_path1).unwrap();
+        let (tmp1, db_path1) = temp_project();
+        let (tmp2, db_path2) = temp_project();
+        let mut engine1 = dust_store::TableEngine::open_or_create(&db_path1).unwrap();
         engine1
-            .query("CREATE TABLE colors (name TEXT, hex TEXT)")
+            .create_table(
+                "colors",
+                vec![
+                    "id".to_string(),
+                    "name".to_string(),
+                    "active".to_string(),
+                    "score".to_string(),
+                    "payload".to_string(),
+                ],
+            )
             .unwrap();
         engine1
-            .query("INSERT INTO colors VALUES ('red', '#FF0000'), ('green', '#00FF00')")
+            .insert_row(
+                "colors",
+                vec![
+                    Datum::Integer(1),
+                    Datum::Text("red".to_string()),
+                    Datum::Boolean(true),
+                    Datum::Real(4.5),
+                    Datum::Blob(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+                ],
+            )
+            .unwrap();
+        engine1
+            .insert_row(
+                "colors",
+                vec![
+                    Datum::Integer(2),
+                    Datum::Text("green".to_string()),
+                    Datum::Boolean(false),
+                    Datum::Real(7.25),
+                    Datum::Blob(vec![0xCA, 0xFE]),
+                ],
+            )
             .unwrap();
         engine1.sync().unwrap();
-
-        // Export from database 1 using its data via the export module's binary format
-        let tmp_export = tempfile::tempdir().unwrap();
-        let export_path = tmp_export.path().join("colors.dustdb");
-
-        // We build the dustdb manually using the export logic:
-        // open the engine, query tables, write the binary format.
-        {
-            use std::io::{BufWriter, Write};
-            let tables = engine1.table_names();
-            let file = std::fs::File::create(&export_path).unwrap();
-            let mut writer = BufWriter::new(file);
-            writer.write_all(b"DUSTDB").unwrap();
-            writer.write_all(&1u16.to_le_bytes()).unwrap();
-            writer
-                .write_all(&(tables.len() as u32).to_le_bytes())
-                .unwrap();
-
-            for table_name in &tables {
-                let columns = engine1
-                    .query(&format!("SELECT * FROM \"{table_name}\" LIMIT 0"))
-                    .ok()
-                    .and_then(|o| match o {
-                        dust_exec::QueryOutput::Rows { columns, .. } => Some(columns),
-                        dust_exec::QueryOutput::RowsTyped { columns, .. } => Some(columns),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
-
-                let col_defs = columns
-                    .iter()
-                    .map(|c| format!("\"{c}\" = \"TEXT\""))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let schema = format!("[tables.{table_name}]\n{col_defs}\n");
-                let schema_bytes = schema.as_bytes();
-                writer
-                    .write_all(&(schema_bytes.len() as u64).to_le_bytes())
-                    .unwrap();
-                writer.write_all(schema_bytes).unwrap();
-
-                let rows_output = engine1
-                    .query(&format!("SELECT * FROM \"{table_name}\""))
-                    .unwrap();
-                // Convert to string rows regardless of output type
-                let row_strs: Vec<Vec<String>> = match &rows_output {
-                    dust_exec::QueryOutput::Rows { rows, .. } => rows.clone(),
-                    dust_exec::QueryOutput::RowsTyped { rows, .. } => rows
-                        .iter()
-                        .map(|row| {
-                            row.iter()
-                                .map(|d| match d {
-                                    Datum::Null => "NULL".to_string(),
-                                    Datum::Integer(n) => n.to_string(),
-                                    Datum::Real(f) => f.to_string(),
-                                    Datum::Boolean(b) => {
-                                        if *b { "TRUE" } else { "FALSE" }.to_string()
-                                    }
-                                    Datum::Text(s) => s.clone(),
-                                    Datum::Blob(b) => format!(
-                                        "x'{}'",
-                                        b.iter()
-                                            .map(|byte| format!("{byte:02x}"))
-                                            .collect::<String>()
-                                    ),
-                                })
-                                .collect()
-                        })
-                        .collect(),
-                    _ => vec![],
-                };
-
-                writer
-                    .write_all(&(columns.len() as u32).to_le_bytes())
-                    .unwrap();
-                writer
-                    .write_all(&(row_strs.len() as u64).to_le_bytes())
-                    .unwrap();
-
-                for row in &row_strs {
-                    for val_str in row {
-                        // Encode as text datums
-                        writer.write_all(&[TAG_TEXT]).unwrap();
-                        let bytes = val_str.as_bytes();
-                        writer
-                            .write_all(&(bytes.len() as u32).to_le_bytes())
-                            .unwrap();
-                        writer.write_all(bytes).unwrap();
-                    }
-                }
-            }
-            writer.flush().unwrap();
-        }
         drop(engine1);
 
-        // Import into database 2
-        let file = std::fs::File::open(&export_path).unwrap();
-        let mut reader = BufReader::new(file);
-        let (table_names, total_rows) =
-            import_dustdb_from_reader_into(&mut reader, &db_path2).unwrap();
-
-        assert_eq!(table_names, vec!["colors"]);
-        assert_eq!(total_rows, 2);
+        let export_path = tmp1.path().join("colors.dustdb");
+        export_project(tmp1.path(), "dustdb", &export_path);
+        import_archive(tmp2.path(), "dustdb", &export_path);
 
         let mut engine2 = PersistentEngine::open(&db_path2).unwrap();
-        let tables2 = engine2.table_names();
-        assert!(
-            tables2.iter().any(|t| t == "colors"),
-            "expected 'colors' table, got: {:?}",
-            tables2
+        let rows = query_typed_rows(
+            &mut engine2,
+            "SELECT id, name, active, score, payload FROM colors ORDER BY id",
         );
+        assert_eq!(
+            rows,
+            vec![
+                vec![
+                    Datum::Integer(1),
+                    Datum::Text("red".to_string()),
+                    Datum::Boolean(true),
+                    Datum::Real(4.5),
+                    Datum::Blob(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+                ],
+                vec![
+                    Datum::Integer(2),
+                    Datum::Text("green".to_string()),
+                    Datum::Boolean(false),
+                    Datum::Real(7.25),
+                    Datum::Blob(vec![0xCA, 0xFE]),
+                ],
+            ]
+        );
+    }
 
-        // Verify data survived by querying with SELECT *
-        let output = engine2.query("SELECT * FROM colors").unwrap();
-        let row_count = match &output {
-            dust_exec::QueryOutput::Rows { rows, .. } => rows.len(),
-            dust_exec::QueryOutput::RowsTyped { rows, .. } => rows.len(),
-            other => panic!("expected Rows, got {:?}", other),
-        };
-        assert_eq!(row_count, 2, "expected 2 rows, got {row_count}");
+    #[test]
+    fn test_dustpack_export_import_roundtrip_preserves_manifest_counts() {
+        let (tmp1, db_path1) = temp_project();
+        let (tmp2, db_path2) = temp_project();
+
+        let mut engine1 = PersistentEngine::open(&db_path1).unwrap();
+        engine1
+            .query("CREATE TABLE users (id INTEGER, name TEXT)")
+            .unwrap();
+        engine1
+            .query("INSERT INTO users VALUES (1, 'Ada'), (2, 'Linus')")
+            .unwrap();
+        engine1.sync().unwrap();
+        drop(engine1);
+
+        let export_path = tmp1.path().join("users.dustpack");
+        export_project(tmp1.path(), "dustpack", &export_path);
+
+        let archive_file = std::fs::File::open(&export_path).unwrap();
+        let gz = flate2::read::GzDecoder::new(archive_file);
+        let mut archive = tar::Archive::new(gz);
+        let mut manifest = String::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            if entry.path().unwrap().as_ref() == Path::new("manifest.toml") {
+                entry.read_to_string(&mut manifest).unwrap();
+                break;
+            }
+        }
+        let manifest: toml::Value = toml::from_str(&manifest).unwrap();
+        assert_eq!(manifest["metadata"]["table_count"].as_integer(), Some(1));
+        assert_eq!(manifest["metadata"]["row_count"].as_integer(), Some(2));
+
+        import_archive(tmp2.path(), "dustpack", &export_path);
+
+        let mut engine2 = PersistentEngine::open(&db_path2).unwrap();
+        let rows = query_typed_rows(&mut engine2, "SELECT id, name FROM users ORDER BY id");
+        assert_eq!(
+            rows,
+            vec![
+                vec![Datum::Integer(1), Datum::Text("Ada".to_string())],
+                vec![Datum::Integer(2), Datum::Text("Linus".to_string())],
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parquet_import_reads_snappy_files() {
+        let (tmp, db_path) = temp_project();
+        let parquet_path = tmp.path().join("items.parquet");
+        write_snappy_parquet(&parquet_path, &[3, 1, 2]);
+
+        let _cwd = CwdGuard::enter(tmp.path());
+        run(ImportArgs {
+            file: Some(parquet_path),
+            table: Some("parquet_items".to_string()),
+            header: true,
+            no_header: false,
+            separator: ",".to_string(),
+            replace: false,
+            upsert: false,
+            command: None,
+        })
+        .unwrap();
+
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+        let rows = query_typed_rows(
+            &mut engine,
+            "SELECT value FROM parquet_items ORDER BY value",
+        );
+        assert_eq!(
+            rows,
+            vec![
+                vec![Datum::Text("1".to_string())],
+                vec![Datum::Text("2".to_string())],
+                vec![Datum::Text("3".to_string())],
+            ]
+        );
     }
 
     #[test]

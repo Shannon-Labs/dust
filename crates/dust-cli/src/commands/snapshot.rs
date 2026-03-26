@@ -80,3 +80,74 @@ pub fn run(args: SnapshotArgs) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::CwdGuard;
+    use dust_core::ProjectPaths;
+    use dust_exec::{PersistentEngine, QueryOutput};
+
+    #[test]
+    fn checkout_restores_a_queryable_snapshot_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().to_path_buf();
+        let project = ProjectPaths::new(&project_dir);
+        project.init(false).unwrap();
+
+        let _cwd = CwdGuard::enter(&project_dir);
+        let db_path = project.active_data_db_path();
+        let mut engine = PersistentEngine::open(&db_path).unwrap();
+        engine
+            .query("CREATE TABLE users (id TEXT, name TEXT)")
+            .unwrap();
+        engine
+            .query("INSERT INTO users VALUES ('1', 'Ada'), ('2', 'Linus')")
+            .unwrap();
+        engine.sync().unwrap();
+
+        run(SnapshotArgs {
+            command: SnapshotCommand::Create {
+                name: "baseline".to_string(),
+            },
+            path: project_dir.clone(),
+        })
+        .unwrap();
+
+        engine
+            .query("INSERT INTO users VALUES ('3', 'Grace')")
+            .unwrap();
+        engine.sync().unwrap();
+        drop(engine);
+
+        run(SnapshotArgs {
+            command: SnapshotCommand::Checkout {
+                name: "baseline".to_string(),
+            },
+            path: project_dir.clone(),
+        })
+        .unwrap();
+
+        let snapshot_db = project.branch_data_db_path("snapshot/baseline");
+        let mut snapshot_engine = PersistentEngine::open(&snapshot_db).unwrap();
+        let output = snapshot_engine
+            .query("SELECT id, name FROM users ORDER BY id")
+            .unwrap();
+        let rows = match output {
+            QueryOutput::Rows { rows, .. } => rows,
+            QueryOutput::RowsTyped { rows, .. } => rows
+                .into_iter()
+                .map(|row| row.into_iter().map(|datum| datum.to_string()).collect())
+                .collect(),
+            other => panic!("expected rows, got {other:?}"),
+        };
+
+        assert_eq!(
+            rows,
+            vec![
+                vec!["1".to_string(), "Ada".to_string()],
+                vec!["2".to_string(), "Linus".to_string()],
+            ]
+        );
+    }
+}
