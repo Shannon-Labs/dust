@@ -1,4 +1,7 @@
 [package]
+description = "Typed code generation for Dust schemas"
+homepage.workspace = true
+repository.workspace = true
 name = "dust-codegen"
 version.workspace = true
 edition.workspace = true
@@ -6,9 +9,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-dust-types = { path = "../dust-types" }
-dust-sql = { path = "../dust-sql" }
-dust-catalog = { path = "../dust-catalog" }
+dust-types.workspace = true
+dust-sql.workspace = true
+dust-catalog.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

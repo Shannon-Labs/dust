@@ -1,6 +1,6 @@
 [package]
 categories = ["database", "command-line-utilities", "development-tools"]
-description = "The database toolchain in one binary"
+description = "An experimental local-first SQL workbench in one binary"
 homepage.workspace = true
 keywords = ["database", "sql", "branching", "developer-tools"]
 license.workspace = true
@@ -18,16 +18,16 @@ path = "src/main.rs"
 calamine.workspace = true
 clap.workspace = true
 csv = "1.3"
-dust-codegen = { path = "../dust-codegen" }
-dust-core = { path = "../dust-core" }
-dust-exec = { path = "../dust-exec" }
-dust-plan = { path = "../dust-plan" }
-dust-lsp = { path = "../dust-lsp" }
-dust-mcp = { path = "../dust-mcp" }
-dust-migrate = { path = "../dust-migrate" }
-dust-sql = { path = "../dust-sql" }
-dust-store = { path = "../dust-store" }
-dust-types = { path = "../dust-types" }
+dust-codegen.workspace = true
+dust-core.workspace = true
+dust-exec.workspace = true
+dust-plan.workspace = true
+dust-lsp.workspace = true
+dust-mcp.workspace = true
+dust-migrate.workspace = true
+dust-sql.workspace = true
+dust-store.workspace = true
+dust-types.workspace = true
 flate2 = "1"
 miette.workspace = true
 parquet.workspace = true

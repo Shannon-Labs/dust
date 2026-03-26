@@ -1,4 +1,7 @@
 [package]
+description = "Storage engine and branch workspace primitives for Dust"
+homepage.workspace = true
+repository.workspace = true
 name = "dust-store"
 version.workspace = true
 edition.workspace = true
@@ -7,7 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 blake3.workspace = true
-dust-types = { path = "../dust-types" }
+dust-types.workspace = true
 hex.workspace = true
 serde.workspace = true
 toml.workspace = true

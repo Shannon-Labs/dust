@@ -9,8 +9,8 @@ use dust_sql::parse_sql;
 use dust_store::{BranchHead, BranchName, BranchRef, WorkspaceLayout};
 use dust_types::{DustError, Result, SchemaFingerprint};
 
-const CONFIG_TEMPLATE: &str = include_str!("../../../templates/project/dust.toml");
-const SCHEMA_TEMPLATE: &str = include_str!("../../../templates/project/db/schema.sql");
+const CONFIG_TEMPLATE: &str = include_str!("../templates/project/dust.toml");
+const SCHEMA_TEMPLATE: &str = include_str!("../templates/project/db/schema.sql");
 
 #[derive(Debug, Clone)]
 pub struct ProjectPaths {

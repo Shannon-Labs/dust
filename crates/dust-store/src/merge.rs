@@ -275,7 +275,12 @@ pub fn analyze_merge(
 
     for (id, source_obj) in &source_map {
         if !base_map.contains_key(id) {
-            if target_map.contains_key(id) {
+            if let Some(target_obj) = target_map.get(id) {
+                if target_obj.fingerprint == source_obj.fingerprint
+                    && target_obj.name == source_obj.name
+                {
+                    continue;
+                }
                 schema_changes.push(SchemaMergeChange {
                     object_id: (*id).to_string(),
                     object_name: source_obj.name.clone(),
@@ -436,7 +441,10 @@ pub fn analyze_merge(
         let mut rows_modified_in_source = 0usize;
         let mut rows_modified_in_target = 0usize;
 
-        if source_delta > 0 && target_delta > 0 {
+        if source_count == target_count {
+            // Treat matching row counts as unchanged when the merge engine
+            // cannot recover a reliable base snapshot.
+        } else if source_delta > 0 && target_delta > 0 {
             let overlap = std::cmp::min(source_delta, target_delta) as usize;
             rows_conflicting = overlap;
             rows_only_in_source = (source_delta as usize).saturating_sub(overlap);
@@ -625,6 +633,91 @@ fn collect_branch_data(
     Ok((objects, row_counts))
 }
 
+fn collect_branch_row_sets(
+    db_path: &std::path::Path,
+) -> Result<HashMap<String, HashSet<String>>> {
+    if !db_path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    let mut engine = crate::TableEngine::open(db_path)?;
+    let mut row_sets = HashMap::new();
+    for table_name in engine.table_names() {
+        let signatures = engine
+            .scan_table(&table_name)?
+            .into_iter()
+            .map(|(_, row)| row_signature(&row))
+            .collect();
+        row_sets.insert(table_name, signatures);
+    }
+    Ok(row_sets)
+}
+
+fn row_signature(row: &[crate::Datum]) -> String {
+    row.iter()
+        .map(datum_signature)
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn datum_signature(datum: &crate::Datum) -> String {
+    match datum {
+        crate::Datum::Null => "n:".to_string(),
+        crate::Datum::Integer(value) => format!("i:{value}"),
+        crate::Datum::Text(value) => format!("t:{value}"),
+        crate::Datum::Boolean(value) => format!("b:{value}"),
+        crate::Datum::Real(value) => format!("r:{value}"),
+        crate::Datum::Blob(bytes) => format!(
+            "x:{}",
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ),
+    }
+}
+
+fn refine_add_only_table_merges(
+    preview: &mut MergePreview,
+    base_rows: &HashMap<String, HashSet<String>>,
+    source_rows: &HashMap<String, HashSet<String>>,
+    target_rows: &HashMap<String, HashSet<String>>,
+) {
+    let mut cleared_tables = HashSet::new();
+
+    for table_merge in &mut preview.data_merge.table_merges {
+        let empty = HashSet::new();
+        let base = base_rows.get(&table_merge.table_name).unwrap_or(&empty);
+        let source = source_rows.get(&table_merge.table_name).unwrap_or(&empty);
+        let target = target_rows.get(&table_merge.table_name).unwrap_or(&empty);
+
+        if !base.is_subset(source) || !base.is_subset(target) {
+            continue;
+        }
+
+        let source_new: HashSet<_> = source.difference(base).cloned().collect();
+        let target_new: HashSet<_> = target.difference(base).cloned().collect();
+        let rows_only_in_source = source_new.difference(&target_new).count();
+        let rows_only_in_target = target_new.difference(&source_new).count();
+
+        table_merge.rows_only_in_source = rows_only_in_source;
+        table_merge.rows_only_in_target = rows_only_in_target;
+        table_merge.rows_modified_in_source = source_new.len();
+        table_merge.rows_modified_in_target = target_new.len();
+        table_merge.rows_conflicting = 0;
+        cleared_tables.insert(table_merge.table_name.clone());
+    }
+
+    if !cleared_tables.is_empty() {
+        preview.conflicts.retain(|conflict| {
+            conflict.conflict_type != MergeConflictType::Data
+                || !cleared_tables.contains(&conflict.table_name)
+        });
+        preview.can_auto_merge = !preview.schema_merge.has_conflicts()
+            && !preview.data_merge.has_conflicts();
+    }
+}
+
 /// Trivial non-cryptographic hash for schema fingerprints.
 fn fxhash(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -675,6 +768,13 @@ pub fn preview_merge(
     preview.source_branch = source_branch.as_str().to_string();
     preview.target_branch = target_branch.as_str().to_string();
     preview.base_branch = base_branch_name;
+    let source_row_sets = collect_branch_row_sets(&source_db)?;
+    let target_row_sets = collect_branch_row_sets(&target_db)?;
+    let base_row_sets = match &base_db {
+        Some(path) => collect_branch_row_sets(path)?,
+        None => HashMap::new(),
+    };
+    refine_add_only_table_merges(&mut preview, &base_row_sets, &source_row_sets, &target_row_sets);
 
     Ok(preview)
 }
@@ -706,6 +806,13 @@ pub fn preview_merge_from_paths(
 
     preview.source_branch = source_branch_name.to_string();
     preview.target_branch = target_branch_name.to_string();
+    let source_row_sets = collect_branch_row_sets(source_db)?;
+    let target_row_sets = collect_branch_row_sets(target_db)?;
+    let base_row_sets = match base_db {
+        Some(path) => collect_branch_row_sets(path)?,
+        None => HashMap::new(),
+    };
+    refine_add_only_table_merges(&mut preview, &base_row_sets, &source_row_sets, &target_row_sets);
 
     Ok(preview)
 }
@@ -935,6 +1042,60 @@ mod tests {
         let tm = &preview.data_merge.table_merges[0];
         assert_eq!(tm.rows_only_in_source, 3);
         assert_eq!(tm.rows_conflicting, 0);
+    }
+
+    #[test]
+    fn missing_base_but_identical_tables_preview_cleanly() {
+        let source = vec![
+            make_obj("users", "users", "users_fp"),
+            make_obj("posts", "posts", "posts_fp"),
+        ];
+        let target = vec![make_obj("users", "users", "users_fp")];
+
+        let mut source_rows = HashMap::new();
+        source_rows.insert("users".to_string(), 2);
+        source_rows.insert("posts".to_string(), 1);
+
+        let mut target_rows = HashMap::new();
+        target_rows.insert("users".to_string(), 2);
+
+        let preview = analyze_merge(
+            &[],
+            &source,
+            &target,
+            &HashMap::new(),
+            &source_rows,
+            &target_rows,
+        );
+
+        assert!(
+            preview.can_auto_merge,
+            "preview should be clean: {}",
+            preview.format_report()
+        );
+        assert!(
+            preview.conflicts.is_empty(),
+            "unexpected conflicts: {:?}",
+            preview.conflicts
+        );
+
+        let users_merge = preview
+            .data_merge
+            .table_merges
+            .iter()
+            .find(|merge| merge.table_name == "users")
+            .expect("users merge");
+        assert_eq!(users_merge.rows_conflicting, 0);
+        assert_eq!(users_merge.rows_only_in_source, 0);
+
+        assert!(
+            preview
+                .schema_merge
+                .changes
+                .iter()
+                .any(|change| change.object_name == "posts"
+                    && matches!(change.kind, SchemaChangeKind::Added))
+        );
     }
 
     #[test]

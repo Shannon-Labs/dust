@@ -2,7 +2,9 @@
 name = "dust-mcp"
 version.workspace = true
 edition.workspace = true
+homepage.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 description = "MCP (Model Context Protocol) server for the dust SQL database"
 
@@ -15,11 +17,11 @@ name = "dust-mcp"
 path = "src/main.rs"
 
 [dependencies]
-dust-core = { path = "../dust-core" }
-dust-exec = { path = "../dust-exec" }
-dust-sql = { path = "../dust-sql" }
-dust-store = { path = "../dust-store" }
-dust-types = { path = "../dust-types" }
+dust-core.workspace = true
+dust-exec.workspace = true
+dust-sql.workspace = true
+dust-store.workspace = true
+dust-types.workspace = true
 serde = { workspace = true }
 serde_json = "1"
 csv = "1.3"

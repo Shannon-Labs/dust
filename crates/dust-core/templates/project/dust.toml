@@ -1,0 +1,24 @@
+[project]
+name = "sample"
+
+[db]
+path = ".dust/workspace"
+default_branch = "main"
+
+[dev]
+pgwire = true
+pgwire_addr = "127.0.0.1:4545"
+inspector = false
+auto_apply = true
+auto_generate = true
+git_branch_mapping = true
+
+[codegen.rust]
+out = "src/db/generated.rs"
+module = "db::queries"
+
+[codegen.typescript]
+out = "web/src/lib/db/generated.ts"
+
+[seeds]
+default = "dev"

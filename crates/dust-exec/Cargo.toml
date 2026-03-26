@@ -1,4 +1,7 @@
 [package]
+description = "Query execution engine for Dust"
+homepage.workspace = true
+repository.workspace = true
 name = "dust-exec"
 version.workspace = true
 edition.workspace = true
@@ -10,11 +13,11 @@ default = []
 wasm = ["wasmtime"]
 
 [dependencies]
-dust-catalog = { path = "../dust-catalog" }
-dust-sql = { path = "../dust-sql" }
-dust-plan = { path = "../dust-plan" }
-dust-store = { path = "../dust-store" }
-dust-types = { path = "../dust-types" }
+dust-catalog.workspace = true
+dust-sql.workspace = true
+dust-plan.workspace = true
+dust-store.workspace = true
+dust-types.workspace = true
 serde.workspace = true
 toml.workspace = true
 wasmtime = { version = "29", optional = true }

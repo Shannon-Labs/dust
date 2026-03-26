@@ -1,4 +1,7 @@
 [package]
+description = "Schema catalog extraction and validation for Dust"
+homepage.workspace = true
+repository.workspace = true
 name = "dust-catalog"
 version.workspace = true
 edition.workspace = true
@@ -6,5 +9,5 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-dust-types = { path = "../dust-types" }
-dust-sql = { path = "../dust-sql" }
+dust-types.workspace = true
+dust-sql.workspace = true

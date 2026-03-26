@@ -30,6 +30,17 @@ anyhow = "1.0.100"
 blake3 = "1.8.2"
 calamine = "0.25"
 clap = { version = "4.5.48", features = ["derive"] }
+dust-catalog = { version = "0.1.1", path = "crates/dust-catalog" }
+dust-codegen = { version = "0.1.1", path = "crates/dust-codegen" }
+dust-core = { version = "0.1.1", path = "crates/dust-core" }
+dust-exec = { version = "0.1.1", path = "crates/dust-exec" }
+dust-lsp = { version = "0.1.1", path = "crates/dust-lsp" }
+dust-mcp = { version = "0.1.1", path = "crates/dust-mcp" }
+dust-migrate = { version = "0.1.1", path = "crates/dust-migrate" }
+dust-plan = { version = "0.1.1", path = "crates/dust-plan" }
+dust-sql = { version = "0.1.1", path = "crates/dust-sql" }
+dust-store = { version = "0.1.1", path = "crates/dust-store" }
+dust-types = { version = "0.1.1", path = "crates/dust-types" }
 miette = { version = "7.6.0", features = ["fancy"] }
 parquet = { version = "53", default-features = false, features = ["snap"] }
 serde = { version = "1.0.228", features = ["derive"] }

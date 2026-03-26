@@ -1,4 +1,7 @@
 [package]
+description = "Schema migration planning and application for Dust"
+homepage.workspace = true
+repository.workspace = true
 name = "dust-migrate"
 version.workspace = true
 edition.workspace = true
@@ -6,9 +9,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-dust-catalog = { path = "../dust-catalog" }
-dust-sql = { path = "../dust-sql" }
-dust-types = { path = "../dust-types" }
+dust-catalog.workspace = true
+dust-sql.workspace = true
+dust-types.workspace = true
 serde.workspace = true
 toml.workspace = true
 tempfile.workspace = true

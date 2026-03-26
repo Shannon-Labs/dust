@@ -4,7 +4,7 @@ Get a branchable SQL database running in under a minute.
 
 ## Install
 
-Download the single binary from the [releases page](https://github.com/dust-db/dust/releases) or build from source:
+Download the single binary from the [releases page](https://github.com/Shannon-Labs/dust/releases) or build from source:
 
 ```sh
 cargo install dust-cli
@@ -25,9 +25,9 @@ dust init
 
 This creates a `.dust/` directory with the workspace layout, schema file, and branch metadata. No Docker, no server process.
 
-## Define a schema and load data
+## Load data quickly
 
-Create a CSV file to import. In a real workflow you would point at an existing export; here we inline one:
+For the fastest path, import a CSV directly into the live database. In a real workflow you would point at an existing export; here we inline one:
 
 ```sh
 cat > products.csv << 'EOF'
@@ -91,7 +91,7 @@ dust shell
 
 ## Branch the database
 
-This is where Dust diverges from plain SQLite. Create an isolated branch with a full copy of your data:
+This is where Dust diverges from plain SQLite. Create an isolated branch with a full copy of your data (today branch creation copies the database file):
 
 ```sh
 dust branch create experiment
@@ -143,6 +143,8 @@ dust branch switch main
 dust branch delete experiment
 ```
 
+If you compare branches with `dust diff` or `dust branch diff`, note that the current diff is row-count based. Pure value changes with unchanged row counts will not show up yet.
+
 ## Connect with psql
 
 Dust speaks the Postgres wire protocol. Start the server:
@@ -154,7 +156,7 @@ dust serve
 Then connect from another terminal:
 
 ```sh
-psql -h 127.0.0.1 -p 5433 -U dust
+psql -h 127.0.0.1 -p 4545 -U dust
 ```
 
 Any tool that speaks Postgres (DataGrip, DBeaver, language drivers) can connect the same way.
@@ -166,6 +168,8 @@ dust doctor
 ```
 
 This checks the workspace layout, parses `db/schema.sql`, and reports schema fingerprint status. Useful in CI to catch drift between your schema file and the running database.
+
+Because this quickstart imported data directly into the live database, `dust doctor` will likely report drift unless you also model that table in `db/schema.sql` and update the lockfile/migration state. In other words: the fast import path is useful today, but the schema-managed path is still the stricter, healthier mode.
 
 ## What is supported today
 
@@ -185,7 +189,7 @@ This checks the workspace layout, parses `db/schema.sql`, and reports schema fin
 | Subqueries: IN (SELECT), NOT IN, scalar | Supported |
 | Branch diff (row count deltas) | Supported |
 | --format json/csv/table output | Supported |
-| Window functions, CTEs | Not yet |
+| Window functions, CTEs | Supported |
 | Foreign key enforcement | Not yet |
 
 ## Why not plain SQLite?

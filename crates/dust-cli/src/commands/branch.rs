@@ -39,7 +39,7 @@ pub enum BranchCommand {
         /// Branch name to delete
         name: String,
     },
-    /// Compare two branches (schema + row count deltas)
+    /// Compare two branches (table presence + row count deltas)
     Diff {
         /// Source branch (default: main)
         #[arg(default_value = "main")]

@@ -1,4 +1,7 @@
 [package]
+description = "SQL parser and AST for Dust"
+homepage.workspace = true
+repository.workspace = true
 name = "dust-sql"
 version.workspace = true
 edition.workspace = true
@@ -6,5 +9,4 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-dust-types = { path = "../dust-types" }
-
+dust-types.workspace = true

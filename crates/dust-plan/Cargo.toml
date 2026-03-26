@@ -1,4 +1,7 @@
 [package]
+description = "Logical and physical query planning for Dust"
+homepage.workspace = true
+repository.workspace = true
 name = "dust-plan"
 version.workspace = true
 edition.workspace = true
@@ -6,4 +9,3 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-

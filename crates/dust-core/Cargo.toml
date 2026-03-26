@@ -1,4 +1,7 @@
 [package]
+description = "Project and workspace primitives for Dust"
+homepage.workspace = true
+repository.workspace = true
 name = "dust-core"
 version.workspace = true
 edition.workspace = true
@@ -6,13 +9,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-dust-catalog = { path = "../dust-catalog" }
-dust-exec = { path = "../dust-exec" }
-dust-migrate = { path = "../dust-migrate" }
-dust-plan = { path = "../dust-plan" }
-dust-sql = { path = "../dust-sql" }
-dust-store = { path = "../dust-store" }
-dust-types = { path = "../dust-types" }
+dust-catalog.workspace = true
+dust-exec.workspace = true
+dust-migrate.workspace = true
+dust-plan.workspace = true
+dust-sql.workspace = true
+dust-store.workspace = true
+dust-types.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
