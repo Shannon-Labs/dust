@@ -1,6 +1,7 @@
 allow-branch = ["main"]
 shared-version = true
 consolidate-commits = true
+rate-limit.new-packages = 20
 tag-name = "v{{version}}"
 tag-message = "Release {{tag_name}}"
 pre-release-commit-message = "chore: release {{version}}"
