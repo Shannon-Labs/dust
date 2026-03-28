@@ -71,10 +71,12 @@ pub fn run(
     let schema_sql =
         fs::read_to_string(schema_path).map_err(|e| format!("failed to read schema: {e}"))?;
 
-    let fingerprint = SchemaFingerprint::compute(schema_sql.as_bytes());
-
     // Build a catalog from the schema so codegen can resolve column types.
     let catalog = Catalog::from_sql(&schema_sql).ok();
+    let fingerprint = catalog
+        .as_ref()
+        .map(|catalog| catalog.fingerprint().clone())
+        .unwrap_or_else(|| SchemaFingerprint::compute(schema_sql.as_bytes()));
 
     let queries = if queries_dir.exists() {
         parser::parse_queries_dir_with_schema(queries_dir, catalog.as_ref())

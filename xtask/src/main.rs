@@ -670,7 +670,7 @@ fn smoke_inventory_sample(runner: &DustRunner) -> Result<()> {
             "--format",
             "json",
             "-f",
-            "queries/reorder_report.sql",
+            "db/queries/reorder_report.sql",
         ],
         Some(&root),
     )?;
@@ -686,6 +686,26 @@ fn smoke_inventory_sample(runner: &DustRunner) -> Result<()> {
     ensure!(
         root.join("db/generated/queries.ts").exists(),
         "TypeScript codegen output was not generated for inventory sample"
+    );
+    let rust_codegen = std::fs::read_to_string(root.join("db/generated/queries.rs"))
+        .context("failed to read generated Rust code")?;
+    ensure!(
+        rust_codegen.contains("pub struct DustClient"),
+        "Rust codegen did not include the executable DustClient helper"
+    );
+    ensure!(
+        rust_codegen.contains("pub fn products_by_category"),
+        "Rust codegen did not include the products_by_category helper"
+    );
+    let ts_codegen = std::fs::read_to_string(root.join("db/generated/queries.ts"))
+        .context("failed to read generated TypeScript code")?;
+    ensure!(
+        ts_codegen.contains("export class DustClient"),
+        "TypeScript codegen did not include the executable DustClient helper"
+    );
+    ensure!(
+        ts_codegen.contains("export async function products_by_category"),
+        "TypeScript codegen did not include the products_by_category helper"
     );
     Ok(())
 }
