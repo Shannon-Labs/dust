@@ -18,31 +18,37 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
-
       - name: Test workspace
         run: cargo test --workspace --exclude dust-testing
-
-      # dust-testing currently has multiple failing integration targets on main.
       - name: Test dust-testing library
         run: cargo test -p dust-testing --lib
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Test xtask
+        run: cargo test -p xtask
+      - name: Smoke test templates and site generation
+        run: cargo run -p xtask -- smoke
 
   package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Package publishable workspace crates
         run: cargo package --workspace --exclude dust-testing --exclude xtask

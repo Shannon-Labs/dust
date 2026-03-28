@@ -633,9 +633,7 @@ fn collect_branch_data(
     Ok((objects, row_counts))
 }
 
-fn collect_branch_row_sets(
-    db_path: &std::path::Path,
-) -> Result<HashMap<String, HashSet<String>>> {
+fn collect_branch_row_sets(db_path: &std::path::Path) -> Result<HashMap<String, HashSet<String>>> {
     if !db_path.exists() {
         return Ok(HashMap::new());
     }
@@ -713,8 +711,8 @@ fn refine_add_only_table_merges(
             conflict.conflict_type != MergeConflictType::Data
                 || !cleared_tables.contains(&conflict.table_name)
         });
-        preview.can_auto_merge = !preview.schema_merge.has_conflicts()
-            && !preview.data_merge.has_conflicts();
+        preview.can_auto_merge =
+            !preview.schema_merge.has_conflicts() && !preview.data_merge.has_conflicts();
     }
 }
 
@@ -774,7 +772,12 @@ pub fn preview_merge(
         Some(path) => collect_branch_row_sets(path)?,
         None => HashMap::new(),
     };
-    refine_add_only_table_merges(&mut preview, &base_row_sets, &source_row_sets, &target_row_sets);
+    refine_add_only_table_merges(
+        &mut preview,
+        &base_row_sets,
+        &source_row_sets,
+        &target_row_sets,
+    );
 
     Ok(preview)
 }
@@ -812,7 +815,12 @@ pub fn preview_merge_from_paths(
         Some(path) => collect_branch_row_sets(path)?,
         None => HashMap::new(),
     };
-    refine_add_only_table_merges(&mut preview, &base_row_sets, &source_row_sets, &target_row_sets);
+    refine_add_only_table_merges(
+        &mut preview,
+        &base_row_sets,
+        &source_row_sets,
+        &target_row_sets,
+    );
 
     Ok(preview)
 }

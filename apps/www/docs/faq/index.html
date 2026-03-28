@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FAQ · Dust Docs</title>
+    <meta name="description" content="Answers to the most common launch and adoption questions.">
+    <link rel="stylesheet" href="../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../docs/">Docs</a>
+        <a href="../../pricing/">Pricing</a>
+        <a href="../../waitlist/">Waitlist</a>
+        <a href="../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>FAQ</h1>
+          <p>Answers to the most common launch and adoption questions.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../docs/">Quickstart</a><a class="docs-nav-link" href="../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../../docs/roadmap/">Roadmap</a><a class="docs-nav-link is-active" href="../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/faq/index.html">
+        <h1>FAQ</h1>
+<h2>Is Dust a production database?</h2>
+<p>No. Dust is a local-first SQL runtime and workflow toolchain. It is designed to make development, testing, imports, and schema experiments fast and explicit.</p>
+<h2>Why use Dust instead of SQLite directly?</h2>
+<p>SQLite gives you a file. Dust gives you a file plus repo-local project structure, schema fingerprints, migrations, typed query artifacts, branch/snapshot commands, and first-party agent integrations.</p>
+<h2>Why use Dust instead of Docker Postgres?</h2>
+<p>The wedge is local workflow speed and simplicity. Dust avoids container startup, external service management, and much of the glue code people build around local databases.</p>
+<h2>Does Dust fully emulate Postgres?</h2>
+<p>No. Dust exposes a Postgres wire surface for client compatibility, but the engine is opinionated and intentionally smaller than full Postgres compatibility.</p>
+<h2>Are branches copy-on-write yet?</h2>
+<p>Not yet. Branch creation still copies the database file today. The roadmap includes metadata-oriented branch refs, but the current behavior is explicit in the docs and CLI copy.</p>
+<h2>Is there a hosted product?</h2>
+<p>Not as a general-availability product. The repo documents a Free CLI, an invite-only Team beta direction, and an Enterprise design-partner path so the public surface stays honest about what exists.</p>
+<h2>Can I use Dust with AI agents?</h2>
+<p>Yes. Dust ships an MCP server and a pgwire endpoint so agents and normal database clients can operate on the same local project state.</p>
+<h2>What languages have first-party typed surfaces?</h2>
+<p>Rust and TypeScript code generation exist today. A thin Python client is now included as a wrapper over the stable CLI JSON surface.</p>
+<h2>Where do I ask questions or report issues?</h2>
+<p>Use the public support paths in <a href="../../docs/support/">docs/support.md</a>. The repo now exposes distinct forms for support questions, bugs, docs feedback, Team beta intake, and Enterprise contact so launch traffic lands somewhere visible and triageable.</p>
+
+      </article>
+    </main>
+    <script src="../../assets/site.js"></script>
+  </body>
+</html>

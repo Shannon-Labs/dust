@@ -1,0 +1,29 @@
+name: Docs feedback
+description: Report missing, confusing, or outdated documentation.
+title: "[Docs] "
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Docs page or route
+      placeholder: docs/cli.md or https://.../docs/cli/
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of docs issue is this?
+      options:
+        - Incorrect information
+        - Missing information
+        - Unclear explanation
+        - Broken link or route
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: What should change?
+      description: Point to the confusing or broken section and describe the fix you expected.
+    validations:
+      required: true

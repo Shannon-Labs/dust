@@ -7,6 +7,8 @@
 /.dust
 *.db
 *.cast
+__pycache__/
+*.py[cod]
 claude_desktop_config.json
 opencode.json
 docs/2026-03-25-dust-integration-spec.md

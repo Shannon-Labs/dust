@@ -1,19 +1,50 @@
-# CLI
+# CLI Reference
 
-Dust now exposes the following user-facing commands:
+Dust ships one CLI with the following command groups.
+
+## Core
 
 - `dust init [path]`
-- `dust doctor [path]`
-- `dust query <sql> | --file <path>`
-- `dust explain <sql> | --file <path>`
-- `dust import ...`
-- `dust export ...`
-- `dust branch ...`
-- `dust diff ...`
-- `dust shell [path]`
-- `dust demo [path]`
+- `dust query <sql> | -f <path>`
+- `dust explain <sql> | -f <path>`
+- `dust shell`
+- `dust status`
 - `dust version`
 
-`dust query` runs SQL against the active project database, including DDL, DML, aggregates, subqueries, transactions, and `PRAGMA` no-ops. `dust explain` prints a logical and physical plan for a SQL statement. `dust doctor` validates the project layout and schema metadata.
+## State and Workflow
 
-`dust import` supports CSV and SQLite sources, plus project archive formats. `dust export` supports `--format csv --table <name> --output <path>` for table exports, and also `dustdb` and `dustpack` project exports. `dust shell` provides an interactive REPL over the same engine that powers `dust query`.
+- `dust branch create|list|current|switch|delete|diff`
+- `dust snapshot create|checkout|delete|list`
+- `dust diff [from] [to]`
+- `dust merge preview|execute|resolve`
+- `dust remote push|pull`
+
+## Project Health
+
+- `dust doctor`
+- `dust lint`
+- `dust migrate plan|apply|status|replay`
+- `dust codegen [--lang rust|typescript]`
+- `dust test`
+- `dust bench`
+- `dust deploy`
+
+## Data Movement
+
+- `dust import ...`
+- `dust export ...`
+- `dust seed [--profile <name>]`
+
+## Integrations
+
+- `dust dev [--profile <name>] [--serve]`
+- `dust serve`
+- `dust mcp`
+- `dust lsp`
+- `dust demo`
+
+## Notes
+
+- `dust query --format json` is the stable thin-client path for wrappers and SDKs.
+- `dust dev` watches schema, query, and seed files, reruns codegen, and can optionally expose pgwire.
+- `dust branch` and `dust diff` are explicit about the current row-count-based diff behavior.

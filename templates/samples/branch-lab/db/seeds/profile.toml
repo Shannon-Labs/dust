@@ -1,0 +1,5 @@
+[profiles.demo]
+files = ["001_accounts.sql", "002_entries.sql"]
+
+[profiles.test]
+files = ["001_accounts.sql", "002_entries.sql"]

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Waitlist · Dust Docs</title>
+    <meta name="description" content="What the Team beta intake needs to capture and how to route it.">
+    <link rel="stylesheet" href="../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../docs/">Docs</a>
+        <a href="../../pricing/">Pricing</a>
+        <a href="../../waitlist/">Waitlist</a>
+        <a href="../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>Waitlist</h1>
+          <p>What the Team beta intake needs to capture and how to route it.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../docs/">Quickstart</a><a class="docs-nav-link" href="../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../docs/pricing/">Pricing</a><a class="docs-nav-link is-active" href="../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/waitlist/index.html">
+        <h1>Waitlist</h1>
+<p>The Team beta intake should qualify real adoption intent instead of collecting a vague email list. The public site now routes that intake through GitHub issue forms so submissions land in a repo-owned queue instead of disappearing into private inboxes.</p>
+<h2>Capture These Fields</h2>
+<ul>
+<li>Team or company name</li>
+<li>Contact name and email</li>
+<li>Current database stack</li>
+<li>Primary use case for Dust</li>
+<li>Approximate team size</li>
+<li>Urgency or evaluation timeline</li>
+<li>Whether the interest is Team beta or Enterprise design-partner oriented</li>
+</ul>
+<h2>Routing Rules</h2>
+<ul>
+<li>Team beta requests should land in a queue that can be triaged manually through the <a href="https://github.com/Shannon-Labs/dust/issues/new?template=team_beta.yml">Team beta intake form</a>.</li>
+<li>Enterprise conversations should route to a higher-touch follow-up path through the <a href="https://github.com/Shannon-Labs/dust/issues/new?template=enterprise_contact.yml">Enterprise contact form</a>.</li>
+<li>Intake copy should state plainly that the beta is invite-only.</li>
+</ul>
+<h2>Current Repo Surface</h2>
+<ul>
+<li>The marketing site includes a <code>/waitlist/</code> route with direct CTA routing into public intake forms.</li>
+<li>The support route documents the parallel paths for support, docs feedback, bugs, and product requests.</li>
+<li>The launch infrastructure doc still defines the environment contract for a future dedicated form or CRM endpoint.</li>
+<li>Until automated billing and CRM wiring exist, beta qualification remains a manual operator workflow with repo-visible submissions.</li>
+</ul>
+
+      </article>
+    </main>
+    <script src="../../assets/site.js"></script>
+  </body>
+</html>

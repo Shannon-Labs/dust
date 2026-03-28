@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Dust Support Guide
+    url: https://github.com/Shannon-Labs/dust/blob/main/docs/support.md
+    about: Start here for the public support paths, escalation rules, and launch contact routing.
+  - name: Dust FAQ
+    url: https://github.com/Shannon-Labs/dust/blob/main/docs/faq.md
+    about: Check the current product boundaries, beta framing, and common launch questions.

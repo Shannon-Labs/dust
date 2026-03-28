@@ -8,6 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+pulldown-cmark = "0.13"
+serde.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 
 [package.metadata.release]

@@ -1,0 +1,74 @@
+name: Team beta intake
+description: Request access to the invite-only Dust Team beta.
+title: "[Team beta] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form when a team wants beta access to Dust for a real evaluation.
+        The beta is manual and invite-only on purpose.
+  - type: input
+    id: company
+    attributes:
+      label: Team or company name
+      placeholder: Acme, Inc.
+    validations:
+      required: true
+  - type: input
+    id: contact_name
+    attributes:
+      label: Contact name
+      placeholder: Jane Doe
+    validations:
+      required: true
+  - type: input
+    id: contact_email
+    attributes:
+      label: Contact email
+      placeholder: jane@acme.com
+    validations:
+      required: true
+  - type: textarea
+    id: stack
+    attributes:
+      label: Current database stack
+      description: Include local-dev tooling, database engines, and any migration or seed workflow you already use.
+      placeholder: Docker Postgres + Prisma migrations + ad hoc seed scripts
+    validations:
+      required: true
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Primary use case
+      description: What problem do you want Dust to solve first?
+      placeholder: Faster local database setup for feature branches and test fixtures
+    validations:
+      required: true
+  - type: dropdown
+    id: team_size
+    attributes:
+      label: Team size
+      options:
+        - 1-5
+        - 6-20
+        - 21-50
+        - 51-200
+        - 200+
+    validations:
+      required: true
+  - type: dropdown
+    id: urgency
+    attributes:
+      label: Evaluation timeline
+      options:
+        - This week
+        - This month
+        - This quarter
+        - Exploring only
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything that would make the beta especially valuable
+      placeholder: Branch workflow pain, import volume, agent workflow, rollout constraints

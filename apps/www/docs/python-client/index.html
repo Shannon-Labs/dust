@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Python Client · Dust Docs</title>
+    <meta name="description" content="Thin Python bindings over the stable Dust CLI JSON surface.">
+    <link rel="stylesheet" href="../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../docs/">Docs</a>
+        <a href="../../pricing/">Pricing</a>
+        <a href="../../waitlist/">Waitlist</a>
+        <a href="../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>Python Client</h1>
+          <p>Thin Python bindings over the stable Dust CLI JSON surface.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../docs/">Quickstart</a><a class="docs-nav-link" href="../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link is-active" href="../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/python-client/index.html">
+        <h1>Python Client</h1>
+<p>Dust now ships a thin Python wrapper over the CLI.</p>
+<h2>Why Thin?</h2>
+<p>The goal is to expose Dust to Python users without inventing a second protocol surface. The client shells out to the <code>dust</code> binary, uses <code>--format json</code> where appropriate, and keeps the source of truth in the CLI itself.</p>
+<h2>Location</h2>
+<p>See <a href="https://github.com/Shannon-Labs/dust/tree/main/sdk/python">sdk/python</a>.</p>
+<h2>Example</h2>
+<pre><code class="language-python">from dust_client import DustClient
+
+client = DustClient(root=".")
+rows = client.query("SELECT 1 AS ok")
+print(rows)
+</code></pre>
+<h2>What It Covers</h2>
+<ul>
+<li><code>query()</code> for row-returning SQL with JSON decoding</li>
+<li><code>exec()</code> for DDL and DML</li>
+<li><code>status()</code> for raw project status output</li>
+<li>branch helpers such as <code>branch_create()</code> and <code>branch_switch()</code></li>
+</ul>
+<h2>What It Deliberately Does Not Cover Yet</h2>
+<ul>
+<li>A long-lived RPC daemon</li>
+<li>Automatic server lifecycle management</li>
+<li>BI-driver abstractions</li>
+<li>A promise that the Python layer outruns the CLI surface</li>
+</ul>
+<h2>Connector and BI Follow-On Plan</h2>
+<p>The sequence matters:</p>
+<ol>
+<li>Keep the CLI JSON output stable enough for thin wrappers.</li>
+<li>Use the Python client as the first proof that Dust can be embedded cleanly outside Rust and TypeScript.</li>
+<li>Add higher-level connector or BI affordances only after the compatibility and packaging policy is written down.</li>
+</ol>
+<p>That keeps connector work downstream of stable contracts instead of creating a second unstable surface area too early.</p>
+
+      </article>
+    </main>
+    <script src="../../assets/site.js"></script>
+  </body>
+</html>

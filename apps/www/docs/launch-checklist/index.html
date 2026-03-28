@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Launch Checklist · Dust Docs</title>
+    <meta name="description" content="Go/no-go checks, day-zero smoke tests, and rollback guidance.">
+    <link rel="stylesheet" href="../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../docs/">Docs</a>
+        <a href="../../pricing/">Pricing</a>
+        <a href="../../waitlist/">Waitlist</a>
+        <a href="../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>Launch Checklist</h1>
+          <p>Go/no-go checks, day-zero smoke tests, and rollback guidance.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../docs/">Quickstart</a><a class="docs-nav-link" href="../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link is-active" href="../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/launch-checklist/index.html">
+        <h1>Launch Checklist</h1>
+<h2>Preflight</h2>
+<ul>
+<li>Release binaries are published and checksumed.</li>
+<li>Install script resolves to the intended release artifact.</li>
+<li>README, docs route, pricing, waitlist, FAQ, and benchmark links are live.</li>
+<li>Policy pages are reachable.</li>
+<li><code>dust demo</code> and sample template smoke tests pass in CI.</li>
+<li>Benchmarks cited in public copy map back to committed source artifacts.</li>
+</ul>
+<h2>Day-0 Smoke Tests</h2>
+<ul>
+<li>Install from the public path on a clean machine.</li>
+<li>Run <code>dust demo</code>.</li>
+<li>Run the quickstart path from docs.</li>
+<li>Verify docs search and key marketing links.</li>
+<li>Verify the waitlist route and pricing page render correctly.</li>
+</ul>
+<h2>Go / No-Go</h2>
+<p>Go only if:</p>
+<ul>
+<li>install path works</li>
+<li>docs path works</li>
+<li>policy surface exists</li>
+<li>sample templates still execute</li>
+<li>benchmark copy is backed by repo artifacts</li>
+</ul>
+<p>If any of those fail, the launch is not ready.</p>
+<h2>First 24 Hours</h2>
+<ul>
+<li>Watch install attempts and docs traffic.</li>
+<li>Watch inbound beta/waitlist volume.</li>
+<li>Watch bug reports or support requests for repeated confusion.</li>
+<li>Keep rollback instructions ready for the site and docs deploy.</li>
+</ul>
+
+      </article>
+    </main>
+    <script src="../../assets/site.js"></script>
+  </body>
+</html>

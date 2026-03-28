@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Roadmap · Dust Docs</title>
+    <meta name="description" content="Near-term priorities, longer-term bets, and what Dust is not trying to be.">
+    <link rel="stylesheet" href="../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../docs/">Docs</a>
+        <a href="../../pricing/">Pricing</a>
+        <a href="../../waitlist/">Waitlist</a>
+        <a href="../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>Roadmap</h1>
+          <p>Near-term priorities, longer-term bets, and what Dust is not trying to be.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../docs/">Quickstart</a><a class="docs-nav-link" href="../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link is-active" href="../../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/roadmap/index.html">
+        <h1>Roadmap</h1>
+<p>Dust is already useful as a local SQL runtime and workflow tool. The roadmap is about making that loop more credible, not turning the project into an everything database.</p>
+<h2>Current Product Boundary</h2>
+<p>Dust is strongest when you use it for:</p>
+<ul>
+<li>Local development databases.</li>
+<li>Test fixtures and deterministic seeds.</li>
+<li>Schema experiments and branchable state.</li>
+<li>Agent-driven data inspection over CLI, MCP, or pgwire.</li>
+</ul>
+<p>Dust is intentionally not optimized for:</p>
+<ul>
+<li>Production serving.</li>
+<li>Invisible background sync.</li>
+<li>Hosted multi-tenant control planes.</li>
+<li>Warehouse-scale analytics.</li>
+</ul>
+<h2>Next Up</h2>
+<h3>Launch Surface</h3>
+<ul>
+<li>Keep the public landing site, docs route, README, pricing surface, and waitlist honest.</li>
+<li>Make the benchmark proof portable across site, docs, README, and launch post.</li>
+<li>Add launch checklists, policy pages, and manual beta ops docs before pretending the commercial surface is automated.</li>
+</ul>
+<h3>Local Developer Product</h3>
+<ul>
+<li>Tighten the <code>dust demo</code> and sample-template path.</li>
+<li>Keep migrations, lockfiles, seeds, and typed codegen deterministic.</li>
+<li>Continue hardening the developer loop around <code>dust dev</code>, <code>dust doctor</code>, and <code>dust lint</code>.</li>
+</ul>
+<h3>Branching and Sync</h3>
+<ul>
+<li>Replace full database copies with metadata-oriented branch refs where possible.</li>
+<li>Keep snapshots, merge preview, and remote push/pull explicit.</li>
+<li>Improve the conflict-resolution story without hiding state transitions.</li>
+</ul>
+<h2>Longer-Term Bets</h2>
+<p>These remain real roadmap items, but they are not the current launch wedge:</p>
+<ul>
+<li>Browser OPFS and mobile VFS support.</li>
+<li>Read replicas, authentication groundwork, and roles/RLS runway.</li>
+<li>Plugin model and extension registry.</li>
+<li>Compatibility guarantees and a more formal release/distribution policy.</li>
+<li>Thin clients and connector/BI surfaces beyond Rust and TypeScript.</li>
+</ul>
+<h2>Non-Goals For Now</h2>
+<ul>
+<li>Pretending Dust is production Postgres.</li>
+<li>Adding managed-service complexity before the local product is sharp.</li>
+<li>Chasing transparent sync semantics that hide branch boundaries.</li>
+<li>Locking a 1.0 compatibility promise before the formats settle.</li>
+</ul>
+
+      </article>
+    </main>
+    <script src="../../assets/site.js"></script>
+  </body>
+</html>

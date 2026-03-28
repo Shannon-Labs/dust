@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dust</title>
+    <meta name="description" content="Dust is a branchable, local-first SQL workbench for development loops, test fixtures, and agent workflows.">
+    <link rel="stylesheet" href="./assets/site.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="site-brand" href="./">dust</a>
+      <nav class="site-nav">
+        <a href="./docs/">Docs</a>
+        <a href="./pricing/">Pricing</a>
+        <a href="./waitlist/">Waitlist</a>
+        <a href="./support/">Support</a>
+        <a href="./faq/">FAQ</a>
+        <a href="https://github.com/Shannon-Labs/dust">GitHub</a>
+      </nav>
+    </header>
+
+    <main class="site-shell">
+      <section class="hero">
+        <div class="hero-panel">
+          <div class="eyebrow">Local SQL Workflow</div>
+          <h1>uv for SQL, not a pretend hosted database.</h1>
+          <p class="lead">
+            Dust collapses the local database toolchain into one fast binary:
+            query, branch, snapshot, lint, migrate, codegen, and hand the same
+            project state to humans, tests, and AI agents.
+          </p>
+          <div class="cta-row">
+            <a class="button" href="./docs/">Open docs</a>
+            <a class="button-ghost" href="https://github.com/Shannon-Labs/dust/releases">Install binary</a>
+            <a class="button-ghost" href="https://github.com/Shannon-Labs/dust/tree/main/assets/benchmarks">See benchmark proof</a>
+          </div>
+        </div>
+
+        <div class="metric-grid">
+          <div class="metric-card">
+            <strong>~5ms</strong>
+            <p>Init path instead of waiting on a local server container.</p>
+          </div>
+          <div class="metric-card">
+            <strong>1 binary</strong>
+            <p>CLI, branch workflow, pgwire surface, MCP server, and LSP alpha.</p>
+          </div>
+          <div class="metric-card">
+            <strong>Repo-local</strong>
+            <p>Schema, seeds, queries, lockfile, and generated artifacts live with your code.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>What you can do today</h2>
+        <p class="section-copy">
+          Dust is already useful when the job is local development, branchable
+          database state, deterministic seed data, or agent-visible SQL
+          workflows. It is deliberately not claiming production-database
+          maturity.
+        </p>
+        <div class="card-grid">
+          <article class="surface-card">
+            <h3>Fast local loop</h3>
+            <p>`dust init`, `dust query`, `dust shell`, `dust doctor`, and `dust demo` cover the first-run path without Docker or background services.</p>
+          </article>
+          <article class="surface-card">
+            <h3>Branchable state</h3>
+            <p>`dust branch`, `dust snapshot`, `dust diff`, and `dust merge` make database state explicit and scriptable in the repo.</p>
+          </article>
+          <article class="surface-card">
+            <h3>Agent surfaces</h3>
+            <p>Dust exposes the same project over pgwire, MCP, and a thin Python client built over JSON CLI output.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="band">
+          <div class="eyebrow">Proof, not vibes</div>
+          <h2>Launch copy is tied back to committed artifacts.</h2>
+          <p class="section-copy">
+            Benchmark methodology, charts, and terminal captures live in the repository.
+            The public narrative is only as strong as the reproducible proof behind it.
+          </p>
+          <div class="link-row">
+            <a class="button-ghost" href="https://github.com/Shannon-Labs/dust/tree/main/assets/benchmarks">Benchmark harness</a>
+            <a class="button-ghost" href="./docs/launch-post/">Launch narrative</a>
+            <a class="button-ghost" href="./docs/roadmap/">Roadmap</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Try the product without reading the repo tree</h2>
+        <div class="split-grid">
+          <article class="surface-card">
+            <div class="eyebrow">Docs</div>
+            <h3>From install to first query to roadmap</h3>
+            <p>The docs route is generated from the repo markdown corpus, so the public site stays aligned with the source tree.</p>
+            <a class="button-ghost" href="./docs/">Browse docs</a>
+          </article>
+          <article class="surface-card">
+            <div class="eyebrow">Samples</div>
+            <h3>Two deterministic templates</h3>
+            <p>The inventory and branch-lab templates are smoke-tested so launch traffic gets a real, working path instead of placeholder copy.</p>
+            <a class="button-ghost" href="https://github.com/Shannon-Labs/dust/tree/main/templates/samples">Open sample templates</a>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Commercial surface, honestly framed</h2>
+        <div class="route-grid">
+          <article class="surface-card">
+            <h3>Pricing</h3>
+            <p>Free CLI, invite-only Team beta, and Enterprise design-partner packaging. No fake self-serve SaaS veneer.</p>
+            <a class="button-ghost" href="./pricing/">View pricing</a>
+          </article>
+          <article class="surface-card">
+            <h3>Waitlist</h3>
+            <p>The beta intake is qualification-first. The route explains what data we need before pretending the queue is automated.</p>
+            <a class="button-ghost" href="./waitlist/">See waitlist path</a>
+          </article>
+          <article class="surface-card">
+            <h3>Support</h3>
+            <p>Launch traffic gets a visible support path through public issue forms for questions, bugs, docs feedback, and qualified commercial follow-up.</p>
+            <a class="button-ghost" href="./support/">Open support surface</a>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-shell footer">
+      <div class="footer-links">
+        <a href="./docs/faq/">FAQ</a>
+        <a href="./support/">Support</a>
+        <a href="./policies/privacy/">Privacy</a>
+        <a href="./policies/terms/">Terms</a>
+        <a href="./policies/billing/">Billing</a>
+        <a href="https://github.com/Shannon-Labs/dust/blob/main/CONTRIBUTING.md">Contributing</a>
+      </div>
+    </footer>
+    <script src="./assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,52 @@
+name: Enterprise design-partner contact
+description: Start an enterprise or design-partner conversation.
+title: "[Enterprise] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form when the conversation is less about beta access and more about
+        rollout shape, architecture, support expectations, or a design-partner relationship.
+  - type: input
+    id: company
+    attributes:
+      label: Company name
+      placeholder: Acme, Inc.
+    validations:
+      required: true
+  - type: input
+    id: contact_name
+    attributes:
+      label: Contact name
+      placeholder: Jane Doe
+    validations:
+      required: true
+  - type: input
+    id: contact_email
+    attributes:
+      label: Contact email
+      placeholder: jane@acme.com
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you evaluating?
+      description: Describe the local-to-remote workflow, architecture, or support problem that prompted this conversation.
+      placeholder: We need a clearer branchable SQL workflow for a larger engineering org
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Current environment
+      description: Include database stack, deployment expectations, and any security or compliance constraints that matter early.
+    validations:
+      required: true
+  - type: textarea
+    id: timeline
+    attributes:
+      label: Timeline and rollout shape
+      description: Include urgency, pilot scope, and who would be involved in the evaluation.
+    validations:
+      required: true

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Quickstart · Dust Docs</title>
+    <meta name="description" content="Install Dust, run your first query, and branch a local database in minutes.">
+    <link rel="stylesheet" href="../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../">dust</a>
+      <nav class="site-nav">
+        <a href="../docs/">Docs</a>
+        <a href="../pricing/">Pricing</a>
+        <a href="../waitlist/">Waitlist</a>
+        <a href="../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>Quickstart</h1>
+          <p>Install Dust, run your first query, and branch a local database in minutes.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link is-active" href="../docs/">Quickstart</a><a class="docs-nav-link" href="../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../docs/faq/">FAQ</a><a class="docs-nav-link" href="../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/index.html">
+        <h1>Quickstart</h1>
+<p>Get a branchable SQL database running in under a minute.</p>
+<h2>Install</h2>
+<p>Download the single binary from the <a href="https://github.com/Shannon-Labs/dust/releases">releases page</a> or build from source:</p>
+<pre><code class="language-sh">cargo install dust-cli
+</code></pre>
+<p>Confirm it works:</p>
+<pre><code class="language-sh">dust version
+</code></pre>
+<h2>Create a project</h2>
+<pre><code class="language-sh">mkdir inventory-demo &amp;&amp; cd inventory-demo
+dust init
+</code></pre>
+<p>This creates a <code>.dust/</code> directory with the workspace layout, schema file, and branch metadata. No Docker, no server process.</p>
+<h2>Load data quickly</h2>
+<p>For the fastest path, import a CSV directly into the live database. In a real workflow you would point at an existing export; here we inline one:</p>
+<pre><code class="language-sh">cat &gt; products.csv &lt;&lt; 'EOF'
+sku,name,category,unit_price_cents,stock
+WDG-001,Standard Widget,widgets,1499,340
+WDG-002,Premium Widget,widgets,2999,125
+BLT-001,M6 Bolt,fasteners,29,8400
+BLT-002,M8 Bolt,fasteners,45,6200
+GDG-001,USB-C Hub,gadgets,3495,58
+GDG-002,Bluetooth Dongle,gadgets,1299,210
+GDG-003,Portable SSD 1TB,gadgets,8999,42
+EOF
+</code></pre>
+<p>Import it:</p>
+<pre><code class="language-sh">dust import products.csv --table products
+</code></pre>
+<p>Check the result:</p>
+<pre><code class="language-sh">dust status
+</code></pre>
+<p>Output:</p>
+<pre><code>Tables:
+  products: 7 rows
+
+Database: 12.0 KB
+</code></pre>
+<h2>Query your data</h2>
+<p>Run SQL directly from the command line:</p>
+<pre><code class="language-sh">dust query "SELECT sku, name, unit_price_cents FROM products WHERE category = 'gadgets' ORDER BY unit_price_cents DESC"
+</code></pre>
+<p>Aggregates work too:</p>
+<pre><code class="language-sh">dust query "SELECT category, count(*), sum(stock) FROM products GROUP BY category"
+</code></pre>
+<p>For multi-statement scripts, use a file:</p>
+<pre><code class="language-sh">dust query -f examples/quickstart.sql
+</code></pre>
+<p>Or drop into an interactive shell:</p>
+<pre><code class="language-sh">dust shell
+</code></pre>
+<h2>Branch the database</h2>
+<p>This is where Dust diverges from plain SQLite. Create an isolated branch with a full copy of your data (today branch creation copies the database file):</p>
+<pre><code class="language-sh">dust branch create experiment
+dust branch switch experiment
+</code></pre>
+<p>Now make destructive changes without risk:</p>
+<pre><code class="language-sh">dust query "UPDATE products SET unit_price_cents = unit_price_cents + 500 WHERE category = 'gadgets'"
+dust query "DELETE FROM products WHERE stock &gt; 5000"
+</code></pre>
+<p>Check what the branch looks like:</p>
+<pre><code class="language-sh">dust status
+</code></pre>
+<pre><code>Tables:
+  products: 5 rows
+
+Database: 12.0 KB
+</code></pre>
+<p>The main branch is untouched:</p>
+<pre><code class="language-sh">dust branch switch main
+dust query "SELECT count(*) FROM products"
+</code></pre>
+<pre><code>count(...)
+7
+</code></pre>
+<p>List all branches:</p>
+<pre><code class="language-sh">dust branch list
+</code></pre>
+<p>Delete the experiment when you are done:</p>
+<pre><code class="language-sh">dust branch switch main
+dust branch delete experiment
+</code></pre>
+<p>If you compare branches with <code>dust diff</code> or <code>dust branch diff</code>, note that the current diff is row-count based. Pure value changes with unchanged row counts will not show up yet.</p>
+<h2>Connect with psql</h2>
+<p>Dust speaks the Postgres wire protocol. Start the server:</p>
+<pre><code class="language-sh">dust serve
+</code></pre>
+<p>Then connect from another terminal:</p>
+<pre><code class="language-sh">psql -h 127.0.0.1 -p 4545 -U dust
+</code></pre>
+<p>Any tool that speaks Postgres (DataGrip, DBeaver, language drivers) can connect the same way.</p>
+<h2>Validate project health</h2>
+<pre><code class="language-sh">dust doctor
+</code></pre>
+<p>This checks the workspace layout, parses <code>db/schema.sql</code>, and reports schema fingerprint status. Useful in CI to catch drift between your schema file and the running database.</p>
+<p>Because this quickstart imported data directly into the live database, <code>dust doctor</code> will likely report drift unless you also model that table in <code>db/schema.sql</code> and update the lockfile/migration state. In other words: the fast import path is useful today, but the schema-managed path is still the stricter, healthier mode.</p>
+<h2>What is supported today</h2>
+<table><thead><tr><th>Feature</th><th>Status</th></tr></thead><tbody>
+<tr><td>CREATE TABLE, DROP TABLE, ALTER TABLE</td><td>Supported</td></tr>
+<tr><td>INSERT, UPDATE, DELETE</td><td>Supported</td></tr>
+<tr><td>SELECT with WHERE, ORDER BY, LIMIT, OFFSET</td><td>Supported</td></tr>
+<tr><td>GROUP BY with count, sum, avg, min, max</td><td>Supported</td></tr>
+<tr><td>JOIN (inner, left, right, full, cross)</td><td>Supported</td></tr>
+<tr><td>DISTINCT</td><td>Supported</td></tr>
+<tr><td>Scalar functions: lower, upper, coalesce, length, substr, trim, replace, abs, round</td><td>Supported</td></tr>
+<tr><td>CREATE INDEX (unique and non-unique)</td><td>Supported</td></tr>
+<tr><td>CASE expressions</td><td>Supported</td></tr>
+<tr><td>CSV import</td><td>Supported</td></tr>
+<tr><td>Postgres wire protocol</td><td>Supported</td></tr>
+<tr><td>Subqueries: IN (SELECT), NOT IN, scalar</td><td>Supported</td></tr>
+<tr><td>Branch diff (row count deltas)</td><td>Supported</td></tr>
+<tr><td>–format json/csv/table output</td><td>Supported</td></tr>
+<tr><td>Window functions, CTEs</td><td>Supported</td></tr>
+<tr><td>Foreign key enforcement</td><td>Not yet</td></tr>
+</tbody></table>
+<h2>Why not plain SQLite?</h2>
+<p>SQLite gives you a file. Dust gives you a file <em>plus</em>:</p>
+<ul>
+<li><strong>Branch isolation</strong> – <code>dust branch create</code> copies the database so you can experiment without corrupting your working state.</li>
+<li><strong>Schema identity</strong> – every table and column gets a stable fingerprint that survives renames, making diffs and migrations deterministic.</li>
+<li><strong>Project structure</strong> – <code>dust init</code> creates a workspace with schema files, lockfiles, and ref metadata that version-controls cleanly.</li>
+<li><strong>Postgres compatibility path</strong> – write SQL against Dust locally, connect with psql, and target real Postgres in production.</li>
+</ul>
+<p>Dust is not a replacement for production Postgres. It is a replacement for the Docker + seed script + ORM migration dance you run during development.</p>
+<h2>Use with Claude Code (MCP)</h2>
+<p>Dust ships an MCP server (<code>dust-mcp</code>) that lets AI assistants query, branch, and manage your database directly.</p>
+<h3>Install</h3>
+<p>Build from source (alongside the main CLI):</p>
+<pre><code class="language-sh">cargo install --path crates/dust-mcp
+</code></pre>
+<h3>Configure Claude Code</h3>
+<pre><code class="language-sh">claude mcp add dust dust-mcp
+</code></pre>
+<p>Or add to your Claude Desktop config (<code>~/Library/Application Support/Claude/claude_desktop_config.json</code>):</p>
+<pre><code class="language-json">{
+  "mcpServers": {
+    "dust": {
+      "command": "dust-mcp",
+      "args": []
+    }
+  }
+}
+</code></pre>
+<h3>Available tools</h3>
+<table><thead><tr><th>Tool</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>dust_query</code></td><td>Execute SQL queries (returns JSON by default)</td></tr>
+<tr><td><code>dust_exec</code></td><td>Execute DDL/DML statements</td></tr>
+<tr><td><code>dust_status</code></td><td>Show branch, tables, row counts, schema fingerprint</td></tr>
+<tr><td><code>dust_branch_list</code></td><td>List all branches</td></tr>
+<tr><td><code>dust_branch_create</code></td><td>Create a new branch</td></tr>
+<tr><td><code>dust_branch_switch</code></td><td>Switch branches</td></tr>
+<tr><td><code>dust_branch_diff</code></td><td>Compare branches (row count deltas)</td></tr>
+<tr><td><code>dust_import</code></td><td>Import CSV files</td></tr>
+<tr><td><code>dust_schema</code></td><td>Show CREATE TABLE DDL</td></tr>
+<tr><td><code>dust_doctor</code></td><td>Run health checks</td></tr>
+</tbody></table>
+<h3>Available resources</h3>
+<table><thead><tr><th>URI</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>dust://status</code></td><td>Current project status</td></tr>
+<tr><td><code>dust://schema</code></td><td>Full schema DDL</td></tr>
+<tr><td><code>dust://tables</code></td><td>Table list with row counts</td></tr>
+<tr><td><code>dust://branch/current</code></td><td>Current branch name</td></tr>
+</tbody></table>
+<p>The MCP server runs in the project directory and reuses the same database files as the CLI. All tools accept an optional <code>path</code> parameter to target a different project.</p>
+
+      </article>
+    </main>
+    <script src="../assets/site.js"></script>
+  </body>
+</html>

@@ -1,0 +1,28 @@
+name: Support question
+description: Ask a public product or workflow question.
+title: "[Support] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for usage questions, onboarding friction, or "how should I do X?" support.
+        If you have a reproducible defect, use the bug report form instead.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      placeholder: I need help understanding branch and merge workflow expectations
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What were you trying to do, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, shell, Dust version, and any relevant project setup details.

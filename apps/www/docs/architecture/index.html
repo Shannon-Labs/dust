@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Architecture · Dust Docs</title>
+    <meta name="description" content="Core crates, storage model, and the local-first workflow boundaries.">
+    <link rel="stylesheet" href="../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../docs/">Docs</a>
+        <a href="../../pricing/">Pricing</a>
+        <a href="../../waitlist/">Waitlist</a>
+        <a href="../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>Architecture</h1>
+          <p>Core crates, storage model, and the local-first workflow boundaries.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../docs/">Quickstart</a><a class="docs-nav-link" href="../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../docs/cli/">CLI Reference</a><a class="docs-nav-link is-active" href="../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/architecture/index.html">
+        <h1>Architecture</h1>
+<p>Dust is layered around one core engine that can eventually serve four modes:</p>
+<ul>
+<li>embedded library</li>
+<li>local development runtime</li>
+<li>optional server mode</li>
+<li>packed deploy artifact</li>
+</ul>
+<p>The current workspace mirrors that shape:</p>
+<ul>
+<li><code>dust-types</code>: shared IDs, fingerprints, and error types</li>
+<li><code>dust-sql</code>: handwritten SQL lexer/parser/AST for the v0 dialect slice</li>
+<li><code>dust-catalog</code>: immutable schema descriptors and object identity</li>
+<li><code>dust-store</code>: workspace, manifest, WAL, and branch metadata models</li>
+<li><code>dust-plan</code>: logical and physical plan data structures</li>
+<li><code>dust-exec</code>: initial execution engine seam</li>
+<li><code>dust-migrate</code>: lockfile and schema-diff scaffolding</li>
+<li><code>dust-core</code>: orchestration layer used by the CLI and future embeds</li>
+<li><code>dust-cli</code>: the user-facing product entrypoint</li>
+</ul>
+<p>The current code proves the project loop, not storage performance. <code>dust-core</code> owns project initialization and health checks; <code>dust-cli</code> turns that into the <code>dust init</code>, <code>dust doctor</code>, <code>dust query</code>, and <code>dust explain</code> surface; <code>dust-migrate</code> owns the schema fingerprint and lockfile shape; and <code>dust-store</code> models the workspace refs/manifests/WAL layout that a real engine will later write to.</p>
+<p>The storage direction remains row-store first with manifest/WAL-backed snapshots, plus later columnar covering indexes rather than a second warehouse engine.</p>
+<p>The main architectural constraint is to keep identity, storage, and execution separable. Names may change; IDs and fingerprints should not. The workspace can evolve; the lockfile and manifest boundaries need to stay machine-readable and stable enough to support branch and replay semantics later.</p>
+
+      </article>
+    </main>
+    <script src="../../assets/site.js"></script>
+  </body>
+</html>

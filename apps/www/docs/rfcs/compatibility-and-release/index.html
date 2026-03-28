@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RFC: 1.0 Compatibility and Release Distribution · Dust Docs</title>
+    <meta name="description" content="1.0 compatibility guarantees, packaging, and release distribution policy.">
+    <link rel="stylesheet" href="../../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../../docs/">Docs</a>
+        <a href="../../../pricing/">Pricing</a>
+        <a href="../../../waitlist/">Waitlist</a>
+        <a href="../../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>RFC: 1.0 Compatibility and Release Distribution</h1>
+          <p>1.0 compatibility guarantees, packaging, and release distribution policy.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../../docs/">Quickstart</a><a class="docs-nav-link" href="../../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../../../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link is-active" href="../../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/rfcs/compatibility-and-release/index.html">
+        <h1>RFC: 1.0 Compatibility and Release Distribution</h1>
+<h2>Goal</h2>
+<p>Define what Dust can credibly promise at 1.0 and what remains explicitly unstable until then.</p>
+<h2>Candidate Compatibility Surface</h2>
+<p>These are the formats most likely to need an eventual compatibility promise:</p>
+<ul>
+<li><code>dust.lock</code></li>
+<li>migration metadata</li>
+<li>schema fingerprints and object identity rules</li>
+<li>generated query artifact contracts</li>
+<li>workspace metadata and refs</li>
+<li>packed/exported artifact formats</li>
+</ul>
+<h2>Pre-1.0 Policy</h2>
+<p>Before 1.0:</p>
+<ul>
+<li>Breakage is allowed when it materially improves the workflow.</li>
+<li>Format changes should be called out in release notes and migration docs.</li>
+<li>The repo should prefer written transition guidance over silent churn.</li>
+</ul>
+<h2>1.0 Direction</h2>
+<p>At 1.0, the project should freeze:</p>
+<ul>
+<li>lockfile schema</li>
+<li>migration metadata semantics</li>
+<li>generated artifact freshness checks</li>
+<li>package/distribution naming</li>
+<li>signed-binary and package-install expectations</li>
+</ul>
+<h2>Release and Distribution Plan</h2>
+<p>The credible distribution story is:</p>
+<ul>
+<li>signed release artifacts attached to GitHub releases</li>
+<li>install script for direct binary download</li>
+<li><code>cargo install dust-cli</code> for source-driven users</li>
+<li>documented platform matrix and checksum verification steps</li>
+</ul>
+<p>The project should not claim stronger supply-chain guarantees than it actually enforces.</p>
+
+      </article>
+    </main>
+    <script src="../../../assets/site.js"></script>
+  </body>
+</html>

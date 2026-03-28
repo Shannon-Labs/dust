@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RFC: Plugin Model and Extension Registry · Dust Docs</title>
+    <meta name="description" content="Public extension points, capability gates, and future registry shape.">
+    <link rel="stylesheet" href="../../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../../docs/">Docs</a>
+        <a href="../../../pricing/">Pricing</a>
+        <a href="../../../waitlist/">Waitlist</a>
+        <a href="../../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>RFC: Plugin Model and Extension Registry</h1>
+          <p>Public extension points, capability gates, and future registry shape.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../../docs/">Quickstart</a><a class="docs-nav-link" href="../../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../../../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link is-active" href="../../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/rfcs/plugin-registry/index.html">
+        <h1>RFC: Plugin Model and Extension Registry</h1>
+<h2>Goal</h2>
+<p>Define a public extension surface for Dust without turning the engine into an unsafe native plugin free-for-all.</p>
+<h2>Principles</h2>
+<ul>
+<li>Capability declarations must be explicit.</li>
+<li>Sandbox boundaries matter more than extension breadth.</li>
+<li>Extensions should compose with the local-first workflow rather than bypass it.</li>
+<li>Registry distribution must not imply binary ABI stability that the core project does not yet promise.</li>
+</ul>
+<h2>Public Extension Points</h2>
+<p>The likely public surfaces are:</p>
+<ul>
+<li>MCP tools and resources</li>
+<li>CLI-oriented wrappers and generators</li>
+<li>Query/codegen annotations</li>
+<li>Wasm-based UDF or execution hooks where deterministic boundaries can be enforced</li>
+</ul>
+<h2>Non-Goals</h2>
+<ul>
+<li>Arbitrary in-process native plugins</li>
+<li>Hidden privileged hooks that bypass workspace or branch semantics</li>
+<li>An extension ecosystem before compatibility and safety constraints are written down</li>
+</ul>
+<h2>Registry Shape</h2>
+<p>A future registry should record:</p>
+<ul>
+<li>Package identity and version</li>
+<li>Required capabilities</li>
+<li>Runtime target</li>
+<li>Signing/provenance metadata</li>
+<li>Human-readable scope and safety notes</li>
+</ul>
+<p>The registry should be treated as a distribution layer over explicit extension points, not as proof that every extension API is frozen forever.</p>
+
+      </article>
+    </main>
+    <script src="../../../assets/site.js"></script>
+  </body>
+</html>

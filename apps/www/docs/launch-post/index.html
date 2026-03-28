@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dust: uv for SQL · Dust Docs</title>
+    <meta name="description" content="The public story for why Dust exists and where it fits.">
+    <link rel="stylesheet" href="../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../docs/">Docs</a>
+        <a href="../../pricing/">Pricing</a>
+        <a href="../../waitlist/">Waitlist</a>
+        <a href="../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>Dust: uv for SQL</h1>
+          <p>The public story for why Dust exists and where it fits.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../docs/">Quickstart</a><a class="docs-nav-link" href="../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link is-active" href="../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/launch-post/index.html">
+        <h1>Dust: uv for SQL</h1>
+<p>Most local database workflows are a pile of unrelated tools pretending to be one product.</p>
+<p>You start a container. You wait. You run migrations. You seed data. You regenerate query bindings. You explain to your editor or your agent where the database lives today. Then you do it again for a branch or a test fixture.</p>
+<p>Dust exists to collapse that loop into one local binary with explicit state.</p>
+<h2>The Wedge</h2>
+<p>Dust is not trying to replace production Postgres. It is trying to replace the accidental complexity around local database work:</p>
+<ul>
+<li>fast startup</li>
+<li>repo-local project structure</li>
+<li>branchable state</li>
+<li>first-party migrations and codegen</li>
+<li>agent-facing access through pgwire or MCP</li>
+</ul>
+<h2>Why Now</h2>
+<p>The more workflows are driven by agents, tests, and small scripts, the less patience there is for container boot sequences and hand-wired database glue. The useful product is the local runtime that starts instantly and keeps state legible.</p>
+<h2>What Makes It Different</h2>
+<ul>
+<li>One binary instead of Docker plus helper scripts</li>
+<li>Explicit branch and snapshot commands instead of ad hoc clone-and-seed loops</li>
+<li>Schema fingerprints and lockfiles instead of hoping the local state matches the repo</li>
+<li>A built-in path for both humans and agents to operate on the same project</li>
+</ul>
+<h2>What It Does Not Claim</h2>
+<ul>
+<li>Full Postgres compatibility</li>
+<li>Production serving maturity</li>
+<li>Invisible distributed sync</li>
+<li>Hosted product completeness</li>
+</ul>
+<p>That constraint is part of the product quality. Dust is useful because it is opinionated about what problem it is solving right now.</p>
+
+      </article>
+    </main>
+    <script src="../../assets/site.js"></script>
+  </body>
+</html>

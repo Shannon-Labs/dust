@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Overview · Dust Docs</title>
+    <meta name="description" content="Positioning, current status, and the product wedge for Dust.">
+    <link rel="stylesheet" href="../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../docs/">Docs</a>
+        <a href="../../pricing/">Pricing</a>
+        <a href="../../waitlist/">Waitlist</a>
+        <a href="../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>Overview</h1>
+          <p>Positioning, current status, and the product wedge for Dust.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../docs/">Quickstart</a><a class="docs-nav-link is-active" href="../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link" href="../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/overview/index.html">
+        <p align="center">
+  <img src="assets/readme/logo.png" alt="Dust logo" width="420">
+</p>
+<h1 align="center">dust</h1>
+<p align="center"><strong>A branchable, local-first SQL workbench in one binary.</strong></p>
+<p align="center">Built for development loops, test fixtures, data imports, schema experiments, and agent workflows. Not built for production serving.</p>
+<p align="center">
+  <a href="../../docs/">Quickstart</a> ·
+  <a href="../../docs/roadmap/">Roadmap</a> ·
+  <a href="assets/benchmarks/README.md">Benchmarks</a> ·
+  <a href="../../docs/pricing/">Pricing</a> ·
+  <a href="../../docs/waitlist/">Waitlist</a> ·
+  <a href="../../docs/support/">Support</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+<p align="center">
+  <img src="assets/readme/demo.gif" alt="Dust CLI demo" width="900">
+</p>
+<h2>What Dust Is</h2>
+<p>Dust collapses the usual local database stack into one CLI:</p>
+<ul>
+<li><code>dust init</code> creates a repo-friendly project layout.</li>
+<li><code>dust query</code> and <code>dust shell</code> run SQL without Docker or a server bootstrap.</li>
+<li><code>dust branch</code>, <code>dust diff</code>, <code>dust snapshot</code>, and <code>dust merge</code> make database state explicit and scriptable.</li>
+<li><code>dust doctor</code>, <code>dust lint</code>, <code>dust migrate</code>, and <code>dust codegen</code> turn the database into a first-class part of the development loop.</li>
+<li><code>dust serve</code> and <code>dust mcp</code> expose the same local state to Postgres clients and AI agents.</li>
+</ul>
+<p>The current product thesis is narrow on purpose: replace the throwaway Docker Postgres + seeds + migration glue stack people reach for during development, testing, and experiments.</p>
+<h2>What Dust Is Not</h2>
+<p>Dust is not trying to be:</p>
+<ul>
+<li>A production OLTP server.</li>
+<li>A magical multi-primary sync layer.</li>
+<li>A drop-in Postgres replacement for every extension-heavy workload.</li>
+<li>A BI warehouse or distributed analytics system.</li>
+</ul>
+<p>That honesty matters because the product is strongest when it is treated as a fast local runtime and workflow toolchain.</p>
+<h2>Install</h2>
+<pre><code class="language-sh">curl -fsSL https://raw.githubusercontent.com/Shannon-Labs/dust/main/install.sh | sh
+</code></pre>
+<p>Or with Cargo:</p>
+<pre><code class="language-sh">cargo install dust-cli
+</code></pre>
+<h2>30-Second Try Path</h2>
+<p>The fastest way to get a feel for the product is the guided walkthrough:</p>
+<pre><code class="language-sh">dust demo
+</code></pre>
+<p>If you want the raw project flow instead:</p>
+<pre><code class="language-sh">dust init myapp &amp;&amp; cd myapp
+dust query -f db/schema.sql
+dust query "SELECT 1"
+dust branch create experiment
+dust branch switch experiment
+dust diff main experiment
+</code></pre>
+<p>For fuller examples, see the sample templates in <a href="https://github.com/Shannon-Labs/dust/tree/main/templates/samples/inventory-demo">templates/samples/inventory-demo</a> and <a href="https://github.com/Shannon-Labs/dust/tree/main/templates/samples/branch-lab">templates/samples/branch-lab</a>.</p>
+<h2>Why This Exists</h2>
+<table><thead><tr><th></th><th>Docker Postgres</th><th>Dust</th></tr></thead><tbody>
+<tr><td>Startup</td><td>3-8 seconds</td><td>~5ms init path</td></tr>
+<tr><td>Dependencies</td><td>Docker, image, server</td><td>One binary</td></tr>
+<tr><td>Branching</td><td>Clone volume / rebuild state</td><td><code>dust branch create</code></td></tr>
+<tr><td>Schema workflow</td><td>Separate migration/codegen stack</td><td>Built-in commands</td></tr>
+<tr><td>Agent access</td><td>Extra wrapper layer</td><td>Native MCP + pgwire</td></tr>
+</tbody></table>
+<p>Dust is compelling when the problem is: “I need a database-shaped workspace right now, I want it in the repo, and I want to branch or inspect it without ceremony.”</p>
+<h2>Supported Today</h2>
+<ul>
+<li>SQL engine: DDL, DML, joins, aggregates, subqueries, CASE, CTEs, window functions.</li>
+<li>Storage: repo-local workspace, WAL, crash recovery, row store, columnar index path.</li>
+<li>Project workflow: <code>init</code>, <code>doctor</code>, <code>lint</code>, <code>migrate</code>, <code>codegen</code>, <code>dev</code>, <code>seed</code>, <code>test</code>.</li>
+<li>State management: <code>branch</code>, <code>snapshot</code>, <code>diff</code>, <code>merge</code>, <code>remote</code> push/pull.</li>
+<li>Integrations: <code>serve</code> pgwire server, <code>mcp</code> server, <code>lsp</code> alpha surface.</li>
+<li>Imports/exports: CSV, JSON, SQLite, Postgres, Parquet, Excel, project archive formats.</li>
+</ul>
+<p>Important current constraints:</p>
+<ul>
+<li>Branch creation still copies the database file today.</li>
+<li>Branch diffs are row-count based, not value-diff based.</li>
+<li>The local-first workflow is the product; hosted/commercial surfaces are still beta planning.</li>
+</ul>
+<h2>Docs</h2>
+<ul>
+<li><a href="../../docs/">Quickstart</a></li>
+<li><a href="../../docs/cli/">CLI reference</a></li>
+<li><a href="../../docs/architecture/">Architecture</a></li>
+<li><a href="../../docs/roadmap/">Roadmap</a></li>
+<li><a href="../../docs/faq/">FAQ</a></li>
+<li><a href="../../docs/python-client/">Python client</a></li>
+<li><a href="../../docs/launch-post/">Launch narrative</a></li>
+<li><a href="../../docs/pricing/">Pricing</a></li>
+<li><a href="../../docs/waitlist/">Waitlist</a></li>
+<li><a href="../../docs/support/">Support</a></li>
+</ul>
+<h2>Launch Surface</h2>
+<p>This repo now carries the public-facing sources for:</p>
+<ul>
+<li>A marketing site under <a href="https://github.com/Shannon-Labs/dust/tree/main/apps/www">apps/www</a></li>
+<li>A generated docs route sourced from repo markdown via <code>cargo run -p xtask -- site</code></li>
+<li>Legal/policy pages, pricing copy, launch FAQ, and beta intake guidance</li>
+<li>Repo-owned support and intake issue forms for launch traffic</li>
+<li>Launch checklists and commercial ops runbooks for the manual beta phase</li>
+</ul>
+<h2>Roadmap</h2>
+<p>Near-term work is concentrated on:</p>
+<ul>
+<li>Faster branch refs and snapshot semantics.</li>
+<li>Hardening snapshot isolation and commit validation.</li>
+<li>Sharper public launch surfaces and launch instrumentation.</li>
+<li>Better sync, merge, and team-facing workflows.</li>
+</ul>
+<p>Longer-term work remains explicitly longer-term:</p>
+<ul>
+<li>Browser/mobile VFS backends.</li>
+<li>Read replicas, auth, and RLS groundwork.</li>
+<li>Compatibility guarantees, plugin model, and ecosystem surface.</li>
+</ul>
+<p>The detailed version lives in <a href="../../docs/roadmap/">docs/roadmap.md</a>.</p>
+<h2>Architecture</h2>
+<pre><code>dust-cli       CLI entry point
+dust-sql       Handwritten lexer/parser/AST
+dust-exec      Execution engine, binder, evaluator
+dust-store     B+tree, WAL, page codec, row encoding
+dust-catalog   Schema descriptors, stable object IDs
+dust-plan      Logical and physical query plans
+dust-migrate   Lockfile, schema diff, migrations
+dust-core      Project management, health checks
+dust-codegen   Typed query artifact generation
+dust-lsp       Language Server Protocol
+dust-types     Shared types, fingerprints, errors
+</code></pre>
+<h2>License</h2>
+<p>MIT OR Apache-2.0</p>
+
+      </article>
+    </main>
+    <script src="../../assets/site.js"></script>
+  </body>
+</html>

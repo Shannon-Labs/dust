@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Launch Infrastructure · Dust Docs</title>
+    <meta name="description" content="Hosting targets, DNS, preview deployments, and secret contracts.">
+    <link rel="stylesheet" href="../../../assets/site.css">
+  </head>
+  <body class="docs-shell" data-search-index="../../../docs/search-index.json">
+    <header class="site-header">
+      <a class="site-brand" href="../../../">dust</a>
+      <nav class="site-nav">
+        <a href="../../../docs/">Docs</a>
+        <a href="../../../pricing/">Pricing</a>
+        <a href="../../../waitlist/">Waitlist</a>
+        <a href="../../../support/">Support</a>
+      </nav>
+    </header>
+    <main class="docs-layout">
+      <aside class="docs-sidebar">
+        <div class="docs-sidebar-card">
+          <div class="eyebrow">Docs</div>
+          <h1>Launch Infrastructure</h1>
+          <p>Hosting targets, DNS, preview deployments, and secret contracts.</p>
+          <label class="search-label" for="docs-search">Search docs</label>
+          <input id="docs-search" class="search-input" type="search" placeholder="Search quickstart, CLI, roadmap…">
+          <div id="docs-search-results" class="search-results"></div>
+        </div>
+        <div class="docs-nav-group"><div class="docs-nav-label">Get Started</div><a class="docs-nav-link" href="../../../docs/">Quickstart</a><a class="docs-nav-link" href="../../../docs/overview/">Overview</a></div><div class="docs-nav-group"><div class="docs-nav-label">Reference</div><a class="docs-nav-link" href="../../../docs/cli/">CLI Reference</a><a class="docs-nav-link" href="../../../docs/architecture/">Architecture</a></div><div class="docs-nav-group"><div class="docs-nav-label">Product</div><a class="docs-nav-link" href="../../../docs/roadmap/">Roadmap</a><a class="docs-nav-link" href="../../../docs/faq/">FAQ</a><a class="docs-nav-link" href="../../../docs/pricing/">Pricing</a><a class="docs-nav-link" href="../../../docs/waitlist/">Waitlist</a><a class="docs-nav-link" href="../../../docs/support/">Support</a></div><div class="docs-nav-group"><div class="docs-nav-label">SDKs</div><a class="docs-nav-link" href="../../../docs/python-client/">Python Client</a></div><div class="docs-nav-group"><div class="docs-nav-label">RFCs</div><a class="docs-nav-link" href="../../../docs/rfcs/plugin-registry/">Plugin Model RFC</a><a class="docs-nav-link" href="../../../docs/rfcs/compatibility-and-release/">Compatibility RFC</a></div><div class="docs-nav-group"><div class="docs-nav-label">Launch</div><a class="docs-nav-link" href="../../../docs/launch-post/">Launch Narrative</a><a class="docs-nav-link" href="../../../docs/launch-checklist/">Launch Checklist</a><a class="docs-nav-link is-active" href="../../../docs/ops/launch-infrastructure/">Launch Infrastructure</a><a class="docs-nav-link" href="../../../docs/ops/commercial-ops-runbook/">Commercial Ops Runbook</a></div>
+      </aside>
+      <article class="docs-article" data-doc-path="docs/ops/launch-infrastructure/index.html">
+        <h1>Launch Infrastructure</h1>
+<h2>Hosting Targets</h2>
+<ul>
+<li>Marketing and docs site: static hosting with preview deploy support</li>
+<li>GitHub repository: canonical code, releases, benchmark artifacts, issue/support routing</li>
+</ul>
+<h2>Deployment Contract</h2>
+<p>The repo now contains:</p>
+<ul>
+<li><code>apps/www</code> as the static site root</li>
+<li><code>cargo run -p xtask -- site</code> to generate the docs route from markdown</li>
+<li>GitHub workflows for CI and site deployment</li>
+</ul>
+<h2>DNS and Domains</h2>
+<ul>
+<li>Primary public domain should point at the marketing/docs site</li>
+<li>Preview environments should use host-provided preview URLs</li>
+<li>GitHub releases remain under the repository domain</li>
+</ul>
+<h2>Secrets Contract</h2>
+<p>The launch-facing surfaces should expect only a small set of secrets:</p>
+<ul>
+<li>analytics provider key, if enabled</li>
+<li>waitlist form endpoint or token, if enabled</li>
+<li>optional billing webhook secret, when billing is wired</li>
+</ul>
+<p>If those are absent, the site copy should remain honest and degrade to documentation-only behavior.</p>
+<h2>Manual vs Repo-Owned Work</h2>
+<p>Repo-owned:</p>
+<ul>
+<li>static site files</li>
+<li>docs generation</li>
+<li>CI and deploy workflows</li>
+<li>policy, FAQ, and launch documentation</li>
+</ul>
+<p>Manual operator work:</p>
+<ul>
+<li>DNS changes</li>
+<li>host account setup</li>
+<li>analytics account setup</li>
+<li>billing account setup</li>
+</ul>
+
+      </article>
+    </main>
+    <script src="../../../assets/site.js"></script>
+  </body>
+</html>

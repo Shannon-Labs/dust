@@ -4,19 +4,46 @@
 
 <h1 align="center">dust</h1>
 
-<p align="center"><strong>An experimental local-first SQL workbench in one binary.</strong></p>
+<p align="center"><strong>A branchable, local-first SQL workbench in one binary.</strong></p>
 
-<p align="center">Built for development, test fixtures, data imports, and schema experiments — not production serving.</p>
+<p align="center">Built for development loops, test fixtures, data imports, schema experiments, and agent workflows. Not built for production serving.</p>
 
 <p align="center">
-  <a href="https://github.com/Shannon-Labs/dust/releases">Releases</a> ·
-  <a href="#install">Install</a> ·
-  <a href="#quick-start">Quick start</a>
+  <a href="docs/quickstart.md">Quickstart</a> ·
+  <a href="docs/roadmap.md">Roadmap</a> ·
+  <a href="assets/benchmarks/README.md">Benchmarks</a> ·
+  <a href="docs/pricing.md">Pricing</a> ·
+  <a href="docs/waitlist.md">Waitlist</a> ·
+  <a href="docs/support.md">Support</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 <p align="center">
   <img src="assets/readme/demo.gif" alt="Dust CLI demo" width="900">
 </p>
+
+## What Dust Is
+
+Dust collapses the usual local database stack into one CLI:
+
+- `dust init` creates a repo-friendly project layout.
+- `dust query` and `dust shell` run SQL without Docker or a server bootstrap.
+- `dust branch`, `dust diff`, `dust snapshot`, and `dust merge` make database state explicit and scriptable.
+- `dust doctor`, `dust lint`, `dust migrate`, and `dust codegen` turn the database into a first-class part of the development loop.
+- `dust serve` and `dust mcp` expose the same local state to Postgres clients and AI agents.
+
+The current product thesis is narrow on purpose: replace the throwaway Docker Postgres + seeds + migration glue stack people reach for during development, testing, and experiments.
+
+## What Dust Is Not
+
+Dust is not trying to be:
+
+- A production OLTP server.
+- A magical multi-primary sync layer.
+- A drop-in Postgres replacement for every extension-heavy workload.
+- A BI warehouse or distributed analytics system.
+
+That honesty matters because the product is strongest when it is treated as a fast local runtime and workflow toolchain.
 
 ## Install
 
@@ -30,71 +57,93 @@ Or with Cargo:
 cargo install dust-cli
 ```
 
-Dust is early. The useful part today is the local workflow: import some data, query it, branch it, and keep schema state in a repo-friendly project layout.
+## 30-Second Try Path
 
-## Quick start
+The fastest way to get a feel for the product is the guided walkthrough:
 
 ```sh
-dust demo                    # guided tour
-
-dust init myapp && cd myapp  # new project
-cat > db/schema.sql <<'SQL'
-CREATE TABLE users (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL
-);
-SQL
-
-dust query -f db/schema.sql
-dust query "INSERT INTO users VALUES (1, 'alice'), (2, 'bob')"
-dust query "SELECT * FROM users"
-
-dust branch create experiment
-dust branch switch experiment
-# schema changes here — main is untouched
-dust diff main experiment     # table + row-count deltas
+dust demo
 ```
 
-## Why
+If you want the raw project flow instead:
+
+```sh
+dust init myapp && cd myapp
+dust query -f db/schema.sql
+dust query "SELECT 1"
+dust branch create experiment
+dust branch switch experiment
+dust diff main experiment
+```
+
+For fuller examples, see the sample templates in [templates/samples/inventory-demo](templates/samples/inventory-demo) and [templates/samples/branch-lab](templates/samples/branch-lab).
+
+## Why This Exists
 
 | | Docker Postgres | Dust |
 |---|---|---|
-| Startup | 3-8 seconds | 5ms |
-| Dependencies | Docker, server | None |
-| Branching | New DB / re-run seeds / copy volume | One-command local branch (full DB copy today) |
-| Migrations | Separate tool | Built-in |
-| Binary size | 400MB+ image | 8MB |
+| Startup | 3-8 seconds | ~5ms init path |
+| Dependencies | Docker, image, server | One binary |
+| Branching | Clone volume / rebuild state | `dust branch create` |
+| Schema workflow | Separate migration/codegen stack | Built-in commands |
+| Agent access | Extra wrapper layer | Native MCP + pgwire |
 
-## Best fit right now
+Dust is compelling when the problem is: "I need a database-shaped workspace right now, I want it in the repo, and I want to branch or inspect it without ceremony."
 
-- Local scratch databases for CSV/SQLite/Postgres extracts you want to inspect with SQL.
-- Branchable test-data and schema experiments without dragging Docker into the room.
-- Repo-local database state for AI/tooling workflows via CLI, MCP, or pgwire.
+## Supported Today
 
-Less convincing today: production serving, large-scale analytics, or anything that depends on mature Postgres compatibility.
+- SQL engine: DDL, DML, joins, aggregates, subqueries, CASE, CTEs, window functions.
+- Storage: repo-local workspace, WAL, crash recovery, row store, columnar index path.
+- Project workflow: `init`, `doctor`, `lint`, `migrate`, `codegen`, `dev`, `seed`, `test`.
+- State management: `branch`, `snapshot`, `diff`, `merge`, `remote` push/pull.
+- Integrations: `serve` pgwire server, `mcp` server, `lsp` alpha surface.
+- Imports/exports: CSV, JSON, SQLite, Postgres, Parquet, Excel, project archive formats.
 
-## Features
+Important current constraints:
 
-**SQL engine** — SELECT, JOIN, GROUP BY, ORDER BY, LIMIT, window functions, CTEs, subqueries, CASE, transactions. Full DDL/DML. Constraints: PRIMARY KEY, NOT NULL, UNIQUE, DEFAULT, AUTOINCREMENT.
+- Branch creation still copies the database file today.
+- Branch diffs are row-count based, not value-diff based.
+- The local-first workflow is the product; hosted/commercial surfaces are still beta planning.
 
-**Branching** — `dust branch create/switch/list/delete`. Branches are real isolated database files. Branch creation copies the current database today; `dust diff` reports table presence and row-count deltas.
+## Docs
 
-**Schema tools** — Migrations, linting, typed codegen (Rust + TypeScript), and a BLAKE3 fingerprinted lockfile for schema drift checks.
+- [Quickstart](docs/quickstart.md)
+- [CLI reference](docs/cli.md)
+- [Architecture](docs/architecture.md)
+- [Roadmap](docs/roadmap.md)
+- [FAQ](docs/faq.md)
+- [Python client](docs/python-client.md)
+- [Launch narrative](docs/launch-post.md)
+- [Pricing](docs/pricing.md)
+- [Waitlist](docs/waitlist.md)
+- [Support](docs/support.md)
 
-**Storage** — B+tree row store, 16KB checksummed pages, write-ahead log, crash recovery.
+## Launch Surface
 
-**Integrations** — Postgres wire protocol (`dust serve`, default port `4545`), MCP server for AI agents, LSP for editors.
+This repo now carries the public-facing sources for:
 
-**Import/Export** — CSV, JSON, Parquet, SQLite, Postgres, Excel.
+- A marketing site under [apps/www](apps/www)
+- A generated docs route sourced from repo markdown via `cargo run -p xtask -- site`
+- Legal/policy pages, pricing copy, launch FAQ, and beta intake guidance
+- Repo-owned support and intake issue forms for launch traffic
+- Launch checklists and commercial ops runbooks for the manual beta phase
 
-## Commands
+## Roadmap
 
-**Core**: `init`, `query`, `shell`, `explain`, `status`, `version`
-**Branching**: `branch`, `diff`, `merge`, `snapshot`
-**Schema**: `migrate`, `lint`, `codegen`, `doctor`
-**Data**: `import`, `export`, `seed`, `deploy`
-**Dev**: `demo`, `dev`, `serve`, `test`, `bench`
-**Integration**: `mcp`, `lsp`, `remote`
+Near-term work is concentrated on:
+
+- Faster branch refs and snapshot semantics.
+- Hardening snapshot isolation and commit validation.
+- Sharper public launch surfaces and launch instrumentation.
+- Better sync, merge, and team-facing workflows.
+
+Longer-term work remains explicitly longer-term:
+
+- Browser/mobile VFS backends.
+- Read replicas, auth, and RLS groundwork.
+- Compatibility guarantees, plugin model, and ecosystem surface.
+
+The detailed version lives in [docs/roadmap.md](docs/roadmap.md).
 
 ## Architecture
 
