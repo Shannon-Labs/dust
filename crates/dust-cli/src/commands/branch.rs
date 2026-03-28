@@ -1,11 +1,10 @@
 use clap::{Args, Subcommand};
-use dust_store::{BranchName, BranchRef};
+use dust_store::{BranchHead, BranchName, BranchRef, WorkspaceLayout};
 use dust_types::Result;
 use std::path::PathBuf;
 
 use crate::project::{
-    branch_db_path, branch_ref_path, current_branch_db_path, find_project_root,
-    read_current_branch, refs_dir,
+    branch_db_path, branch_ref_path, find_project_root, read_current_branch, refs_dir,
 };
 
 #[derive(Debug, Args)]
@@ -68,42 +67,15 @@ pub fn run(args: BranchArgs) -> Result<()> {
 
             // Create the branch ref from current HEAD state
             let current_branch = read_current_branch(&refs_dir);
-
             let current_ref_path = branch_ref_path(&project_root, &current_branch);
-            let current_db_path = current_branch_db_path(&project_root);
-            let new_db_path = branch_db_path(&project_root, branch.as_str());
-
-            if let Some(parent) = new_db_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            if current_db_path.exists() {
-                std::fs::copy(&current_db_path, &new_db_path)?;
-                let current_schema_path = current_db_path.with_extension("schema.toml");
-                let new_schema_path = new_db_path.with_extension("schema.toml");
-                if current_schema_path.exists() {
-                    std::fs::copy(current_schema_path, new_schema_path)?;
-                }
-            }
+            let layout = WorkspaceLayout::new(&project_root);
 
             if current_ref_path.exists() {
-                let current_ref = std::fs::read_to_string(&current_ref_path)?;
-                let current_ref: BranchRef = toml::from_str(&current_ref)
-                    .map_err(|e| dust_types::DustError::Message(e.to_string()))?;
-                let new_ref = BranchRef::new(branch.clone(), current_ref.head.clone());
-                let content = toml::to_string_pretty(&new_ref)
-                    .map_err(|e| dust_types::DustError::Message(e.to_string()))?;
-                std::fs::write(&ref_path, content)?;
+                let current_ref = BranchRef::read(&current_ref_path)?;
+                current_ref.create_materialized_branch(&branch, &layout)?;
             } else {
-                // Create a fresh ref
-                let head = dust_store::BranchHead::default();
-                let branch_ref = dust_store::BranchRef::new(branch.clone(), head);
-                let content = toml::to_string_pretty(&branch_ref)
-                    .map_err(|e| dust_types::DustError::Message(e.to_string()))?;
-                if let Some(parent) = ref_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&ref_path, content)?;
+                let branch_ref = BranchRef::new(branch.clone(), BranchHead::default());
+                branch_ref.write(&ref_path)?;
             }
 
             println!("Created branch `{name}`");
@@ -244,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn create_branch_copies_current_database_and_ref_metadata() {
+    fn create_branch_materializes_current_database_and_ref_metadata() {
         let root = temp_project_root();
         fs::write(root.join("dust.toml"), "name = \"test\"\n").unwrap();
         fs::create_dir_all(root.join(".dust/workspace/refs")).unwrap();

@@ -81,17 +81,6 @@ fn branch_ref_path(root: &Path, branch: &BranchName) -> PathBuf {
     refs_dir(root).join(branch.as_path()).with_extension("ref")
 }
 
-fn branch_db_path(root: &Path, branch: &BranchName) -> PathBuf {
-    if branch.as_str() == BranchName::MAIN {
-        workspace_dir(root).join("data.db")
-    } else {
-        workspace_dir(root)
-            .join("branches")
-            .join(branch.as_path())
-            .join("data.db")
-    }
-}
-
 use dust_sql::quote::quote_ident;
 
 // ---------------------------------------------------------------------------
@@ -351,36 +340,15 @@ pub fn create_branch(project_path: &Path, name: &str) -> Result<()> {
     let refs = refs_dir(&root);
     let current_branch = BranchName::new(read_current_branch(&refs))?;
     let current_ref_path = branch_ref_path(&root, &current_branch);
-    let current_db_path = ProjectPaths::new(&root).active_data_db_path();
-    let new_db_path = branch_db_path(&root, &branch);
-
-    if let Some(parent) = new_db_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    if current_db_path.exists() {
-        std::fs::copy(&current_db_path, &new_db_path)?;
-        let current_schema = current_db_path.with_extension("schema.toml");
-        let new_schema = new_db_path.with_extension("schema.toml");
-        if current_schema.exists() {
-            std::fs::copy(current_schema, new_schema)?;
-        }
-    }
+    let layout = dust_store::WorkspaceLayout::new(&root);
 
     if current_ref_path.exists() {
-        let current_ref_str = std::fs::read_to_string(&current_ref_path)?;
-        let current_ref: BranchRef =
-            toml::from_str(&current_ref_str).map_err(|e| DustError::Message(e.to_string()))?;
-        let new_ref = BranchRef::new(branch.clone(), current_ref.head.clone());
-        let content =
-            toml::to_string_pretty(&new_ref).map_err(|e| DustError::Message(e.to_string()))?;
-        std::fs::write(&ref_path, content)?;
+        let current_ref = BranchRef::read(&current_ref_path)?;
+        current_ref.create_materialized_branch(&branch, &layout)?;
     } else {
         let head = dust_store::BranchHead::default();
         let new_ref = BranchRef::new(branch, head);
-        let content =
-            toml::to_string_pretty(&new_ref).map_err(|e| DustError::Message(e.to_string()))?;
-        std::fs::write(&ref_path, content)?;
+        new_ref.write(&ref_path)?;
     }
 
     Ok(())

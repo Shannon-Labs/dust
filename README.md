@@ -101,7 +101,7 @@ Dust is compelling when the problem is: "I need a database-shaped workspace righ
 
 Important current constraints:
 
-- Branch creation still copies the database file today.
+- Branch creation and snapshots use filesystem copy-on-write clones when available, and fall back to file copies on unsupported filesystems.
 - Branch diffs are row-count based, not value-diff based.
 - The local-first workflow is the product; hosted/commercial surfaces are still beta planning.
 

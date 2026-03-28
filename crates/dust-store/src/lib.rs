@@ -1,6 +1,7 @@
 pub mod branch;
 pub mod btree;
 pub mod manifest;
+pub mod materialize;
 pub mod merge;
 pub mod pack;
 pub mod page;
@@ -17,6 +18,10 @@ pub mod workspace;
 pub use branch::{BranchHead, BranchName, BranchRef};
 pub use btree::BTree;
 pub use manifest::Manifest;
+pub use materialize::{
+    BranchStateMaterialization, MaterializationStrategy, clone_or_copy_optional_file,
+    materialize_branch_state,
+};
 pub use merge::{
     MergeConflict, MergeConflictType, MergePreview, MergeResolution, preview_merge_from_paths,
 };

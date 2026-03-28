@@ -1,5 +1,6 @@
 use crate::WorkspaceLayout;
 use crate::manifest::Manifest;
+use crate::materialize::{BranchStateMaterialization, materialize_branch_state};
 use dust_types::{DustError, Result, SchemaFingerprint};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -121,6 +122,17 @@ impl BranchRef {
         let ref_path = layout.branch_ref_path(branch);
         new_ref.write(&ref_path)
     }
+
+    pub fn create_materialized_branch(
+        &self,
+        branch: &BranchName,
+        layout: &WorkspaceLayout,
+    ) -> Result<BranchStateMaterialization> {
+        self.create_branch(branch, layout)?;
+        let source_db = layout.branch_data_db_path(&self.name);
+        let target_db = layout.branch_data_db_path(branch);
+        materialize_branch_state(&source_db, &target_db)
+    }
 }
 
 fn validate_branch_name(value: &str) -> Result<()> {
@@ -189,6 +201,37 @@ mod tests {
         assert_eq!(head.tail_lsn, 0);
         assert_eq!(head.catalog_version, 0);
         assert!(head.last_commit_id.is_none());
+    }
+
+    #[test]
+    fn create_materialized_branch_preserves_branch_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let main = BranchRef::main(BranchHead::default());
+        let main_ref_path = layout.branch_ref_path(&BranchName::main());
+        main.write(&main_ref_path).unwrap();
+
+        let source_db = layout.branch_data_db_path(&BranchName::main());
+        std::fs::write(&source_db, b"main-db").unwrap();
+        std::fs::write(source_db.with_extension("schema.toml"), "title = 'main'\n").unwrap();
+
+        let branch = BranchName::new("feature/auth").unwrap();
+        let materialization = main.create_materialized_branch(&branch, &layout).unwrap();
+
+        assert_ne!(
+            materialization.data_db,
+            crate::MaterializationStrategy::Missing
+        );
+        assert_ne!(
+            materialization.schema,
+            crate::MaterializationStrategy::Missing
+        );
+        let target_db = layout.branch_data_db_path(&branch);
+        assert_eq!(std::fs::read(&target_db).unwrap(), b"main-db");
+        assert_eq!(
+            std::fs::read_to_string(target_db.with_extension("schema.toml")).unwrap(),
+            "title = 'main'\n"
+        );
     }
 
     // -------------------------------------------------------------------

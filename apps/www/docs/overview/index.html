@@ -106,7 +106,7 @@ dust diff main experiment
 </ul>
 <p>Important current constraints:</p>
 <ul>
-<li>Branch creation still copies the database file today.</li>
+<li>Branch creation and snapshots use filesystem copy-on-write clones when available, and fall back to file copies on unsupported filesystems.</li>
 <li>Branch diffs are row-count based, not value-diff based.</li>
 <li>The local-first workflow is the product; hosted/commercial surfaces are still beta planning.</li>
 </ul>

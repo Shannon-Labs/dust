@@ -1,11 +1,18 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use dust_exec::PersistentEngine;
+use dust_store::{BranchHead, BranchName, BranchRef, WorkspaceLayout};
 use std::fs;
 use tempfile::TempDir;
 
 fn bench_branch_create(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
-    let main_db = dir.path().join("main.db");
+    let project = dir.path().join("bench-project");
+    let workspace = project.join(".dust/workspace");
+    std::fs::create_dir_all(workspace.join("refs")).unwrap();
+    std::fs::write(project.join("dust.toml"), "name = \"bench\"\n").unwrap();
+    std::fs::write(workspace.join("refs/HEAD"), "main\n").unwrap();
+    let layout = WorkspaceLayout::new(&project);
+    let main_db = layout.branch_data_db_path(&BranchName::main());
 
     {
         let mut engine = PersistentEngine::open(&main_db).unwrap();
@@ -25,12 +32,22 @@ fn bench_branch_create(c: &mut Criterion) {
         engine.sync().unwrap();
     }
 
-    c.bench_function("branch_create_copy_1000_rows", |b| {
+    let main_ref = BranchRef::new(BranchName::main(), BranchHead::default());
+    main_ref
+        .write(&layout.branch_ref_path(&BranchName::main()))
+        .unwrap();
+
+    c.bench_function("branch_create_materialized_1000_rows", |b| {
         b.iter(|| {
-            let branch_db = dir.path().join("bench_branch.db");
-            let _ = fs::copy(&main_db, &branch_db);
+            let branch = BranchName::new("bench-branch").unwrap();
+            let _ = main_ref
+                .create_materialized_branch(&branch, &layout)
+                .unwrap();
+            let branch_db = layout.branch_data_db_path(&branch);
             black_box(&branch_db);
+            let _ = fs::remove_file(layout.branch_ref_path(&branch));
             let _ = fs::remove_file(&branch_db);
+            let _ = fs::remove_file(branch_db.with_extension("schema.toml"));
         })
     });
 }

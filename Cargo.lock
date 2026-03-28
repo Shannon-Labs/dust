@@ -802,6 +802,7 @@ dependencies = [
  "blake3",
  "dust-types",
  "hex",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

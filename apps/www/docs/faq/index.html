@@ -40,7 +40,7 @@
 <h2>Does Dust fully emulate Postgres?</h2>
 <p>No. Dust exposes a Postgres wire surface for client compatibility, but the engine is opinionated and intentionally smaller than full Postgres compatibility.</p>
 <h2>Are branches copy-on-write yet?</h2>
-<p>Not yet. Branch creation still copies the database file today. The roadmap includes metadata-oriented branch refs, but the current behavior is explicit in the docs and CLI copy.</p>
+<p>Not fully. Branch creation and snapshots now use filesystem copy-on-write clones when the host filesystem supports them, and fall back to file copies elsewhere. A deeper metadata-backed branch model is still future roadmap work.</p>
 <h2>Is there a hosted product?</h2>
 <p>Not as a general-availability product. The repo documents a Free CLI, an invite-only Team beta direction, and an Enterprise design-partner path so the public surface stays honest about what exists.</p>
 <h2>Can I use Dust with AI agents?</h2>

@@ -42,10 +42,6 @@ pub(crate) fn branch_db_path(root: &Path, branch: &str) -> PathBuf {
     }
 }
 
-pub(crate) fn current_branch_db_path(root: &Path) -> PathBuf {
-    ProjectPaths::new(root).active_data_db_path()
-}
-
 /// Find the branch-specific database file path by walking up from `start`
 /// looking for `dust.toml`. Returns an error if no project is found.
 pub fn find_db_path(start: &Path) -> dust_types::Result<PathBuf> {

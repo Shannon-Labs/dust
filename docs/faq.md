@@ -18,7 +18,7 @@ No. Dust exposes a Postgres wire surface for client compatibility, but the engin
 
 ## Are branches copy-on-write yet?
 
-Not yet. Branch creation still copies the database file today. The roadmap includes metadata-oriented branch refs, but the current behavior is explicit in the docs and CLI copy.
+Not fully. Branch creation and snapshots now use filesystem copy-on-write clones when the host filesystem supports them, and fall back to file copies elsewhere. A deeper metadata-backed branch model is still future roadmap work.
 
 ## Is there a hosted product?
 

@@ -1,4 +1,5 @@
 use crate::branch::{BranchHead, BranchName, BranchRef};
+use crate::materialize::materialize_branch_state;
 use crate::workspace::WorkspaceLayout;
 use dust_types::{DustError, Result};
 use serde::{Deserialize, Serialize};
@@ -48,11 +49,7 @@ impl NamedSnapshot {
 
         let source_db_path = workspace.branch_data_db_path(&branch_ref.name);
         let snapshot_db_path = snapshot_db_path(name, workspace);
-        copy_optional_file(&source_db_path, &snapshot_db_path)?;
-
-        let source_schema_path = source_db_path.with_extension("schema.toml");
-        let snapshot_schema_path = snapshot_schema_path(name, workspace);
-        copy_optional_file(&source_schema_path, &snapshot_schema_path)?;
+        materialize_branch_state(&source_db_path, &snapshot_db_path)?;
 
         Ok(snap)
     }
@@ -122,11 +119,7 @@ impl NamedSnapshot {
 
         let target_db_path = workspace.branch_data_db_path(&branch_name);
         let snapshot_db_path = snapshot_db_path(&self.name, workspace);
-        copy_optional_file(&snapshot_db_path, &target_db_path)?;
-
-        let target_schema_path = target_db_path.with_extension("schema.toml");
-        let snapshot_schema_path = snapshot_schema_path(&self.name, workspace);
-        copy_optional_file(&snapshot_schema_path, &target_schema_path)?;
+        materialize_branch_state(&snapshot_db_path, &target_db_path)?;
 
         Ok(branch_name)
     }
@@ -138,25 +131,6 @@ fn snapshot_path(name: &str, workspace: &WorkspaceLayout) -> std::path::PathBuf 
 
 fn snapshot_db_path(name: &str, workspace: &WorkspaceLayout) -> std::path::PathBuf {
     workspace.snapshots_dir().join(format!("{name}.db"))
-}
-
-fn snapshot_schema_path(name: &str, workspace: &WorkspaceLayout) -> std::path::PathBuf {
-    workspace
-        .snapshots_dir()
-        .join(format!("{name}.schema.toml"))
-}
-
-fn copy_optional_file(source: &std::path::Path, target: &std::path::Path) -> Result<()> {
-    if target.exists() {
-        fs::remove_file(target)?;
-    }
-    if source.exists() {
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(source, target)?;
-    }
-    Ok(())
 }
 
 fn validate_snapshot_name(name: &str) -> Result<()> {

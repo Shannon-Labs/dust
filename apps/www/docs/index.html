@@ -86,7 +86,7 @@ Database: 12.0 KB
 <pre><code class="language-sh">dust shell
 </code></pre>
 <h2>Branch the database</h2>
-<p>This is where Dust diverges from plain SQLite. Create an isolated branch with a full copy of your data (today branch creation copies the database file):</p>
+<p>This is where Dust diverges from plain SQLite. Create an isolated branch. On supported filesystems Dust clones the branch database copy-on-write; otherwise it falls back to a full file copy:</p>
 <pre><code class="language-sh">dust branch create experiment
 dust branch switch experiment
 </code></pre>

@@ -189,10 +189,11 @@ fn bench_branch_create(temp_dir: &std::path::Path, row_count: usize) -> Result<B
     }
     main_ref.write(&main_ref_path)?;
 
-    // Measure O(1) branch creation: write ref only, no data copy
+    // Measure the actual branch create path, which now uses filesystem clones
+    // when available and falls back to file copies.
     let start = Instant::now();
     let branch = BranchName::new("bench-branch")?;
-    main_ref.create_branch(&branch, &layout)?;
+    let materialization = main_ref.create_materialized_branch(&branch, &layout)?;
     let elapsed = start.elapsed();
 
     // Verify branch ref was created
@@ -200,7 +201,7 @@ fn bench_branch_create(temp_dir: &std::path::Path, row_count: usize) -> Result<B
     assert!(new_ref_path.exists(), "branch ref should exist");
 
     Ok(BenchResult {
-        name: "Branch Create (O(1) ref)".to_string(),
+        name: format!("Branch Create ({})", materialization.data_db.label()),
         scale_count: row_count,
         scale_label: format!("{row_count} rows in main"),
         elapsed,

@@ -97,7 +97,7 @@ dust shell
 
 ## Branch the database
 
-This is where Dust diverges from plain SQLite. Create an isolated branch with a full copy of your data (today branch creation copies the database file):
+This is where Dust diverges from plain SQLite. Create an isolated branch. On supported filesystems Dust clones the branch database copy-on-write; otherwise it falls back to a full file copy:
 
 ```sh
 dust branch create experiment
