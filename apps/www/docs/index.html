@@ -124,7 +124,7 @@ dust branch delete experiment
 <p>Then connect from another terminal:</p>
 <pre><code class="language-sh">psql -h 127.0.0.1 -p 4545 -U dust
 </code></pre>
-<p>Any tool that speaks Postgres (DataGrip, DBeaver, language drivers) can connect the same way.</p>
+<p>Many Postgres clients (DataGrip, DBeaver, language drivers) can connect the same way within Dust’s current compatibility boundary.</p>
 <h2>Validate project health</h2>
 <pre><code class="language-sh">dust doctor
 </code></pre>
@@ -152,14 +152,14 @@ dust branch delete experiment
 <h2>Why not plain SQLite?</h2>
 <p>SQLite gives you a file. Dust gives you a file <em>plus</em>:</p>
 <ul>
-<li><strong>Branch isolation</strong> – <code>dust branch create</code> copies the database so you can experiment without corrupting your working state.</li>
+<li><strong>Branch isolation</strong> – <code>dust branch create</code> gives you an isolated branch and uses filesystem copy-on-write clones when available.</li>
 <li><strong>Schema identity</strong> – every table and column gets a stable fingerprint that survives renames, making diffs and migrations deterministic.</li>
 <li><strong>Project structure</strong> – <code>dust init</code> creates a workspace with schema files, lockfiles, and ref metadata that version-controls cleanly.</li>
-<li><strong>Postgres compatibility path</strong> – write SQL against Dust locally, connect with psql, and target real Postgres in production.</li>
+<li><strong>Postgres-oriented local workflow</strong> – use familiar client/protocol patterns locally, then validate production-specific behavior against real Postgres.</li>
 </ul>
 <p>Dust is not a replacement for production Postgres. It is a replacement for the Docker + seed script + ORM migration dance you run during development.</p>
 <h2>Use with Claude Code (MCP)</h2>
-<p>Dust ships an MCP server (<code>dust-mcp</code>) that lets AI assistants query, branch, and manage your database directly.</p>
+<p>Dust includes an MCP server in the repo. Today you install and configure it as the companion <code>dust-mcp</code> binary so AI assistants can query, branch, and manage your database directly.</p>
 <h3>Install</h3>
 <p>Build from source (alongside the main CLI):</p>
 <pre><code class="language-sh">cargo install --path crates/dust-mcp

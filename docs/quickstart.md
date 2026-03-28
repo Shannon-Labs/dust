@@ -165,7 +165,7 @@ Then connect from another terminal:
 psql -h 127.0.0.1 -p 4545 -U dust
 ```
 
-Any tool that speaks Postgres (DataGrip, DBeaver, language drivers) can connect the same way.
+Many Postgres clients (DataGrip, DBeaver, language drivers) can connect the same way within Dust's current compatibility boundary.
 
 ## Validate project health
 
@@ -202,16 +202,16 @@ Because this quickstart imported data directly into the live database, `dust doc
 
 SQLite gives you a file. Dust gives you a file *plus*:
 
-- **Branch isolation** -- `dust branch create` copies the database so you can experiment without corrupting your working state.
+- **Branch isolation** -- `dust branch create` gives you an isolated branch and uses filesystem copy-on-write clones when available.
 - **Schema identity** -- every table and column gets a stable fingerprint that survives renames, making diffs and migrations deterministic.
 - **Project structure** -- `dust init` creates a workspace with schema files, lockfiles, and ref metadata that version-controls cleanly.
-- **Postgres compatibility path** -- write SQL against Dust locally, connect with psql, and target real Postgres in production.
+- **Postgres-oriented local workflow** -- use familiar client/protocol patterns locally, then validate production-specific behavior against real Postgres.
 
 Dust is not a replacement for production Postgres. It is a replacement for the Docker + seed script + ORM migration dance you run during development.
 
 ## Use with Claude Code (MCP)
 
-Dust ships an MCP server (`dust-mcp`) that lets AI assistants query, branch, and manage your database directly.
+Dust includes an MCP server in the repo. Today you install and configure it as the companion `dust-mcp` binary so AI assistants can query, branch, and manage your database directly.
 
 ### Install
 

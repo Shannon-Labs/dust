@@ -4,7 +4,7 @@
 
 <h1 align="center">dust</h1>
 
-<p align="center"><strong>A branchable, local-first SQL workbench in one binary.</strong></p>
+<p align="center"><strong>A branchable, local-first SQL workflow CLI.</strong></p>
 
 <p align="center">Built for development loops, test fixtures, data imports, schema experiments, and agent workflows. Not built for production serving.</p>
 
@@ -30,9 +30,9 @@ Dust collapses the usual local database stack into one CLI:
 - `dust query` and `dust shell` run SQL without Docker or a server bootstrap.
 - `dust branch`, `dust diff`, `dust snapshot`, and `dust merge` make database state explicit and scriptable.
 - `dust doctor`, `dust lint`, `dust migrate`, and `dust codegen` turn the database into a first-class part of the development loop.
-- `dust serve` and `dust mcp` expose the same local state to Postgres clients and AI agents.
+- `dust serve` and the companion `dust-mcp` expose the same local state to Postgres clients and AI agents.
 
-The current product thesis is narrow on purpose: replace the throwaway Docker Postgres + seeds + migration glue stack people reach for during development, testing, and experiments.
+The current product thesis is narrow on purpose: replace much of the throwaway Docker Postgres + seeds + migration glue stack people reach for during development, testing, and experiments.
 
 ## What Dust Is Not
 
