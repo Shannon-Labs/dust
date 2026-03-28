@@ -3,7 +3,7 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/Shannon-Labs/dust/main/install.sh | sh
 set -eu
 
-REPO="shannon-labs/dust"
+REPO="${DUST_REPO:-shannon-labs/dust}"
 BINARY="dust"
 INSTALL_DIR="${DUST_INSTALL_DIR:-$HOME/.dust/bin}"
 
@@ -29,7 +29,9 @@ main() {
     tmpdir=$(mktemp -d)
     trap 'rm -rf "$tmpdir"' EXIT
 
-    url="https://github.com/${REPO}/releases/download/${version}/dust-${version}-${target}.tar.gz"
+    archive=$(archive_name "$version" "$target")
+    base_url="${DUST_BASE_URL:-https://github.com/${REPO}/releases/download/${version}}"
+    url="${base_url}/${archive}"
     echo "  Downloading ${url}..."
 
     if command -v curl >/dev/null 2>&1; then
@@ -65,6 +67,12 @@ main() {
     esac
 
     echo "Run 'dust --help' to get started."
+}
+
+archive_name() {
+    version="$1"
+    target="$2"
+    echo "dust-${version}-${target}.tar.gz"
 }
 
 detect_platform() {

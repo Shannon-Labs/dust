@@ -16,16 +16,24 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive: dust-x86_64-linux.tar.gz
+            platform: linux
+            arch: x86_64
+            native: true
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            archive: dust-aarch64-linux.tar.gz
+            platform: linux
+            arch: aarch64
+            native: false
           - os: macos-14
             target: x86_64-apple-darwin
-            archive: dust-x86_64-macos.tar.gz
+            platform: darwin
+            arch: x86_64
+            native: false
           - os: macos-14
             target: aarch64-apple-darwin
-            archive: dust-aarch64-macos.tar.gz
+            platform: darwin
+            arch: aarch64
+            native: true
 
     runs-on: ${{ matrix.os }}
 
@@ -54,10 +62,12 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       - name: Package archive
+        id: package
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
+          archive="dust-${GITHUB_REF_NAME}-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz"
 
           binary=""
           for candidate in \
@@ -76,13 +86,18 @@ jobs:
 
           cp "$binary" dist/dust
           chmod +x dist/dust
-          tar -C dist -czf "${{ matrix.archive }}" dust
+          tar -C dist -czf "$archive" dust
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Run release parity smoke
+        if: matrix.native
+        run: cargo run -p xtask -- release-parity --archive "${{ steps.package.outputs.archive }}"
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }}
-          path: ${{ matrix.archive }}
+          name: ${{ steps.package.outputs.archive }}
+          path: ${{ steps.package.outputs.archive }}
 
   release:
     needs: build

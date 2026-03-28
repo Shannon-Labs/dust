@@ -43,6 +43,38 @@ jobs:
         run: cargo test -p xtask
       - name: Smoke test templates and site generation
         run: cargo run -p xtask -- smoke
+      - name: Build release binary for install parity
+        run: cargo build --release -p dust-cli
+      - name: Smoke test install path against packaged artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="v$(cargo pkgid -p dust-cli | sed -E 's/.*[#@]//')"
+
+          case "$(uname -s)" in
+            Linux) platform="linux" ;;
+            Darwin) platform="darwin" ;;
+            *)
+              echo "unsupported platform $(uname -s)" >&2
+              exit 1
+              ;;
+          esac
+
+          case "$(uname -m)" in
+            x86_64|amd64) arch="x86_64" ;;
+            arm64|aarch64) arch="aarch64" ;;
+            *)
+              echo "unsupported architecture $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          archive="dust-${version}-${platform}-${arch}.tar.gz"
+          mkdir -p dist
+          cp target/release/dust dist/dust
+          chmod +x dist/dust
+          tar -C dist -czf "$archive" dust
+          cargo run -p xtask -- release-parity --archive "$archive"
 
   package:
     runs-on: ubuntu-latest

@@ -1,28 +1,38 @@
 use anyhow::{Context, Result, anyhow, ensure};
-use pulldown_cmark::{Options, Parser, html};
+use clap::{Args, Parser, Subcommand};
+use pulldown_cmark::{Options, Parser as MarkdownParser, html};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Parser)]
+struct Cli {
+    #[command(subcommand)]
+    task: Option<Task>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 enum Task {
     Ci,
     Smoke,
     Fmt,
     Check,
     Site,
+    ReleaseParity(ReleaseParityArgs),
 }
 
-fn parse_task(arg: Option<String>) -> Result<Task> {
-    match arg.as_deref().unwrap_or("ci") {
-        "ci" => Ok(Task::Ci),
-        "smoke" => Ok(Task::Smoke),
-        "fmt" => Ok(Task::Fmt),
-        "check" => Ok(Task::Check),
-        "site" => Ok(Task::Site),
-        other => Err(anyhow!("unknown xtask `{other}`")),
-    }
+#[derive(Debug, Args, Clone, PartialEq, Eq)]
+struct ReleaseParityArgs {
+    #[arg(long)]
+    archive: PathBuf,
+}
+
+fn parse_task(args: &[&str]) -> Result<Task> {
+    let cli = Cli::try_parse_from(std::iter::once("xtask").chain(args.iter().copied()))
+        .map_err(|err| anyhow!(err.to_string()))?;
+    Ok(cli.task.unwrap_or(Task::Ci))
 }
 
 fn run(cmd: &str, args: &[&str], cwd: Option<&PathBuf>) -> Result<()> {
@@ -96,6 +106,77 @@ fn cargo_capture_workspace(args: &[&str], cwd: Option<&PathBuf>) -> Result<Strin
     let mut owned_args = vec!["run", "--manifest-path", manifest_str];
     owned_args.extend_from_slice(args);
     run_capture("cargo", &owned_args, cwd)
+}
+
+fn run_path(cmd: &Path, args: &[&str], cwd: Option<&PathBuf>) -> Result<()> {
+    let mut command = Command::new(cmd);
+    command.args(args);
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
+
+    let status = command
+        .status()
+        .with_context(|| format!("failed to start `{}`", cmd.display()))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("`{}` exited with {status}", cmd.display()))
+    }
+}
+
+fn run_capture_path(cmd: &Path, args: &[&str], cwd: Option<&PathBuf>) -> Result<String> {
+    let mut command = Command::new(cmd);
+    command.args(args);
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
+
+    let output = command
+        .output()
+        .with_context(|| format!("failed to start `{}`", cmd.display()))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        Err(anyhow!("`{}` failed: {detail}", cmd.display()))
+    }
+}
+
+enum DustRunner {
+    CargoWorkspace,
+    Installed(PathBuf),
+}
+
+struct InstalledBinary {
+    _tempdir: tempfile::TempDir,
+    path: PathBuf,
+}
+
+fn dust_run(runner: &DustRunner, args: &[&str], cwd: Option<&PathBuf>) -> Result<()> {
+    match runner {
+        DustRunner::CargoWorkspace => {
+            let mut owned_args = vec!["-p", "dust-cli", "--"];
+            owned_args.extend_from_slice(args);
+            cargo_run_workspace(&owned_args, cwd)
+        }
+        DustRunner::Installed(path) => run_path(path, args, cwd),
+    }
+}
+
+fn dust_capture(runner: &DustRunner, args: &[&str], cwd: Option<&PathBuf>) -> Result<String> {
+    match runner {
+        DustRunner::CargoWorkspace => {
+            let mut owned_args = vec!["-p", "dust-cli", "--"];
+            owned_args.extend_from_slice(args);
+            cargo_capture_workspace(&owned_args, cwd)
+        }
+        DustRunner::Installed(path) => run_capture_path(path, args, cwd),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -230,6 +311,284 @@ const DOCS_PAGES: &[DocsPage] = &[
     },
 ];
 
+fn release_archive_name(version: &str, platform: &str, arch: &str) -> String {
+    format!("dust-{version}-{platform}-{arch}.tar.gz")
+}
+
+fn current_platform() -> Result<&'static str> {
+    match std::env::consts::OS {
+        "linux" => Ok("linux"),
+        "macos" => Ok("darwin"),
+        other => Err(anyhow!(
+            "unsupported platform `{other}` for release parity smoke"
+        )),
+    }
+}
+
+fn current_arch() -> Result<&'static str> {
+    match std::env::consts::ARCH {
+        "x86_64" => Ok("x86_64"),
+        "aarch64" => Ok("aarch64"),
+        other => Err(anyhow!(
+            "unsupported architecture `{other}` for release parity smoke"
+        )),
+    }
+}
+
+fn documented_top_level_commands() -> Result<BTreeSet<String>> {
+    let cli_doc = fs::read_to_string(workspace_root()?.join("docs/cli.md"))
+        .context("failed to read docs/cli.md for command parity check")?;
+    let mut commands = BTreeSet::new();
+
+    for line in cli_doc.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("- `dust ") else {
+            continue;
+        };
+
+        let token = rest.split_whitespace().next().unwrap_or("");
+        let command = token
+            .split('`')
+            .next()
+            .unwrap_or(token)
+            .trim_matches(|ch| ch == '[' || ch == ']');
+        if !command.is_empty() {
+            commands.insert(command.to_string());
+        }
+    }
+
+    ensure!(
+        !commands.is_empty(),
+        "docs/cli.md did not yield any documented top-level commands"
+    );
+    Ok(commands)
+}
+
+fn help_top_level_commands(help: &str) -> BTreeSet<String> {
+    let mut commands = BTreeSet::new();
+    let mut in_commands = false;
+
+    for line in help.lines() {
+        let trimmed = line.trim();
+        if trimmed == "Commands:" {
+            in_commands = true;
+            continue;
+        }
+        if !in_commands {
+            continue;
+        }
+        if trimmed == "Options:" {
+            break;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(name) = trimmed.split_whitespace().next() {
+            if name != "help" {
+                commands.insert(name.to_string());
+            }
+        }
+    }
+
+    commands
+}
+
+fn assert_cli_surface_matches_docs(help: &str) -> Result<()> {
+    let documented = documented_top_level_commands()?;
+    let observed = help_top_level_commands(help);
+
+    let missing: Vec<_> = documented.difference(&observed).cloned().collect();
+    ensure!(
+        missing.is_empty(),
+        "installed CLI is missing documented commands: {}",
+        missing.join(", ")
+    );
+
+    let undocumented: Vec<_> = observed.difference(&documented).cloned().collect();
+    ensure!(
+        undocumented.is_empty(),
+        "installed CLI exposes undocumented commands: {}",
+        undocumented.join(", ")
+    );
+
+    Ok(())
+}
+
+fn install_release_archive(archive: &Path) -> Result<InstalledBinary> {
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let expected_name = release_archive_name(&version, current_platform()?, current_arch()?);
+    let archive_name = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            anyhow!(
+                "release archive path is not valid UTF-8: {}",
+                archive.display()
+            )
+        })?;
+    ensure!(
+        archive_name == expected_name,
+        "release archive `{archive_name}` does not match expected host asset `{expected_name}`"
+    );
+
+    let tempdir = tempfile::TempDir::new().context("failed to create release parity temp dir")?;
+    let release_dir = tempdir.path().join("releases").join(&version);
+    fs::create_dir_all(&release_dir).with_context(|| {
+        format!(
+            "failed to create staged release directory {}",
+            release_dir.display()
+        )
+    })?;
+    let staged_archive = release_dir.join(&expected_name);
+    fs::copy(archive, &staged_archive).with_context(|| {
+        format!(
+            "failed to stage release archive {} -> {}",
+            archive.display(),
+            staged_archive.display()
+        )
+    })?;
+
+    let install_dir = tempdir.path().join("bin");
+    let base_url = format!("file://{}", release_dir.display());
+    let installer = workspace_root()?.join("install.sh");
+    let status = Command::new("sh")
+        .arg(&installer)
+        .env("DUST_BASE_URL", &base_url)
+        .env("DUST_INSTALL_DIR", &install_dir)
+        .env("DUST_VERSION", &version)
+        .status()
+        .with_context(|| format!("failed to start installer {}", installer.display()))?;
+    ensure!(status.success(), "installer exited with {status}");
+
+    let installed = install_dir.join("dust");
+    ensure!(
+        installed.exists(),
+        "installer did not produce {}",
+        installed.display()
+    );
+
+    Ok(InstalledBinary {
+        _tempdir: tempdir,
+        path: installed,
+    })
+}
+
+fn smoke_release_parity(args: &ReleaseParityArgs) -> Result<()> {
+    let installed = install_release_archive(&args.archive)?;
+    let version = dust_capture(
+        &DustRunner::Installed(installed.path.clone()),
+        &["version"],
+        None,
+    )?;
+    ensure!(
+        version.contains(env!("CARGO_PKG_VERSION")),
+        "installed binary reported unexpected version output: {}",
+        version.trim()
+    );
+
+    let help = dust_capture(
+        &DustRunner::Installed(installed.path.clone()),
+        &["--help"],
+        None,
+    )?;
+    assert_cli_surface_matches_docs(&help)?;
+
+    let runner = DustRunner::Installed(installed.path.clone());
+    smoke_demo(&runner)?;
+    smoke_readme_try_path(&runner)?;
+    smoke_quickstart_path(&runner)?;
+    smoke_inventory_sample(&runner)?;
+    smoke_branch_sample(&runner)?;
+    Ok(())
+}
+
+fn smoke_demo(runner: &DustRunner) -> Result<()> {
+    let temp = tempfile::TempDir::new().context("failed to create demo temp dir")?;
+    let demo_root = temp.path().join("dust-demo");
+    let demo_root_str = demo_root
+        .to_str()
+        .ok_or_else(|| anyhow!("demo path is not valid UTF-8"))?;
+    dust_run(runner, &["demo", demo_root_str, "--quiet"], None)?;
+    ensure!(
+        demo_root.join(".dust").exists(),
+        "demo command did not create a Dust project"
+    );
+    Ok(())
+}
+
+fn smoke_readme_try_path(runner: &DustRunner) -> Result<()> {
+    let temp = tempfile::TempDir::new().context("failed to create README smoke temp dir")?;
+    let root = temp.path().join("myapp");
+    let root_str = root
+        .to_str()
+        .ok_or_else(|| anyhow!("README smoke path is not valid UTF-8"))?;
+
+    dust_run(runner, &["init", root_str], None)?;
+    dust_run(runner, &["query", "-f", "db/schema.sql"], Some(&root))?;
+    dust_run(runner, &["query", "SELECT 1"], Some(&root))?;
+    dust_run(runner, &["branch", "create", "experiment"], Some(&root))?;
+    dust_run(runner, &["branch", "switch", "experiment"], Some(&root))?;
+    dust_run(runner, &["diff", "main", "experiment"], Some(&root))?;
+    Ok(())
+}
+
+fn smoke_quickstart_path(runner: &DustRunner) -> Result<()> {
+    const PRODUCTS_CSV: &str = "sku,name,category,unit_price_cents,stock\nWDG-001,Standard Widget,widgets,1499,340\nWDG-002,Premium Widget,widgets,2999,125\nBLT-001,M6 Bolt,fasteners,29,8400\nBLT-002,M8 Bolt,fasteners,45,6200\nGDG-001,USB-C Hub,gadgets,3495,58\nGDG-002,Bluetooth Dongle,gadgets,1299,210\nGDG-003,Portable SSD 1TB,gadgets,8999,42\n";
+
+    let temp = tempfile::TempDir::new().context("failed to create quickstart temp dir")?;
+    let root = temp.path().join("inventory-demo");
+    let root_str = root
+        .to_str()
+        .ok_or_else(|| anyhow!("quickstart path is not valid UTF-8"))?;
+
+    dust_run(runner, &["init", root_str], None)?;
+    fs::write(root.join("products.csv"), PRODUCTS_CSV)
+        .context("failed to write quickstart products.csv fixture")?;
+    dust_run(
+        runner,
+        &["import", "products.csv", "--table", "products"],
+        Some(&root),
+    )?;
+
+    let status = dust_capture(runner, &["status"], Some(&root))?;
+    ensure!(
+        status.contains("products"),
+        "quickstart status output did not mention imported products table"
+    );
+
+    let product_count = dust_capture(
+        runner,
+        &["query", "SELECT count(*) AS total FROM products"],
+        Some(&root),
+    )?;
+    ensure!(
+        product_count.contains('7'),
+        "quickstart query output did not report the expected row count"
+    );
+
+    dust_run(runner, &["branch", "create", "experiment"], Some(&root))?;
+    dust_run(runner, &["branch", "switch", "experiment"], Some(&root))?;
+    dust_run(
+        runner,
+        &["query", "DELETE FROM products WHERE stock > 5000"],
+        Some(&root),
+    )?;
+    dust_run(runner, &["branch", "switch", "main"], Some(&root))?;
+
+    let main_count = dust_capture(
+        runner,
+        &["query", "SELECT count(*) FROM products"],
+        Some(&root),
+    )?;
+    ensure!(
+        main_count.contains('7'),
+        "quickstart branch isolation check did not preserve the main branch row count"
+    );
+
+    dust_run(runner, &["branch", "delete", "experiment"], Some(&root))?;
+    Ok(())
+}
+
 fn smoke() -> Result<()> {
     let temp = tempfile::TempDir::new().context("failed to create temp dir")?;
     let root = temp.path().to_path_buf();
@@ -285,13 +644,14 @@ fn smoke() -> Result<()> {
         Some(&root),
     )?;
 
-    smoke_inventory_sample()?;
-    smoke_branch_sample()?;
+    let runner = DustRunner::CargoWorkspace;
+    smoke_inventory_sample(&runner)?;
+    smoke_branch_sample(&runner)?;
     site()?;
     Ok(())
 }
 
-fn smoke_inventory_sample() -> Result<()> {
+fn smoke_inventory_sample(runner: &DustRunner) -> Result<()> {
     let temp = tempfile::TempDir::new().context("failed to create inventory temp dir")?;
     let root = temp.path().join("inventory-demo");
     let root_str = root
@@ -299,21 +659,13 @@ fn smoke_inventory_sample() -> Result<()> {
         .ok_or_else(|| anyhow!("inventory sample path is not valid UTF-8"))?;
     let sample_root = workspace_root()?.join("templates/samples/inventory-demo");
 
-    cargo_run_workspace(&["-p", "dust-cli", "--", "init", root_str, "--force"], None)?;
+    dust_run(runner, &["init", root_str, "--force"], None)?;
     copy_dir_contents(&sample_root, &root)?;
-    cargo_run_workspace(
-        &["-p", "dust-cli", "--", "query", "-f", "db/schema.sql"],
-        Some(&root),
-    )?;
-    cargo_run_workspace(
-        &["-p", "dust-cli", "--", "seed", "--profile", "demo"],
-        Some(&root),
-    )?;
-    let report = cargo_capture_workspace(
+    dust_run(runner, &["query", "-f", "db/schema.sql"], Some(&root))?;
+    dust_run(runner, &["seed", "--profile", "demo"], Some(&root))?;
+    let report = dust_capture(
+        runner,
         &[
-            "-p",
-            "dust-cli",
-            "--",
             "query",
             "--format",
             "json",
@@ -326,7 +678,7 @@ fn smoke_inventory_sample() -> Result<()> {
         report.contains("Portable SSD 1TB"),
         "inventory sample query did not surface the expected low-stock item"
     );
-    cargo_run_workspace(&["-p", "dust-cli", "--", "codegen"], Some(&root))?;
+    dust_run(runner, &["codegen"], Some(&root))?;
     ensure!(
         root.join("db/generated/queries.rs").exists(),
         "Rust codegen output was not generated for inventory sample"
@@ -338,7 +690,7 @@ fn smoke_inventory_sample() -> Result<()> {
     Ok(())
 }
 
-fn smoke_branch_sample() -> Result<()> {
+fn smoke_branch_sample(runner: &DustRunner) -> Result<()> {
     let temp = tempfile::TempDir::new().context("failed to create branch temp dir")?;
     let root = temp.path().join("branch-lab");
     let root_str = root
@@ -346,42 +698,22 @@ fn smoke_branch_sample() -> Result<()> {
         .ok_or_else(|| anyhow!("branch sample path is not valid UTF-8"))?;
     let sample_root = workspace_root()?.join("templates/samples/branch-lab");
 
-    cargo_run_workspace(&["-p", "dust-cli", "--", "init", root_str, "--force"], None)?;
+    dust_run(runner, &["init", root_str, "--force"], None)?;
     copy_dir_contents(&sample_root, &root)?;
-    cargo_run_workspace(
-        &["-p", "dust-cli", "--", "query", "-f", "db/schema.sql"],
-        Some(&root),
-    )?;
-    cargo_run_workspace(
-        &["-p", "dust-cli", "--", "seed", "--profile", "demo"],
-        Some(&root),
-    )?;
-    cargo_run_workspace(
-        &["-p", "dust-cli", "--", "branch", "create", "promo-cut"],
-        Some(&root),
-    )?;
-    cargo_run_workspace(
-        &["-p", "dust-cli", "--", "branch", "switch", "promo-cut"],
-        Some(&root),
-    )?;
-    cargo_run_workspace(
+    dust_run(runner, &["query", "-f", "db/schema.sql"], Some(&root))?;
+    dust_run(runner, &["seed", "--profile", "demo"], Some(&root))?;
+    dust_run(runner, &["branch", "create", "promo-cut"], Some(&root))?;
+    dust_run(runner, &["branch", "switch", "promo-cut"], Some(&root))?;
+    dust_run(
+        runner,
         &[
-            "-p",
-            "dust-cli",
-            "--",
             "query",
             "INSERT INTO ledger_entries VALUES (9001, 1, 'campaign rebate', -9000, '2026-03-01')",
         ],
         Some(&root),
     )?;
-    cargo_run_workspace(
-        &["-p", "dust-cli", "--", "branch", "switch", "main"],
-        Some(&root),
-    )?;
-    let diff = cargo_capture_workspace(
-        &["-p", "dust-cli", "--", "diff", "main", "promo-cut"],
-        Some(&root),
-    )?;
+    dust_run(runner, &["branch", "switch", "main"], Some(&root))?;
+    let diff = dust_capture(runner, &["diff", "main", "promo-cut"], Some(&root))?;
     ensure!(
         diff.contains("ledger_entries"),
         "branch sample diff did not report the expected table delta"
@@ -474,7 +806,7 @@ fn render_markdown(markdown: &str) -> String {
     options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_SMART_PUNCTUATION);
 
-    let parser = Parser::new_ext(markdown, options);
+    let parser = MarkdownParser::new_ext(markdown, options);
     let mut html_out = String::new();
     html::push_html(&mut html_out, parser);
     html_out
@@ -676,7 +1008,10 @@ fn rewrite_markdown_links(markdown: &str, current_output: &str) -> String {
 }
 
 fn main() -> Result<()> {
-    match parse_task(std::env::args().nth(1))? {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    match parse_task(&arg_refs)? {
         Task::Ci => {
             cargo(&["fmt", "--check"])?;
             cargo(&[
@@ -696,6 +1031,7 @@ fn main() -> Result<()> {
             cargo(&["test", "-p", "dust-testing", "-p", "xtask"])?;
         }
         Task::Site => site()?,
+        Task::ReleaseParity(args) => smoke_release_parity(&args)?,
     }
 
     Ok(())
@@ -703,19 +1039,32 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Task, parse_task};
+    use std::path::PathBuf;
+
+    use super::{ReleaseParityArgs, Task, parse_task};
 
     #[test]
     fn parses_known_tasks() {
-        assert_eq!(parse_task(Some("ci".to_string())).unwrap(), Task::Ci);
-        assert_eq!(parse_task(Some("smoke".to_string())).unwrap(), Task::Smoke);
-        assert_eq!(parse_task(Some("fmt".to_string())).unwrap(), Task::Fmt);
-        assert_eq!(parse_task(Some("check".to_string())).unwrap(), Task::Check);
-        assert_eq!(parse_task(Some("site".to_string())).unwrap(), Task::Site);
+        assert_eq!(parse_task(&["ci"]).unwrap(), Task::Ci);
+        assert_eq!(parse_task(&["smoke"]).unwrap(), Task::Smoke);
+        assert_eq!(parse_task(&["fmt"]).unwrap(), Task::Fmt);
+        assert_eq!(parse_task(&["check"]).unwrap(), Task::Check);
+        assert_eq!(parse_task(&["site"]).unwrap(), Task::Site);
+        assert_eq!(
+            parse_task(&[
+                "release-parity",
+                "--archive",
+                "dist/dust-v0.1.1-linux-x86_64.tar.gz"
+            ])
+            .unwrap(),
+            Task::ReleaseParity(ReleaseParityArgs {
+                archive: PathBuf::from("dist/dust-v0.1.1-linux-x86_64.tar.gz"),
+            })
+        );
     }
 
     #[test]
     fn defaults_to_ci() {
-        assert_eq!(parse_task(None).unwrap(), Task::Ci);
+        assert_eq!(parse_task(&[]).unwrap(), Task::Ci);
     }
 }

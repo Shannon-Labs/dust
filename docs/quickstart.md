@@ -4,7 +4,13 @@ Get a branchable SQL database running in under a minute.
 
 ## Install
 
-Download the single binary from the [releases page](https://github.com/Shannon-Labs/dust/releases) or build from source:
+Use the public install script:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Shannon-Labs/dust/main/install.sh | sh
+```
+
+Or download the single binary from the [releases page](https://github.com/Shannon-Labs/dust/releases), or build from source with Cargo:
 
 ```sh
 cargo install dust-cli
