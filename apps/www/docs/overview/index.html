@@ -107,7 +107,7 @@ dust diff main experiment
 <p>Important current constraints:</p>
 <ul>
 <li>Branch creation and snapshots use filesystem copy-on-write clones when available, and fall back to file copies on unsupported filesystems.</li>
-<li>Branch diffs are row-count based, not value-diff based.</li>
+<li>Branch diffs inspect row/value changes, but they currently materialize table contents in memory and fall back to summaries when schema or key matching is ambiguous.</li>
 <li>The local-first workflow is the product; hosted/commercial surfaces are still beta planning.</li>
 </ul>
 <h2>Docs</h2>

@@ -34,7 +34,7 @@ enum Commands {
     Deploy(commands::deploy::DeployArgs),
     /// Start development mode with file watching, seeds, and optional pgwire server
     Dev(commands::dev::DevArgs),
-    /// Show table and row-count differences between branches
+    /// Show row/value differences between branches
     Diff(commands::diff::DiffArgs),
     /// Check project health
     Doctor(commands::doctor::DoctorArgs),

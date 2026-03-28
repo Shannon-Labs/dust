@@ -77,7 +77,9 @@
 <ul>
 <li><code>dust query --format json</code> is the stable thin-client path for wrappers and SDKs.</li>
 <li><code>dust dev</code> watches schema, query, and seed files, reruns codegen, and can optionally expose pgwire.</li>
-<li><code>dust branch</code> and <code>dust diff</code> are explicit about the current row-count-based diff behavior.</li>
+<li><code>dust branch diff</code> and <code>dust diff</code> inspect inserted, deleted, and updated rows when a stable key is available.</li>
+<li>Tables without a stable key are matched by full row values, so updates can appear as delete+insert.</li>
+<li>Schema/key mismatches currently fall back to summaries, and large diffs still materialize table contents in memory.</li>
 </ul>
 
       </article>

@@ -116,7 +116,7 @@ dust query "SELECT count(*) FROM products"
 <pre><code class="language-sh">dust branch switch main
 dust branch delete experiment
 </code></pre>
-<p>If you compare branches with <code>dust diff</code> or <code>dust branch diff</code>, note that the current diff is row-count based. Pure value changes with unchanged row counts will not show up yet.</p>
+<p><code>dust diff</code> now inspects inserted, deleted, and updated rows when it can line tables up by a primary/unique key. Tables without a stable key are compared by full row values, so updates may appear as delete+insert, and schema/key mismatches fall back to summaries.</p>
 <h2>Connect with psql</h2>
 <p>Dust speaks the Postgres wire protocol. Start the server:</p>
 <pre><code class="language-sh">dust serve
@@ -144,7 +144,7 @@ dust branch delete experiment
 <tr><td>CSV import</td><td>Supported</td></tr>
 <tr><td>Postgres wire protocol</td><td>Supported</td></tr>
 <tr><td>Subqueries: IN (SELECT), NOT IN, scalar</td><td>Supported</td></tr>
-<tr><td>Branch diff (row count deltas)</td><td>Supported</td></tr>
+<tr><td>Branch diff (row/value inspection with honest fallbacks)</td><td>Supported</td></tr>
 <tr><td>–format json/csv/table output</td><td>Supported</td></tr>
 <tr><td>Window functions, CTEs</td><td>Supported</td></tr>
 <tr><td>Foreign key enforcement</td><td>Not yet</td></tr>

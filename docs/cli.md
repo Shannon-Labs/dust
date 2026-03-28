@@ -47,4 +47,6 @@ Dust ships one CLI with the following command groups.
 
 - `dust query --format json` is the stable thin-client path for wrappers and SDKs.
 - `dust dev` watches schema, query, and seed files, reruns codegen, and can optionally expose pgwire.
-- `dust branch` and `dust diff` are explicit about the current row-count-based diff behavior.
+- `dust branch diff` and `dust diff` inspect inserted, deleted, and updated rows when a stable key is available.
+- Tables without a stable key are matched by full row values, so updates can appear as delete+insert.
+- Schema/key mismatches currently fall back to summaries, and large diffs still materialize table contents in memory.

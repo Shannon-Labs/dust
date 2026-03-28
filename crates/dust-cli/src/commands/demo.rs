@@ -135,14 +135,15 @@ pub fn run(args: DemoArgs) -> Result<()> {
     )?;
 
     let branch_mutation_start = Instant::now();
+    let review_count = 5;
     let mut experiment_engine = PersistentEngine::open(&project.active_data_db_path())?;
     experiment_engine.query("CREATE TABLE reviews (id INTEGER PRIMARY KEY, reviewer TEXT NOT NULL, rating INTEGER NOT NULL)")?;
-    experiment_engine.query(&insert_reviews_sql(25))?;
+    experiment_engine.query(&insert_reviews_sql(review_count))?;
     experiment_engine.sync()?;
     println!(
         "{} Added new table `reviews` with {} rows",
         timing_badge(&ui, branch_mutation_start.elapsed()),
-        ui.metric(25)
+        ui.metric(review_count)
     );
 
     run_cli_step(

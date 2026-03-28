@@ -149,7 +149,7 @@ dust branch switch main
 dust branch delete experiment
 ```
 
-If you compare branches with `dust diff` or `dust branch diff`, note that the current diff is row-count based. Pure value changes with unchanged row counts will not show up yet.
+`dust diff` now inspects inserted, deleted, and updated rows when it can line tables up by a primary/unique key. Tables without a stable key are compared by full row values, so updates may appear as delete+insert, and schema/key mismatches fall back to summaries.
 
 ## Connect with psql
 
@@ -193,7 +193,7 @@ Because this quickstart imported data directly into the live database, `dust doc
 | CSV import | Supported |
 | Postgres wire protocol | Supported |
 | Subqueries: IN (SELECT), NOT IN, scalar | Supported |
-| Branch diff (row count deltas) | Supported |
+| Branch diff (row/value inspection with honest fallbacks) | Supported |
 | --format json/csv/table output | Supported |
 | Window functions, CTEs | Supported |
 | Foreign key enforcement | Not yet |
